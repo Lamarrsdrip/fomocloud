@@ -1,6 +1,23 @@
 {
-  "name":"@fomocloud/exits","version":"0.1.0","type":"module",
-  "scripts":{"dev":"tsx watch src/index.ts","build":"tsc -p tsconfig.json","start":"node dist/index.js","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo exits lint","test":"echo exits tests"},
-  "dependencies":{"@fomocloud/db":"workspace:*","@fomocloud/shared":"workspace:*","@fomocloud/execution":"workspace:*"},
-  "devDependencies":{"tsx":"^4.20.4","typescript":"^5.9.2"}
+  "name": "@fomocloud/exits",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo exits lint",
+    "test": "echo exits tests"
+  },
+  "dependencies": {
+    "@fomocloud/db": "workspace:*",
+    "@fomocloud/shared": "workspace:*",
+    "@fomocloud/execution": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2",
+    "@types/node": "^22.18.0"
+  }
 }

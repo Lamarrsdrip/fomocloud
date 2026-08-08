@@ -1,9 +1,21 @@
 {
-  "name":"@fomocloud/strategy",
-  "version":"0.2.0",
-  "type":"module",
-  "exports":{".":"./src/index.ts"},
-  "scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo strategy lint","test":"node --test dist/**/*.test.js"},
-  "dependencies":{"@fomocloud/shared":"workspace:*"},
-  "devDependencies":{"typescript":"^5.9.2"}
+  "name": "@fomocloud/strategy",
+  "version": "0.2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo strategy lint",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@fomocloud/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "@types/node": "^22.18.0"
+  }
 }

@@ -1,18 +1,15 @@
 import type { NextConfig } from "next";
-import { join } from "node:path";
+
+// FomoCloud frontend is a static PWA hosted on Hostinger. All data comes from the
+// VPS backend API over HTTPS (NEXT_PUBLIC_API_URL) — there is no server on Hostinger.
+// Security headers are applied at the host (Hostinger/.htaccess or the backend), since
+// `headers()` does not run in a static export.
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // Pin the monorepo root so Next's file tracing ignores stray parent lockfiles.
-  outputFileTracingRoot: join(import.meta.dirname, "../../"),
-  headers: async () => [{
-    source: "/(.*)",
-    headers: [
-      { key: "X-Frame-Options", value: "DENY" },
-      { key: "X-Content-Type-Options", value: "nosniff" },
-      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" }
-    ]
-  }]
+  output: "export",
+  trailingSlash: true,
+  images: { unoptimized: true },
 };
+
 export default nextConfig;

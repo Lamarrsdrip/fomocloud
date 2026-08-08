@@ -27,6 +27,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/cors": "^2.8.19",
     "tsx": "^4.20.4",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "@types/node": "^22.18.0"
   }
 }
