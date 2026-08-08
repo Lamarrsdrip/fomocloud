@@ -1,0 +1,1 @@
+{"name":"@fomocloud/fees","version":"0.3.0","type":"module","exports":{".":"./src/index.ts"},"scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo fees lint","test":"echo fee tests"},"devDependencies":{"typescript":"^5.9.2"}}

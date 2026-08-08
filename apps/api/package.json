@@ -1,0 +1,32 @@
+{
+  "name": "@fomocloud/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo api lint",
+    "test": "echo api tests"
+  },
+  "dependencies": {
+    "@fomocloud/db": "workspace:*",
+    "@fomocloud/shared": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "zod": "^4.0.17",
+    "jsonwebtoken": "^9.0.2",
+    "bs58": "^6.0.0",
+    "tweetnacl": "^1.0.3",
+    "@fomocloud/notifications": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/cors": "^2.8.19",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
+  }
+}

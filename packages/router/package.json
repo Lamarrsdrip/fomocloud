@@ -1,0 +1,5 @@
+{
+  "name":"@fomocloud/router","version":"0.4.0","type":"module","exports":{".":"./src/index.ts"},
+  "scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo router lint","test":"echo router tests"},
+  "devDependencies":{"typescript":"^5.9.2"}
+}

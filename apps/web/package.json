@@ -1,0 +1,6 @@
+{
+  "name":"@fomocloud/web","version":"0.1.0","private":true,
+  "scripts":{"dev":"next dev --turbopack","build":"next build","start":"next start","lint":"next lint","typecheck":"tsc --noEmit","test":"echo web tests"},
+  "dependencies":{"next":"^15.5.2","react":"^19.1.1","react-dom":"^19.1.1","lucide-react":"^0.542.0"},
+  "devDependencies":{"@types/node":"^22.18.0","@types/react":"^19.1.12","@types/react-dom":"^19.1.9","typescript":"^5.9.2"}
+}

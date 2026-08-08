@@ -1,0 +1,5 @@
+{
+  "name":"@fomocloud/market","version":"0.3.0","type":"module","exports":{".":"./src/index.ts"},
+  "scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo market lint","test":"echo market tests"},
+  "devDependencies":{"typescript":"^5.9.2"}
+}
