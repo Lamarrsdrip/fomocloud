@@ -13,7 +13,10 @@
   "dependencies": {
     "@fomocloud/db": "workspace:*",
     "@fomocloud/shared": "workspace:*",
-    "@fomocloud/execution": "workspace:*"
+    "@fomocloud/execution": "workspace:*",
+    "@fomocloud/ops": "workspace:*",
+    "bullmq": "^5.58.5",
+    "ioredis": "^5.7.0"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

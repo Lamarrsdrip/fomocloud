@@ -20,7 +20,12 @@
     "jsonwebtoken": "^9.0.2",
     "bs58": "^6.0.0",
     "tweetnacl": "^1.0.3",
-    "@fomocloud/notifications": "workspace:*"
+    "@fomocloud/notifications": "workspace:*",
+    "@fomocloud/config": "workspace:*",
+    "bcryptjs": "^3.0.2",
+    "express-rate-limit": "^8.1.0",
+    "bullmq": "^5.58.5",
+    "ioredis": "^5.7.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",

@@ -15,7 +15,10 @@
     "@fomocloud/shared": "workspace:*",
     "@fomocloud/execution": "workspace:*",
     "bullmq": "^5.58.1",
-    "ioredis": "^5.7.0"
+    "ioredis": "^5.7.0",
+    "@fomocloud/ops": "workspace:*",
+    "@fomocloud/config": "workspace:*",
+    "@solana/web3.js": "^1.98.4"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

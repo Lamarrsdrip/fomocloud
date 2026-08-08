@@ -8,5 +8,6 @@ coverage
 .DS_Store
 data/*.db
 .turbo
+
 apps/web/out
 out/

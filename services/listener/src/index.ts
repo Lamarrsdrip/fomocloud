@@ -1,108 +1,160 @@
-import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
+import { Connection, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { db } from "@fomocloud/db";
+import { startHeartbeat } from "@fomocloud/ops";
+import { getConfig } from "@fomocloud/config";
 
-const rpc = process.env.SOLANA_RPC_HTTP;
-if (!rpc) throw new Error("SOLANA_RPC_HTTP is required for listener");
-const conn = new Connection(rpc, process.env.SOLANA_COMMITMENT as any || "confirmed");
-const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: null });
-const queue = new Queue("signals", { connection: redis });
-const subscriptions = new Map<string, number>();
+const marketCfg=await getConfig<any>("marketData");
+const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
+if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required for listener");
+const conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+const queue=new Queue("signals",{connection:redis});
+const subscriptions=new Map<string,number>();
+let detected=0, decoded=0, errors=0;
 
-function classifySwap(tx: ParsedTransactionWithMeta, wallet: string) {
-  // Robust generic fallback based on owner token-balance deltas.
-  // Production deployments should add protocol-specific decoders for Jupiter/Raydium/etc.
-  const pre = tx.meta?.preTokenBalances ?? [];
-  const post = tx.meta?.postTokenBalances ?? [];
-  const deltas = new Map<string, bigint>();
-  const apply = (rows: typeof pre, sign: bigint) => {
-    for (const r of rows) {
-      if (r.owner !== wallet) continue;
-      const amt = BigInt(r.uiTokenAmount.amount || "0");
-      deltas.set(r.mint, (deltas.get(r.mint) ?? 0n) + sign * amt);
+const DEFAULT_QUOTES=[
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+  "So11111111111111111111111111111111111111112"  // WSOL
+];
+const quoteMints=new Set((process.env.SOLANA_QUOTE_MINTS??DEFAULT_QUOTES.join(",")).split(",").map(x=>x.trim()).filter(Boolean));
+const usdcMint=process.env.USDC_MINT_SOLANA??DEFAULT_QUOTES[0];
+
+type Delta={mint:string;raw:bigint;decimals:number};
+function tokenDeltas(tx:ParsedTransactionWithMeta,wallet:string):Delta[]{
+  const pre=tx.meta?.preTokenBalances??[], post=tx.meta?.postTokenBalances??[];
+  const map=new Map<string,{raw:bigint;decimals:number}>();
+  const apply=(rows:typeof pre,sign:bigint)=>{
+    for(const r of rows){
+      if(r.owner!==wallet) continue;
+      const cur=map.get(r.mint)??{raw:0n,decimals:r.uiTokenAmount.decimals};
+      cur.raw+=sign*BigInt(r.uiTokenAmount.amount||"0"); cur.decimals=r.uiTokenAmount.decimals;
+      map.set(r.mint,cur);
     }
   };
-  apply(post, 1n); apply(pre, -1n);
-  const positives = [...deltas.entries()].filter(([, v]) => v > 0n).sort((a,b)=> a[1] > b[1] ? -1 : 1);
-  const negatives = [...deltas.entries()].filter(([, v]) => v < 0n).sort((a,b)=> a[1] < b[1] ? -1 : 1);
-  if (!positives.length || !negatives.length) return null;
-  return { inputMint: negatives[0][0], outputMint: positives[0][0], inputRaw: (-negatives[0][1]).toString(), outputRaw: positives[0][1].toString() };
+  apply(post,1n); apply(pre,-1n);
+  return [...map].map(([mint,v])=>({mint,...v})).filter(x=>x.raw!==0n);
 }
 
-async function handleSignature(traderId: string, wallet: string, signature: string) {
-  const existing = await db.sourceTransaction.findUnique({
-    where: { chain_txHash_walletAddress: { chain: "SOLANA", txHash: signature, walletAddress: wallet } }
-  });
-  if (existing) return;
 
-  const tx = await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  if (!tx || tx.meta?.err) return;
+function ownerMintBalanceRaw(tx:ParsedTransactionWithMeta,wallet:string,mint:string,side:"pre"|"post"){
+  const rows=side==="pre"?(tx.meta?.preTokenBalances??[]):(tx.meta?.postTokenBalances??[]);
+  return rows.filter(r=>r.owner===wallet&&r.mint===mint).reduce((a,r)=>a+BigInt(r.uiTokenAmount.amount||"0"),0n);
+}
+
+function classifySwap(tx:ParsedTransactionWithMeta,wallet:string){
+  const deltas=tokenDeltas(tx,wallet);
+  const positives=deltas.filter(x=>x.raw>0n).sort((a,b)=>a.raw>b.raw?-1:1);
+  const negatives=deltas.filter(x=>x.raw<0n).sort((a,b)=>a.raw<b.raw?-1:1);
+  if(!positives.length||!negatives.length) return null;
+
+  // Prefer a clear quote-asset <-> token leg. This prevents treating every token transfer as a buy.
+  const spentQuote=negatives.find(x=>quoteMints.has(x.mint));
+  const receivedQuote=positives.find(x=>quoteMints.has(x.mint));
+  let input:Delta|undefined,output:Delta|undefined,action:"BUY"|"SELL";
+  if(spentQuote){
+    input=spentQuote; output=positives.find(x=>!quoteMints.has(x.mint)); action="BUY";
+  }else if(receivedQuote){
+    input=negatives.find(x=>!quoteMints.has(x.mint)); output=receivedQuote; action="SELL";
+  }else{
+    // Token-to-token with no recognized quote is ambiguous; don't invent a copy signal.
+    return null;
+  }
+  if(!input||!output) return null;
+
+  const inputRaw=(input.raw<0n?-input.raw:input.raw).toString();
+  const outputRaw=(output.raw<0n?-output.raw:output.raw).toString();
+  let sourcePriceUsd:number|undefined;
+  if(action==="BUY"&&input.mint===usdcMint){
+    const dollars=Number(inputRaw)/(10**input.decimals);
+    const tokens=Number(outputRaw)/(10**output.decimals);
+    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
+  }else if(action==="SELL"&&output.mint===usdcMint){
+    const dollars=Number(outputRaw)/(10**output.decimals);
+    const tokens=Number(inputRaw)/(10**input.decimals);
+    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
+  }
+  let sourceTokenBalanceBeforeRaw:string|undefined, sourceTokenBalanceAfterRaw:string|undefined, sourceSoldPct:number|undefined;
+  if(action==="SELL"){
+    const before=ownerMintBalanceRaw(tx,wallet,input.mint,"pre"), after=ownerMintBalanceRaw(tx,wallet,input.mint,"post");
+    sourceTokenBalanceBeforeRaw=before.toString(); sourceTokenBalanceAfterRaw=after.toString();
+    if(before>0n){
+      const sold=before>after?before-after:0n;
+      sourceSoldPct=Math.max(0,Math.min(100,Number((sold*10000n)/before)/100));
+    }
+  }
+  return {action,inputMint:input.mint,outputMint:output.mint,inputRaw,outputRaw,sourcePriceUsd,sourceTokenBalanceBeforeRaw,sourceTokenBalanceAfterRaw,sourceSoldPct};
+}
+
+async function fetchParsedTransactionWithRetry(signature:string){
+  const waits=[0,120,300,700];
+  for(const wait of waits){
+    if(wait) await new Promise(r=>setTimeout(r,wait));
+    const tx=await conn.getParsedTransaction(signature,{maxSupportedTransactionVersion:0,commitment:"confirmed"});
+    if(tx) return tx;
+  }
+  return null;
+}
+
+async function handleSignature(traderId:string,wallet:string,signature:string){
+  detected++;
+  const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
+  if(existing) return;
+  const tx=await fetchParsedTransactionWithRetry(signature);
+  if(!tx||tx.meta?.err){if(!tx)errors++;return;}
 
   await db.sourceTransaction.create({
-    data: {
-      chain: "SOLANA",
-      txHash: signature,
-      walletAddress: wallet,
-      slot: BigInt(tx.slot),
-      blockTime: tx.blockTime ? new Date(tx.blockTime * 1000) : null,
-      rawJson: JSON.parse(JSON.stringify(tx))
-    }
+    data:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
   });
 
-  const swap = classifySwap(tx, wallet);
-  if (!swap) return;
-
-  const idempotencyKey = crypto.createHash("sha256")
-    .update(["SOLANA", signature, wallet, swap.outputMint, "BUY"].join(":")).digest("hex");
-
-  const signal = await db.signal.upsert({
-    where: { idempotencyKey },
-    update: {},
-    create: {
-      idempotencyKey,
-      chain: "SOLANA",
-      traderId,
-      sourceWallet: wallet,
-      sourceTx: signature,
-      action: "BUY",
-      inputMint: swap.inputMint,
-      outputMint: swap.outputMint,
-      inputRaw: swap.inputRaw,
-      outputRaw: swap.outputRaw,
-      observedAt: new Date()
+  const swap=classifySwap(tx,wallet);
+  if(!swap) return;
+  decoded++;
+  const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
+  const idempotencyKey=crypto.createHash("sha256").update(["SOLANA",signature,wallet,tokenMint,swap.action].join(":")).digest("hex");
+  const signal=await db.signal.upsert({
+    where:{idempotencyKey},update:{},
+    create:{
+      idempotencyKey,chain:"SOLANA",traderId,sourceWallet:wallet,sourceTx:signature,action:swap.action,
+      inputMint:swap.inputMint,outputMint:swap.outputMint,inputRaw:swap.inputRaw,outputRaw:swap.outputRaw,
+      sourcePriceUsd:swap.sourcePriceUsd,sourcePriceMethod:swap.sourcePriceUsd?"TX_USDC_RATIO":undefined,sourceTokenBalanceBeforeRaw:swap.sourceTokenBalanceBeforeRaw,
+      sourceTokenBalanceAfterRaw:swap.sourceTokenBalanceAfterRaw,sourceSoldPct:swap.sourceSoldPct,observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()
     }
   });
-  await queue.add("source-buy", { signalId: signal.id }, { jobId: signal.id, attempts: 5, backoff: { type: "exponential", delay: 500 } });
+  await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
 }
 
-async function refreshWatchlist() {
-  const wallets = await db.traderWallet.findMany({
-    where: { verified: true, trader: { enabled: true, follows: { some: { mode: "AUTO_COPY" } } } },
-    include: { trader: true }
+async function refreshWatchlist(){
+  // Watch every enabled verified source wallet ONCE. Fan-out happens downstream per user.
+  // This also lets the platform track public trader history before a user enables Auto Copy.
+  const wallets=await db.traderWallet.findMany({
+    where:{
+      verified:true,
+      trader:{enabled:true,OR:[{kind:"PLATFORM"},{kind:"CUSTOM",follows:{some:{}}}]}
+    },
+    include:{trader:true}
   });
-  const wanted = new Set(wallets.map(w => w.address));
-
-  for (const [address, id] of subscriptions) {
-    if (!wanted.has(address)) {
-      await conn.removeOnLogsListener(id);
-      subscriptions.delete(address);
-    }
+  const wanted=new Set(wallets.map(w=>w.address));
+  for(const [address,id] of subscriptions){
+    if(!wanted.has(address)){await conn.removeOnLogsListener(id);subscriptions.delete(address);}
   }
-
-  for (const tw of wallets) {
-    if (subscriptions.has(tw.address)) continue;
-    const pubkey = new PublicKey(tw.address);
-    const id = conn.onLogs(pubkey, async logs => {
-      try { await handleSignature(tw.traderId, tw.address, logs.signature); }
-      catch (e) { console.error("[listener] tx error", logs.signature, e); }
-    }, "confirmed");
-    subscriptions.set(tw.address, id);
-    console.log("[listener] watching", tw.trader.handle, tw.address);
+  for(const tw of wallets){
+    if(tw.chain!=="SOLANA"||subscriptions.has(tw.address)) continue;
+    try{
+      const pubkey=new PublicKey(tw.address);
+      const id=conn.onLogs(pubkey,async logs=>{
+        try{await handleSignature(tw.traderId,tw.address,logs.signature);}
+        catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
+      },"confirmed");
+      subscriptions.set(tw.address,id);
+      console.log("[listener] watching",tw.trader.handle,tw.address);
+    }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
   }
 }
-
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:new URL(rpc).host}));
 await refreshWatchlist();
-setInterval(() => refreshWatchlist().catch(console.error), 30_000);
+setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 console.log("[listener] running");

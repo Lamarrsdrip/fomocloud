@@ -1,0 +1,1 @@
+import AuthCard from "../../components/AuthCard"; export default function Signup(){return <AuthCard mode="signup"/>}

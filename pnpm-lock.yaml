@@ -15,30 +15,11 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
-  apps/admin:
-    dependencies:
-      next:
-        specifier: ^15.5.2
-        version: 15.5.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      react:
-        specifier: ^19.1.1
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.1.1
-        version: 19.2.8(react@19.2.8)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.18.0
-        version: 22.20.1
-      '@types/react':
-        specifier: ^19.1.12
-        version: 19.2.18
-      typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
-
   apps/api:
     dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@fomocloud/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -48,18 +29,30 @@ importers:
       '@fomocloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      bcryptjs:
+        specifier: ^3.0.2
+        version: 3.0.3
       bs58:
         specifier: ^6.0.0
         version: 6.0.0
+      bullmq:
+        specifier: ^5.58.5
+        version: 5.81.3
       cors:
         specifier: ^2.8.5
         version: 2.8.6
       express:
         specifier: ^5.1.0
         version: 5.2.1
+      express-rate-limit:
+        specifier: ^8.1.0
+        version: 8.6.2(express@5.2.1)
       helmet:
         specifier: ^8.1.0
         version: 8.3.0
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
       jsonwebtoken:
         specifier: ^9.0.2
         version: 9.0.3
@@ -79,6 +72,9 @@ importers:
       '@types/jsonwebtoken':
         specifier: ^9.0.10
         version: 9.0.10
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       tsx:
         specifier: ^4.20.4
         version: 4.23.11
@@ -114,15 +110,34 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/config:
+    dependencies:
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../db
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   packages/db:
     dependencies:
       '@prisma/client':
         specifier: ^6.14.0
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       prisma:
         specifier: ^6.14.0
         version: 6.19.3(typescript@5.9.3)
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -136,12 +151,18 @@ importers:
         specifier: ^1.98.4
         version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
 
   packages/fees:
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -152,18 +173,27 @@ importers:
         specifier: workspace:*
         version: link:../strategy
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
 
   packages/market:
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
 
   packages/notifications:
     dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../config
       '@fomocloud/db':
         specifier: workspace:*
         version: link:../db
@@ -174,6 +204,9 @@ importers:
         specifier: ^3.6.7
         version: 3.6.7
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       '@types/nodemailer':
         specifier: ^6.4.17
         version: 6.4.24
@@ -184,8 +217,24 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/ops:
+    dependencies:
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../db
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   packages/router:
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -196,12 +245,18 @@ importers:
         specifier: ^4.0.17
         version: 4.4.3
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
 
   packages/social:
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -212,21 +267,77 @@ importers:
         specifier: workspace:*
         version: link:../shared
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/analytics-worker:
+    dependencies:
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/balance-worker:
+    dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      '@solana/web3.js':
+        specifier: ^1.98.4
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
 
   services/executor:
     dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@fomocloud/db':
         specifier: workspace:*
         version: link:../../packages/db
       '@fomocloud/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
       '@fomocloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@solana/web3.js':
+        specifier: ^1.98.4
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       bullmq:
         specifier: ^5.58.1
         version: 5.81.3
@@ -234,6 +345,9 @@ importers:
         specifier: ^5.7.0
         version: 5.11.1
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       tsx:
         specifier: ^4.20.4
         version: 4.23.11
@@ -249,10 +363,22 @@ importers:
       '@fomocloud/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
       '@fomocloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      bullmq:
+        specifier: ^5.58.5
+        version: 5.81.3
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       tsx:
         specifier: ^4.20.4
         version: 4.23.11
@@ -262,9 +388,15 @@ importers:
 
   services/listener:
     dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@fomocloud/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
       '@solana/web3.js':
         specifier: ^1.98.4
         version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -275,6 +407,68 @@ importers:
         specifier: ^5.7.0
         version: 5.11.1
     devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/market-worker:
+    dependencies:
+      '@fomocloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@fomocloud/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      '@solana/web3.js':
+        specifier: ^1.98.4
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/notification-worker:
+    dependencies:
+      '@fomocloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@fomocloud/notifications':
+        specifier: workspace:*
+        version: link:../../packages/notifications
+      '@fomocloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      bullmq:
+        specifier: ^5.58.5
+        version: 5.81.3
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
       tsx:
         specifier: ^4.20.4
         version: 4.23.11
@@ -860,6 +1054,10 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
+  bcryptjs@3.0.3:
+    resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
+    hasBin: true
+
   bn.js@4.12.5:
     resolution: {integrity: sha512-3aRg6/JxfffFD+OlOjOFR3Vo79l39ooBTFucxx+MT3dhCtzn3EmiUPQo+6/OZuI2jbXi3YKgmiTFBgChQMwIRQ==}
 
@@ -1081,6 +1279,12 @@ packages:
   eventemitter3@5.0.4:
     resolution: {integrity: sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw==}
 
+  express-rate-limit@8.6.2:
+    resolution: {integrity: sha512-YH4ru+eOJxQABscKFfRCy9R7x9QFGdezclVMwwgFFndzS2Xnm0uo6B0ABZsLhcpeptGv2qvuJVWlQr9gQZoC3A==}
+    engines: {node: '>= 16'}
+    peerDependencies:
+      express: '>= 4.11'
+
   express@5.2.1:
     resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
     engines: {node: '>= 18'}
@@ -1175,6 +1379,10 @@ packages:
   ioredis@5.11.1:
     resolution: {integrity: sha512-ehuGcf94bQXhfagULNXrJdfnWO38v070jxSx/qE87Kjzmu2fU7ro5EFAb+OPituLqgfyuQaym5DlrNydW2sJ9A==}
     engines: {node: '>=12.22.0'}
+
+  ip-address@10.4.0:
+    resolution: {integrity: sha512-oSK96Grm3aP6OrS263xVxbNDGVL7rzBtYdpGqlDG8iQdoenDoTs/nkki+DflYbAEE8Xl6o5YxhxlrKvI3nqKXQ==}
+    engines: {node: '>= 12'}
 
   ipaddr.js@1.9.1:
     resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
@@ -2070,6 +2278,8 @@ snapshots:
 
   base64-js@1.5.1: {}
 
+  bcryptjs@3.0.3: {}
+
   bn.js@4.12.5: {}
 
   bn.js@5.2.5: {}
@@ -2290,6 +2500,14 @@ snapshots:
 
   eventemitter3@5.0.4: {}
 
+  express-rate-limit@8.6.2(express@5.2.1):
+    dependencies:
+      debug: 4.4.3
+      express: 5.2.1
+      ip-address: 10.4.0
+    transitivePeerDependencies:
+      - supports-color
+
   express@5.2.1:
     dependencies:
       accepts: 2.0.0
@@ -2430,6 +2648,8 @@ snapshots:
       standard-as-callback: 2.1.0
     transitivePeerDependencies:
       - supports-color
+
+  ip-address@10.4.0: {}
 
   ipaddr.js@1.9.1: {}
 

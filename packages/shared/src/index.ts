@@ -11,7 +11,7 @@ export const CopySettingsSchema = z.object({
   percentBalance: z.number().positive().max(100).default(2),
   takeProfitPct: z.number().positive().max(10_000).default(30),
   stopLossPct: z.number().min(0).max(100).nullable().default(15),
-  maxChasePct: z.number().min(0).max(500).default(10),
+  maxChasePct: z.number().min(0).max(55).default(40),
   maxSlippageBps: z.number().int().min(1).max(5000).default(500),
   maxPositionUsd: z.number().positive().max(1_000_000).default(500),
   maxTotalExposureUsd: z.number().positive().max(10_000_000).default(2500),
@@ -89,4 +89,12 @@ export function targetPrice(entry: number, takeProfitPct: number) {
 
 export function stopPrice(entry: number, stopLossPct: number) {
   return entry * (1 - stopLossPct / 100);
+}
+
+/**
+ * Copy-trading chase is measured from the followed wallet's actual execution
+ * to our current executable entry. A token's 24h move is intentionally irrelevant.
+ */
+export function walletChasePct(sourceWalletExecutionPriceUsd:number, currentExecutablePriceUsd:number) {
+  return percentMove(sourceWalletExecutionPriceUsd, currentExecutablePriceUsd);
 }

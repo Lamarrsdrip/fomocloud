@@ -1,156 +1,89 @@
 "use client";
-import { useState } from "react";
 import {
-  Home, Compass, Activity, WalletCards, UserRound, Bell, ShieldCheck,
-  ArrowUpRight, ChevronRight, Sparkles, TrendingUp, Zap, CircleDollarSign,
-  Pause, Play, Flame, Check, Search, Smartphone
+  ArrowRight, ShieldCheck, Zap, WalletCards, Users, Bell, TrendingUp,
+  Layers3, Smartphone, CheckCircle2, Sparkles, LineChart
 } from "lucide-react";
 
-const people = [
-  {name:"Logan Lim",handle:"@loganlim_x",ret:"+182%",initial:"L",tag:"Fast launches"},
-  {name:"Avast",handle:"@0xAvast",ret:"+96%",initial:"A",tag:"Early memes"},
-  {name:"TechQuant",handle:"@techquant",ret:"+71%",initial:"T",tag:"Momentum"}
-];
+const features=[
+  [Users,"Follow real traders","Choose platform traders or add a public wallet you already trust."],
+  [Zap,"Copy in real time","One source-wallet event is detected once, then evaluated independently for every eligible user."],
+  [ShieldCheck,"Your limits, your account","Set your own amount per trade, exposure, chains and Auto Copy status."],
+  [TrendingUp,"Protect the big runner","Take partial profit while strong meme momentum still has room to continue."],
+  [Bell,"Know what happened","See copied trades, skipped trades, pullback waits, profit takes and closes in plain English."],
+  [Layers3,"Multi-chain foundation","Trading Cash is shown simply in USD/USDC while balances and permissions remain chain-aware."]
+] as const;
 
-const moves = [
-  {kind:"buy",title:"HTZ copied from Logan",sub:"Bought $500 · 18 sec ago",right:"+74%",note:"Buying is still strong. Letting it run."},
-  {kind:"profit",title:"HTZ first profit taken",sub:"Sold 30% at +100%",right:"+$151",note:"The rest stays open while momentum is healthy."},
-  {kind:"skip",title:"NOVA is still on watch",sub:"Price jumped beyond our chase window",right:"Watching",note:"We didn't chase. FomoCloud is waiting for a cleaner pullback."}
-];
-
-export default function HomePage(){
-  const [connected,setConnected]=useState(false);
-  const [running,setRunning]=useState(true);
-  const [tab,setTab]=useState("Home");
-  const nav=[["Home",Home],["Discover",Compass],["Activity",Activity],["Positions",WalletCards],["Profile",UserRound]] as const;
-
-  return <main className="cloud">
-    <div className="aurora a"/><div className="aurora b"/>
-    <div className="shell">
-      <header>
-        <div className="brand"><span className="logo">∞</span><b>FomoCloud</b></div>
-        <div className="head-actions">
-          <button className="round"><Bell size={19}/><i/></button>
-          <button className="connect" onClick={()=>setConnected(true)}>
-            <WalletCards size={17}/>{connected?"7xD…2qP":"Connect wallet"}
-          </button>
-        </div>
+export default function Landing(){
+  return <main className="landing">
+    <div className="landing-glow one"/><div className="landing-glow two"/>
+    <div className="public-shell">
+      <header className="public-header">
+        <a className="brand" href="/"><span className="brandmark">∞</span><b>FomoCloud</b></a>
+        <nav className="public-links">
+          <a href="#how">How it works</a><a href="#features">Features</a><a href="#security">Security</a>
+        </nav>
+        <div className="public-actions"><a className="ghost-link" href="/login/">Sign in</a><a className="primary-link" href="/signup/">Start trading <ArrowRight size={16}/></a></div>
       </header>
 
-      <section className="welcome">
-        <div className="welcome-copy">
-          <span className="hello">SMART MEME COPY TRADING</span>
-          <h1>Follow the wallets.<br/><em>Let FomoCloud think.</em></h1>
-          <p>Pick traders you trust. FomoCloud watches every move, checks the token in real time, buys when the setup makes sense and protects winners without cutting them too early.</p>
-          <div className="actions">
-            <button className="main-btn" onClick={()=>setConnected(true)}>{connected?"Wallet connected":"Connect wallet"}<ArrowUpRight size={18}/></button>
-            <button className="soft-btn">See how it works<ChevronRight size={17}/></button>
-          </div>
-        </div>
+      <section className="hero">
+        <div className="eyebrow"><Sparkles size={14}/> SOCIAL COPY TRADING, BUILT FOR FAST MARKETS</div>
+        <h1>Your traders move.<br/><em>Your account reacts.</em></h1>
+        <p>Build your own watchlist, follow platform traders, and let the 24/7 engine evaluate every source-wallet move against <b>your</b> cash, limits and copy settings.</p>
+        <div className="hero-actions"><a className="hero-primary" href="/signup/">Create my account <ArrowRight size={18}/></a><a className="hero-secondary" href="#how">See how it works</a></div>
+        <div className="hero-trust"><span><CheckCircle2 size={15}/> Separate account for every user</span><span><CheckCircle2 size={15}/> Real backend activity</span><span><CheckCircle2 size={15}/> Live funds remain off until authorized</span></div>
 
-        <div className="status-card">
-          <div className="status-top"><span>FomoCloud</span><span className={running?"live":"paused"}><i/>{running?"Working":"Paused"}</span></div>
-          <div className="brain"><div className="halo h1"/><div className="halo h2"/><Sparkles size={30}/></div>
-          <h3>{running?"Watching for your next trade":"New buys are paused"}</h3>
-          <p>{running?"6 traders · real-time token checks · profit protection on":"Open positions can still be protected."}</p>
-          <div className="plain-grid">
-            <div><span>Per trade</span><b>$500 max</b></div>
-            <div><span>Fresh meme chase</span><b>Up to ~40%</b></div>
-            <div><span>First new-token profit</span><b>+100%</b></div>
-            <div><span>Big winners</span><b>Let them run</b></div>
+        <div className="product-preview">
+          <div className="preview-side">
+            <span className="brandmark small">∞</span>
+            <i/><i/><i/><i/><i/>
           </div>
-          <button className="control" onClick={()=>setRunning(!running)}>{running?<Pause size={16}/>:<Play size={16}/>} {running?"Pause new buys":"Resume FomoCloud"}</button>
+          <div className="preview-body">
+            <div className="preview-top"><div><small>YOUR PRIVATE APP</small><strong>Good morning</strong></div><span className="preview-status">Auto Copy · On</span></div>
+            <div className="preview-cards">
+              <div><small>Trading Cash</small><b>Your USDC</b><span>Synced per chain</span></div>
+              <div><small>Performance</small><b>Your P&amp;L</b><span>Realized + unrealized</span></div>
+              <div><small>People you copy</small><b>Your list</b><span>Follow · Watch · Auto Copy</span></div>
+            </div>
+            <div className="preview-feed">
+              <span className="feed-dot"/><div><b>Source wallet detected</b><small>One event → user-specific decisions</small></div><strong>7 sec</strong>
+            </div>
+            <div className="preview-feed muted-row">
+              <span className="feed-dot purple"/><div><b>Your settings are checked</b><small>Cash · chase · exposure · chain · permission</small></div><strong>Fast path</strong>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="money-row">
-        <div><span>Your trading wallet</span><strong>{connected?"$12,482.72":"—"}</strong><small>{connected?"+$841.22 today":"Connect to see your balance"}</small></div>
-        <div><span>Open trades</span><strong>{connected?"4":"—"}</strong><small>{connected?"2 already in profit":"Nothing to show yet"}</small></div>
-        <div><span>Profit taken today</span><strong>{connected?"+$621.40":"—"}</strong><small>{connected?"After confirmed sells":"Only real confirmed sells count"}</small></div>
-      </section>
-
-      <section className="main-grid">
-        <div className="card">
-          <div className="card-head">
-            <div><span className="label">PEOPLE YOU COPY</span><h2>Smart money</h2></div>
-            <button className="text-btn">Find traders <Search size={15}/></button>
-          </div>
-          <div className="people">
-            {people.map((p,i)=><div className="person" key={p.handle}>
-              <div className={`face f${i}`}>{p.initial}<span><Check size={10}/></span></div>
-              <div className="person-name"><b>{p.name}</b><small>{p.handle} · {p.tag}</small></div>
-              <div className="return"><b>{p.ret}</b><small>30D</small></div>
-              <button>{i<2?"Copying":"Follow"}</button>
-            </div>)}
-          </div>
-        </div>
-
-        <div className="card intelligence">
-          <div className="card-head">
-            <div><span className="label">RIGHT NOW</span><h2>What FomoCloud sees</h2></div>
-            <span className="fresh"><i/>Fresh</span>
-          </div>
-          <div className="score-ring"><div><b>91</b><span>Momentum</span></div></div>
-          <div className="signals">
-            <div><Zap size={17}/><span><b>Volume is speeding up</b><small>1-minute buying is 2.4× normal</small></span></div>
-            <div><TrendingUp size={17}/><span><b>More buyers than sellers</b><small>Buyer flow is still expanding</small></span></div>
-            <div><Flame size={17}/><span><b>Social attention is rising</b><small>Mostly unique accounts, low spam</small></span></div>
-            <div><ShieldCheck size={17}/><span><b>No hard risk blocker</b><small>Sell route and liquidity look usable</small></span></div>
-          </div>
-          <div className="decision"><span>Current style</span><b>Let strong memes breathe</b></div>
+      <section id="how" className="how">
+        <div className="section-title"><span>HOW IT WORKS</span><h2>Follow people. Keep control.</h2><p>The source signal is shared. The decision and position always belong to the individual user.</p></div>
+        <div className="steps">
+          <div><b>01</b><h3>Create your account</h3><p>Sign up with email and password, or use a supported wallet sign-in.</p></div>
+          <div><b>02</b><h3>Choose traders</h3><p>Use platform picks, watch only, or add your own public trader wallet.</p></div>
+          <div><b>03</b><h3>Set your rules</h3><p>Choose amount per trade, exposure, enabled chains and Auto Copy.</p></div>
+          <div><b>04</b><h3>See every decision</h3><p>Positions, history, P&amp;L and plain-English reasons stay attached to your account.</p></div>
         </div>
       </section>
 
-      <section className="activity-card card">
-        <div className="card-head"><div><span className="label">YOUR ACTIVITY</span><h2>What the bot did — in plain English</h2></div><button className="text-btn">See everything <ChevronRight size={15}/></button></div>
-        <div className="moves">
-          {moves.map((m,i)=><div className="move" key={m.title}>
-            <div className={`move-icon ${m.kind}`}>{m.kind==="buy"?<ArrowUpRight size={17}/>:m.kind==="profit"?<CircleDollarSign size={17}/>:<ShieldCheck size={17}/>}</div>
-            <div className="move-main"><b>{m.title}</b><small>{m.sub}</small><p>{m.note}</p></div>
-            <strong>{m.right}</strong>
-          </div>)}
-        </div>
+      <section id="features" className="feature-section">
+        <div className="section-title"><span>THE ACTUAL PRODUCT</span><h2>More than a connect-wallet page.</h2></div>
+        <div className="feature-grid">{features.map(([Icon,title,copy])=><article key={title}><Icon size={21}/><h3>{title}</h3><p>{copy}</p></article>)}</div>
       </section>
 
-      <section className="runner card">
-        <div className="runner-copy">
-          <span className="label">HOW PROFITS WORK</span>
-          <h2>Take profit. Keep a piece for the crazy move.</h2>
-          <p>Fresh memes can move 500%, 2,000% or more. FomoCloud takes some money off the table, then gives the remaining runner more room while volume, buyers, liquidity and hype stay strong.</p>
-        </div>
-        <div className="ladder">
-          <div><span>+100%</span><b>Take some profit</b><small>Fresh-token first target</small></div>
-          <i/>
-          <div><span>+150%</span><b>Take some more</b><small>Keep the runner alive</small></div>
-          <i/>
-          <div><span>+200%</span><b>Protect the win</b><small>No final upside cap</small></div>
-          <i/>
-          <div className="moon"><span>+5000%?</span><b>Still strong? Hold.</b><small>Exit when the trend breaks, not because profit is “too big”.</small></div>
-        </div>
+      <section className="chase-band">
+        <div><span>MEME CHASE RULE</span><h2>A coin can be +5,000% today and still be a valid copy.</h2><p>Chase is measured from the followed wallet's actual buy to FomoCloud's current executable entry — not from the token's 24-hour percentage move.</p></div>
+        <div className="chase-example"><small>SOURCE WALLET BUY</small><b>$1.00</b><i/><small>CURRENT EXECUTABLE ENTRY</small><b>$1.35</b><strong>Wallet chase = +35%</strong></div>
       </section>
 
-      <section className="mobile-soon card">
-        <div className="mobile-soon-copy">
-          <span className="label">MOBILE APP</span>
-          <h2>FomoCloud for iPhone &amp; Android <em>— coming soon</em></h2>
-          <p>The native apps are on the way. Until then, add FomoCloud to your home screen and it opens full-screen, just like a native app — with push notifications for every copy, profit take and skip.</p>
-          <div className="soon-badges">
-            <span className="soon-badge"><Smartphone size={16}/> iPhone · Coming soon</span>
-            <span className="soon-badge"><Smartphone size={16}/> Android · Coming soon</span>
-          </div>
-        </div>
-        <div className="mobile-soon-art"><div className="phone"><span className="logo">∞</span><b>FomoCloud</b><small>Add to Home Screen today</small></div></div>
+      <section id="security" className="security-band">
+        <div className="security-icon"><ShieldCheck size={32}/></div>
+        <div><span>ACCOUNT &amp; TRADING SECURITY</span><h2>Login is not trading permission.</h2><p>Email/password creates your account. A wallet connection proves ownership. Unattended live trading still requires a reviewed delegated/session authorization with explicit limits and revocation. The test deployment stays in simulation until that live-money path is ready.</p></div>
       </section>
 
-      <footer>
-        <div className="brand"><span className="logo">∞</span><b>FomoCloud</b></div>
-        <p>No subscriptions. Transparent trading fees only when enabled.</p>
-        <small>Real trades only count after blockchain confirmation.</small>
-      </footer>
+      <section className="cta">
+        <LineChart size={32}/><h2>Build your trader list.</h2><p>Your dashboard starts empty and becomes yours — no fake balance, fake P&amp;L or shared public account.</p><a className="hero-primary" href="/signup/">Start trading <ArrowRight size={18}/></a>
+      </section>
+
+      <footer className="public-footer"><div className="brand"><span className="brandmark small">∞</span><b>FomoCloud</b></div><span>24/7 backend · Personal dashboards · Simulation until live authorization</span><span><Smartphone size={14}/> PWA ready</span></footer>
     </div>
-
-    <nav className="mobile-nav">
-      {nav.map(([name,Icon])=><button key={name} className={tab===name?"active":""} onClick={()=>setTab(name)}><Icon size={21}/><span>{name}</span></button>)}
-    </nav>
   </main>
 }

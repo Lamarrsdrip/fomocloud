@@ -55,7 +55,7 @@ For thousands of users:
 - subscribe once per unique source wallet, not once per follower
 - fan out one normalized signal to affected users via queue
 - horizontally scale stateless executor workers
-- use PostgreSQL unique constraints as final idempotency barrier
+- use MongoDB/Prisma unique constraints as the final idempotency barrier
 - shard/partition high-volume event tables when necessary
 - cache trader profiles and public market data
 - use at least two production RPC providers

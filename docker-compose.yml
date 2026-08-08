@@ -1,23 +1,36 @@
 services:
   mongo:
-    image: mongo:7
-    command: ["--replSet", "rs0", "--bind_ip_all"]
-    ports: ["27017:27017"]
+    image: mongo:8
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports: ["127.0.0.1:27017:27017"]
     volumes: [mongo-data:/data/db]
     healthcheck:
-      # Auto-initiate a single-node replica set (Prisma requires a replica set for MongoDB).
-      test: >-
-        mongosh --quiet --eval "try { rs.status().ok } catch (e) {
-        rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
-      timeout: 10s
-      retries: 30
+      timeout: 5s
+      retries: 20
+
+  mongo-init:
+    image: mongo:8
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["bash", "-lc"]
+    command: >
+      mongosh --host mongo:27017 --eval
+      'try { rs.status() } catch (e) { rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]}) }'
 
   redis:
     image: redis:8-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
     volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
 volumes:
   mongo-data:

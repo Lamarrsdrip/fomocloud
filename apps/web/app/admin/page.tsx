@@ -1,0 +1,140 @@
+"use client";
+import {useEffect,useState} from "react";
+import {apiFetch,plainError,money} from "../../lib/api";
+import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus} from "lucide-react";
+
+const sections=[
+ ["overview","Overview",BarChart3],["users","Users",Users],["traders","Traders",Radio],["signals","Signals",Activity],
+ ["trades","Trades",WalletCards],["config","Configuration",Settings2],["broadcasts","Broadcasts",Send],["health","System Health",ShieldCheck]
+] as const;
+
+export default function Admin(){
+ const[tab,setTab]=useState("overview");const[me,setMe]=useState<any>(null);const[data,setData]=useState<any>({});const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
+ async function load(which=tab){setLoading(true);setErr("");try{
+  const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="ADMIN"&&m.role!=="SUPPORT")throw Object.assign(new Error("ADMIN_FORBIDDEN"),{status:403});
+  let r:any={};
+  if(which==="overview")r=await apiFetch("/v1/admin/overview");
+  if(which==="users")r=await apiFetch("/v1/admin/users");
+  if(which==="traders")r=await apiFetch("/v1/admin/traders");
+  if(which==="signals")r=await apiFetch("/v1/admin/signals");
+  if(which==="trades")r=await apiFetch("/v1/admin/trades");
+  if(which==="config")r=await apiFetch("/v1/admin/config");
+  if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
+  if(which==="health")r=await apiFetch("/v1/admin/health");
+  setData(r);
+ }catch(e:any){setErr(e?.status===403?"This account is not an administrator.":plainError(e))}finally{setLoading(false)}}
+ useEffect(()=>{void load("overview")},[]);
+ function change(t:string){setTab(t);void load(t)}
+ return <main className="admin-layout">
+  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">∞</span><b>FomoCloud Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav></aside>
+  <section className="admin-main"><div className="admin-head"><div><small>OWNER CONTROL CENTER</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1></div><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div>
+   {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
+    {tab==="overview"&&<Overview d={data}/>}
+    {tab==="users"&&<UsersView d={data} reload={()=>load("users")}/>}
+    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="ADMIN"}/>}
+    {tab==="signals"&&<Signals d={data}/>}
+    {tab==="trades"&&<Trades d={data}/>}
+    {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="ADMIN"}/>}
+    {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="ADMIN"}/>}
+    {tab==="health"&&<Health d={data}/>}
+   </>}
+  </section>
+ </main>
+}
+
+function Overview({d}:{d:any}){const c=d.counts||{};return <>
+ <div className="app-grid-4"><div className="stat-card"><span>Users</span><b>{c.users??0}</b><small>Real registered users</small></div><div className="stat-card"><span>Platform traders</span><b>{c.traders??0}</b><small>Admin-managed trader registry</small></div><div className="stat-card"><span>Signals detected</span><b>{c.signals??0}</b><small>Source-wallet signals</small></div><div className="stat-card"><span>Open positions</span><b>{c.openPositions??0}</b><small>Across all accounts</small></div></div>
+ <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>EXECUTION</span><h2>{String(d.executionMode||"simulation").toUpperCase()}</h2></div></div><div className="notice">Live execution enabled: <b>{d.liveExecutionEnabled?"YES":"NO"}</b>. Public launch should remain simulation until real delegated signing and controlled chain testing are complete.</div></section>
+ </>}
+function UsersView({d,reload}:{d:any;reload:()=>void}){
+ const[detail,setDetail]=useState<any>(null),[detailErr,setDetailErr]=useState("");
+ async function status(id:string,s:string){await apiFetch(`/v1/admin/users/${id}`,{method:"PATCH",body:JSON.stringify({status:s})});reload();if(detail?.user?.id===id)await view(id)}
+ async function view(id:string){setDetailErr("");try{setDetail(await apiFetch(`/v1/admin/users/${id}`))}catch(e){setDetailErr(plainError(e))}}
+ return <>
+  <section className="app-card admin-table-wrap"><table className="admin-table"><thead><tr><th>User</th><th>Status</th><th>Auto Copy</th><th>Wallets</th><th>Traders</th><th>Positions</th><th>Last login</th><th>Action</th></tr></thead><tbody>{(d.users||[]).map((u:any)=><tr key={u.id}><td><b>{u.displayName||u.email||u.id.slice(-6)}</b><br/><small>{u.email||"wallet account"}</small></td><td>{u.status}</td><td>{u.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</td><td>{u._count?.wallets??0}</td><td>{u._count?.follows??0}</td><td>{u._count?.positions??0}</td><td>{u.lastLoginAt?new Date(u.lastLoginAt).toLocaleString():"—"}</td><td><div className="table-actions"><button className="soft-action" onClick={()=>view(u.id)}>View</button><select value={u.status} onChange={e=>status(u.id,e.target.value)}><option>ACTIVE</option><option>SUSPENDED</option><option>CLOSED</option></select></div></td></tr>)}</tbody></table></section>
+  {detailErr&&<div className="auth-error" style={{marginTop:10}}>{detailErr}</div>}
+  {detail&&<section className="app-card admin-user-detail" style={{marginTop:10}}><div className="card-title"><div><span>USER DETAIL</span><h2>{detail.user.displayName||detail.user.email||detail.user.id}</h2></div><button className="soft-action" onClick={()=>setDetail(null)}>Close</button></div>
+   <div className="app-grid-4"><div className="stat-card"><span>Trading Cash</span><b>{money(detail.summary.tradingCashUsd)}</b><small>{money(detail.summary.availableUsd)} available</small></div><div className="stat-card"><span>Live P&amp;L</span><b className={(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)>=0?"positive":"negative"}>{money(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)}</b><small>Realized + unrealized</small></div><div className="stat-card"><span>Live positions</span><b>{detail.summary.openLivePositions}</b><small>Simulation {detail.summary.simulationPositions}</small></div><div className="stat-card"><span>Auto Copy</span><b>{detail.user.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</b><small>{detail.user.status}</small></div></div>
+   <div className="admin-detail-grid"><div><h3>Wallets</h3>{detail.user.wallets.length?detail.user.wallets.map((w:any)=><div className="wallet-line" key={w.id}><div><b>{w.chain} · {w.address.slice(0,8)}…{w.address.slice(-6)}</b><small>{w.isPrimary?"Primary · ":""}{w.tradingEnabled?"Trading permission active":"No live trading permission"}</small></div></div>):<small>No linked wallets.</small>}</div><div><h3>Copied / watched traders</h3>{detail.user.follows.length?detail.user.follows.slice(0,12).map((f:any)=><div className="wallet-line" key={f.id}><div><b>{f.trader.displayName}</b><small>{f.mode} · {money(f.fixedAmountUsd)} per copy</small></div></div>):<small>No traders followed.</small>}</div></div>
+  </section>}
+ </>}
+function TradersAdmin({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){const[open,setOpen]=useState(false);const[form,setForm]=useState<any>({displayName:"",handle:"",xHandle:"",category:"",wallet:"",chain:"SOLANA"});const[err,setErr]=useState("");
+ async function add(e:React.FormEvent){e.preventDefault();setErr("");try{await apiFetch("/v1/admin/traders",{method:"POST",body:JSON.stringify({displayName:form.displayName,handle:form.handle,xHandle:form.xHandle,category:form.category,recommended:true,wallets:form.wallet?[{chain:form.chain,address:form.wallet,verified:true}]:[]})});setOpen(false);reload()}catch(e){setErr(plainError(e))}}
+ async function patch(id:string,body:any){await apiFetch(`/v1/admin/traders/${id}`,{method:"PATCH",body:JSON.stringify(body)});reload()}
+ return <>
+  {admin&&<button className="action-primary" style={{padding:"10px 13px",borderRadius:12,marginBottom:12}} onClick={()=>setOpen(!open)}><Plus size={13}/> Add platform trader</button>}
+  {open&&<section className="app-card" style={{marginBottom:10}}><form className="form-grid" onSubmit={add}><label className="field"><span>Name</span><input value={form.displayName} onChange={e=>setForm({...form,displayName:e.target.value})} required/></label><label className="field"><span>Handle</span><input value={form.handle} onChange={e=>setForm({...form,handle:e.target.value})} required/></label><label className="field"><span>X handle</span><input value={form.xHandle} onChange={e=>setForm({...form,xHandle:e.target.value})}/></label><label className="field"><span>Category</span><input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></label><label className="field"><span>Chain</span><select value={form.chain} onChange={e=>setForm({...form,chain:e.target.value})}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option></select></label><label className="field"><span>Verified public wallet</span><input value={form.wallet} onChange={e=>setForm({...form,wallet:e.target.value})}/></label>{err&&<div className="auth-error span2">{err}</div>}<button className="action-primary span2" style={{height:42,borderRadius:12}}>Create trader</button></form></section>}
+  <section className="app-card admin-table-wrap"><table className="admin-table trader-admin-table"><thead><tr><th>Trader</th><th>Source wallets</th><th>Followers</th><th>Signals</th><th>Featured</th><th>Recommended</th><th>Default</th><th>Enabled</th></tr></thead><tbody>{(d.traders||[]).map((t:any)=><tr key={t.id}><td><b>{t.displayName}</b><br/><small>@{t.handle}</small>{t.xHandle&&<><br/><small>X @{t.xHandle}</small></>}</td><td><TraderWalletControls trader={t} admin={admin} reload={reload}/></td><td>{t._count?.follows||0}</td><td>{t._count?.signals||0}</td><td><input type="checkbox" checked={t.featured} disabled={!admin} onChange={e=>patch(t.id,{featured:e.target.checked})}/></td><td><input type="checkbox" checked={t.recommended} disabled={!admin} onChange={e=>patch(t.id,{recommended:e.target.checked})}/></td><td><input type="checkbox" checked={t.defaultSelected} disabled={!admin} onChange={e=>patch(t.id,{defaultSelected:e.target.checked})}/></td><td><input type="checkbox" checked={t.enabled} disabled={!admin} onChange={e=>patch(t.id,{enabled:e.target.checked})}/></td></tr>)}</tbody></table></section>
+ </>}
+function TraderWalletControls({trader,admin,reload}:{trader:any;admin:boolean;reload:()=>void}){
+ const[adding,setAdding]=useState(false),[chain,setChain]=useState("SOLANA"),[address,setAddress]=useState(""),[msg,setMsg]=useState("");
+ async function add(){setMsg("");try{await apiFetch(`/v1/admin/traders/${trader.id}/wallets`,{method:"POST",body:JSON.stringify({chain,address,verified:true})});setAddress("");setAdding(false);reload()}catch(e){setMsg(plainError(e))}}
+ async function remove(id:string){if(!confirm("Remove this public source wallet from the trader? Auto-copy monitoring for this mapping will stop."))return;setMsg("");try{await apiFetch(`/v1/admin/trader-wallets/${id}`,{method:"DELETE"});reload()}catch(e){setMsg(plainError(e))}}
+ return <div className="trader-wallets-admin">
+  {(trader.wallets||[]).length===0&&<small>No wallet mapped — tracking unavailable.</small>}
+  {(trader.wallets||[]).map((w:any)=><div className="trader-wallet-chip" key={w.id}><span><b>{w.chain}</b><small>{String(w.address).slice(0,6)}…{String(w.address).slice(-5)} · {w.verified?"verified":"unverified"}</small></span>{admin&&<button title="Remove wallet" onClick={()=>remove(w.id)}>×</button>}</div>)}
+  {admin&&!adding&&<button className="wallet-add-mini" onClick={()=>setAdding(true)}>+ Add source wallet</button>}
+  {admin&&adding&&<div className="wallet-add-box"><select value={chain} onChange={e=>setChain(e.target.value)}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Public wallet address"/><div><button disabled={!address.trim()} onClick={add}>Save</button><button onClick={()=>{setAdding(false);setAddress("");setMsg("")}}>Cancel</button></div>{chain!=="SOLANA"&&<small>Adapter-ready only: this wallet can be registered, but Auto Copy stays unavailable until that chain listener is implemented.</small>}</div>}
+  {msg&&<small className="negative">{msg}</small>}
+ </div>
+}
+function Signals({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>Trader</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Copies</th><th>Detected</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{s.trader?.displayName}</td><td>{s.chain}</td><td>{s.action}</td><td>{s.action==="BUY"?s.outputMint.slice(0,10):s.inputMint.slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s._count?.copyDecisions||0}</td><td>{new Date(s.observedAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
+function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
+function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
+ const sections=["email","push","marketData","execution","social","chains","fees","risk","branding"];
+ const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState("");
+ const current=(d.config||[]).find((c:any)=>c.key===key);
+ const templates:any={
+  email:{host:"",port:587,secure:false,user:"",pass:"",from:""},
+  push:{subject:""},
+  marketData:{solanaRpc:"",heliusRpc:"",heliusApiKey:"",birdeyeApiKey:"",fallbackRpc:""},
+  execution:{jupiterBaseUrl:"https://api.jup.ag",jupiterApiKey:"",zeroXApiKey:"",signerProvider:"disabled"},
+  social:{xBearerToken:"",xOAuthClientId:"",xOAuthClientSecret:"",xOAuthCallbackUrl:""},
+  chains:{enabled:["SOLANA"]},
+  fees:{platformFeeBps:0},
+  risk:{emergencyNewEntriesPaused:false,freshMemeBaseChasePct:40,hyperMaxChasePct:55,maxExecutablePriceImpactPct:35},
+  branding:{appName:"FomoCloud",supportEmail:"",publicUrl:""}
+ };
+ useEffect(()=>{
+  const visible=!current?.isSecret&&current?.value&&typeof current.value==="object"?current.value:{};
+  setForm({...templates[key],...visible});setMsg("");
+ // current changes when Admin data reloads; key is the operator-selected section.
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[key,current?.updatedAt]);
+ function field(name:string,value:any){setForm((x:any)=>({...x,[name]:value}))}
+ async function save(){setMsg("");try{const r=await apiFetch<any>(`/v1/admin/config/${key}`,{method:"PUT",body:JSON.stringify(form)});setMsg(r.restartRequired?"Saved securely. Restart the affected VPS worker(s) to apply this provider change.":"Saved securely. Blank secret fields keep their previous encrypted value.");reload()}catch(e){setMsg(plainError(e))}}
+ async function vapid(){try{if(form.subject)await apiFetch("/v1/admin/config/push",{method:"PUT",body:JSON.stringify({subject:form.subject})});const r=await apiFetch<any>("/v1/admin/push/generate",{method:"POST"});setMsg(`VAPID ready. Public key ${r.publicKey.slice(0,18)}…`);reload()}catch(e){setMsg(plainError(e))}}
+ async function testPush(){try{const r=await apiFetch<any>("/v1/admin/test-push",{method:"POST"});setMsg(`Test push: ${r.result?.sent||0} sent, ${r.result?.failed||0} failed.`)}catch(e){setMsg(plainError(e))}}
+ async function emailTest(){try{if(!testEmail)throw new Error("Enter a test email address.");await apiFetch("/v1/admin/test-email",{method:"POST",body:JSON.stringify({to:testEmail})});setMsg("SMTP provider accepted the test email.")}catch(e){setMsg(plainError(e))}}
+ const toggleChain=(c:string)=>field("enabled",(form.enabled||[]).includes(c)?(form.enabled||[]).filter((x:string)=>x!==c):[...(form.enabled||[]),c]);
+ return <div className="admin-section-grid config-layout">
+  <section className="app-card"><div className="card-title"><div><span>INTEGRATIONS</span><h2>Configuration status</h2></div></div>
+   <div className="config-tabs">{sections.map(k=><button key={k} className={key===k?"active":""} onClick={()=>setKey(k)}>{k}</button>)}</div>
+   <div className="list">{sections.map(k=>{const c=(d.config||[]).find((x:any)=>x.key===k);return <div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={k}><div><b>{k}</b><small>{c?c.isSecret?"Saved values stay hidden":`Updated ${new Date(c.updatedAt).toLocaleString()}`:"Not saved yet"}</small></div><span className={`status-badge ${c?"":"watch"}`}>{c?"Configured":"Missing"}</span></div>})}</div>
+   <div className="notice" style={{marginTop:12}}>Secret values are encrypted on the VPS. Blank password/API-key fields mean <b>keep the existing secret</b>; they are never read back into this browser.</div>
+  </section>
+  <section className="app-card"><div className="card-title"><div><span>OWNER SETTINGS</span><h2>{key}</h2></div><span className="status-badge">{current?"Configured":"New"}</span></div>
+   <div className="admin-form">
+    {key==="email"&&<><Cfg label="SMTP host" value={form.host} on={v=>field("host",v)}/><div className="form-grid"><Cfg label="Port" type="number" value={form.port} on={v=>field("port",Number(v))}/><label className="field"><span>TLS / secure</span><select value={String(Boolean(form.secure))} onChange={e=>field("secure",e.target.value==="true")}><option value="false">STARTTLS / port 587</option><option value="true">TLS / port 465</option></select></label></div><Cfg label="SMTP username" value={form.user} on={v=>field("user",v)}/><Cfg label="SMTP password" type="password" placeholder="Leave blank to keep saved password" value={form.pass} on={v=>field("pass",v)}/><Cfg label="From" placeholder="FomoCloud <hello@example.com>" value={form.from} on={v=>field("from",v)}/></>}
+    {key==="push"&&<><Cfg label="VAPID subject" value={form.subject} placeholder="mailto:admin@example.com" on={v=>field("subject",v)}/><div className="notice">Use Generate VAPID below. The private key stays encrypted server-side; users receive only the public key.</div></>}
+    {key==="marketData"&&<><Cfg label="Solana RPC" value={form.solanaRpc} placeholder="HTTPS RPC endpoint" on={v=>field("solanaRpc",v)}/><Cfg label="Helius RPC (optional fallback)" value={form.heliusRpc} on={v=>field("heliusRpc",v)}/><Cfg label="Helius API key" type="password" value={form.heliusApiKey} placeholder="Leave blank to keep saved key" on={v=>field("heliusApiKey",v)}/><Cfg label="Birdeye API key" type="password" value={form.birdeyeApiKey} placeholder="Leave blank to keep saved key" on={v=>field("birdeyeApiKey",v)}/><Cfg label="Fallback RPC" value={form.fallbackRpc} on={v=>field("fallbackRpc",v)}/></>}
+    {key==="execution"&&<><Cfg label="Jupiter base URL" value={form.jupiterBaseUrl} on={v=>field("jupiterBaseUrl",v)}/><Cfg label="Jupiter API key" type="password" value={form.jupiterApiKey} placeholder="Leave blank to keep saved key" on={v=>field("jupiterApiKey",v)}/><Cfg label="0x API key" type="password" value={form.zeroXApiKey} placeholder="Leave blank to keep saved key" on={v=>field("zeroXApiKey",v)}/><label className="field"><span>Signer provider</span><select value={form.signerProvider||"disabled"} onChange={e=>field("signerProvider",e.target.value)}><option value="disabled">Disabled — simulation only</option><option value="delegated">Delegated signer adapter (only after implemented)</option></select></label></>}
+    {key==="social"&&<><Cfg label="X bearer token" type="password" value={form.xBearerToken} placeholder="Leave blank to keep saved token" on={v=>field("xBearerToken",v)}/><Cfg label="X OAuth client ID" value={form.xOAuthClientId} on={v=>field("xOAuthClientId",v)}/><Cfg label="X OAuth client secret" type="password" value={form.xOAuthClientSecret} placeholder="Leave blank to keep saved secret" on={v=>field("xOAuthClientSecret",v)}/><Cfg label="X OAuth callback URL" value={form.xOAuthCallbackUrl} placeholder="https://api.example/auth/x/callback" on={v=>field("xOAuthCallbackUrl",v)}/></>}
+    {key==="chains"&&<div className="chain-config"><div className="notice">Only Solana source tracking is genuinely implemented in this release. Other networks can stay prepared without being advertised as working Auto Copy.</div>{["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].map(c=><label key={c} className="check-line"><input type="checkbox" checked={(form.enabled||[]).includes(c)} onChange={()=>toggleChain(c)}/><span>{c}</span><small>{c==="SOLANA"?"Working source listener":"Adapter-ready only"}</small></label>)}</div>}
+    {key==="fees"&&<><Cfg label="Platform fee (basis points)" type="number" value={form.platformFeeBps} on={v=>field("platformFeeBps",Math.max(0,Math.min(10000,Number(v))))}/><div className="notice">Keep 0 during testing. Any production fee must be disclosed before authorization and on receipts.</div></>}
+    {key==="risk"&&<><label className="check-line"><input type="checkbox" checked={Boolean(form.emergencyNewEntriesPaused)} onChange={e=>field("emergencyNewEntriesPaused",e.target.checked)}/><span>Emergency pause new entries</span></label><Cfg label="Fresh meme base wallet chase %" type="number" value={form.freshMemeBaseChasePct} on={v=>field("freshMemeBaseChasePct",Math.max(0,Math.min(55,Number(v))))}/><Cfg label="Hyper maximum wallet chase %" type="number" value={form.hyperMaxChasePct} on={v=>field("hyperMaxChasePct",Math.max(0,Math.min(55,Number(v))))}/><Cfg label="Hard max executable price impact %" type="number" value={form.maxExecutablePriceImpactPct} on={v=>field("maxExecutablePriceImpactPct",Math.max(1,Math.min(50,Number(v))))}/><div className="notice">Chase is measured from the followed wallet's actual execution to each user's actual-size executable quote. The token's 24h move is never used as the chase value.</div></> }
+    {key==="branding"&&<><Cfg label="App name" value={form.appName} on={v=>field("appName",v)}/><Cfg label="Support email" value={form.supportEmail} on={v=>field("supportEmail",v)}/><Cfg label="Public URL" value={form.publicUrl} on={v=>field("publicUrl",v)}/></>}
+    {msg&&<div className="notice">{msg}</div>}
+    <button className="action-primary" disabled={!admin} onClick={save} style={{height:42,borderRadius:12}}>Save {key}</button>
+    {admin&&key==="push"&&<div className="test-inline"><button className="soft-action" onClick={vapid}><Bell size={12}/> Generate VAPID if missing</button><button className="soft-action" onClick={testPush}><Bell size={12}/> Push test to my devices</button></div>}
+    {admin&&key==="email"&&<div className="test-inline"><input value={testEmail} onChange={e=>setTestEmail(e.target.value)} type="email" placeholder="Test email recipient"/><button className="soft-action" onClick={emailTest}><Mail size={12}/> Send SMTP test</button></div>}
+   </div>
+  </section>
+ </div>
+}
+function Cfg({label,value,on,type="text",placeholder=""}:{label:string;value:any;on:(v:string)=>void;type?:string;placeholder?:string}){return <label className="field"><span>{label}</span><input type={type} value={value??""} placeholder={placeholder} onChange={e=>on(e.target.value)}/></label>}
+function Broadcasts({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){const[title,setTitle]=useState("");const[body,setBody]=useState("");const[channel,setChannel]=useState("PUSH");const[audience,setAudience]=useState("ALL");const[msg,setMsg]=useState("");
+ async function send(){try{await apiFetch("/v1/admin/broadcast",{method:"POST",body:JSON.stringify({title,body,channel,audience})});setTitle("");setBody("");setMsg("Broadcast queued.");reload()}catch(e){setMsg(plainError(e))}}
+ return <div className="admin-section-grid"><section className="app-card"><div className="card-title"><div><span>NEW BROADCAST</span><h2>Message users</h2></div></div><div className="admin-form"><label className="field"><span>Title</span><input value={title} onChange={e=>setTitle(e.target.value)}/></label><label className="field"><span>Message</span><textarea value={body} onChange={e=>setBody(e.target.value)}/></label><label className="field"><span>Channel</span><select value={channel} onChange={e=>setChannel(e.target.value)}><option>PUSH</option><option>EMAIL</option><option>BOTH</option></select></label><label className="field"><span>Audience</span><select value={audience} onChange={e=>setAudience(e.target.value)}><option>ALL</option><option>AUTO_COPY</option></select></label>{msg&&<div className="notice">{msg}</div>}<button className="action-primary" disabled={!admin||!title||!body} onClick={send} style={{height:42,borderRadius:12}}>Queue broadcast</button></div></section>
+ <section className="app-card"><div className="card-title"><div><span>HISTORY</span><h2>Delivery progress</h2></div></div><div className="list">{(d.broadcasts||[]).map((b:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={b.id}><div><b>{b.title}</b><small>{b.channel} · {b.audience} · {b.sentCount}/{b.targetCount||"?"} sent · {b.failedCount} failed · {b.skippedCount||0} skipped</small></div><span className={`status-badge ${b.status==="FAILED"?"watch":""}`}>{b.status}</span></div>)}</div></section></div>}
+function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Execution</span><b>{String(d.executionMode||"—").toUpperCase()}</b><small>Current backend mode</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section></>}

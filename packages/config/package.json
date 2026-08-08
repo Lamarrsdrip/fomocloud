@@ -1,0 +1,21 @@
+{
+  "name": "@fomocloud/config",
+  "version": "0.5.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo config lint",
+    "test": "echo config tests"
+  },
+  "dependencies": {
+    "@fomocloud/db": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "@types/node": "^22.18.0"
+  }
+}

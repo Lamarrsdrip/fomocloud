@@ -14,7 +14,9 @@
     "@fomocloud/db": "workspace:*",
     "@solana/web3.js": "^1.98.4",
     "bullmq": "^5.58.1",
-    "ioredis": "^5.7.0"
+    "ioredis": "^5.7.0",
+    "@fomocloud/ops": "workspace:*",
+    "@fomocloud/config": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

@@ -354,11 +354,10 @@ export function evaluateExit(m:MarketSnapshot, p:PositionState):ExitInstruction 
   if (risk.state === "HIGH_RISK" && profit > 0 && trend !== "HYPER")
     return {action:"REDUCE", sellPct:25, reason:"Risk increased, so FomoCloud locks some profit without killing the whole runner"};
 
-  // Trailing must measure the real price drawdown FROM the peak, not the difference
-  // between two profit percentages. At +5200% peak vs +5000% now the token is only
-  // ~2% below its peak price — a big runner must keep breathing until it actually
-  // gives back `trail`% from the top.
   const trail = adaptiveTrailPct(m);
+  // Use actual drawdown from the peak PRICE, not percentage-point distance between
+  // peak profit and current profit. On a +5000% winner, 5200 -> 5000 is only a
+  // small price drawdown and must not be treated as a 200% collapse.
   if (p.peakProfitPct > 0 && m.drawdownFromPeakPct >= trail) {
     if (trend === "HYPER" || trend === "ACCELERATING")
       return {action:"REDUCE", sellPct:30, reason:"Fast pullback inside a strong trend — reduce, do not fully kill the runner"};
