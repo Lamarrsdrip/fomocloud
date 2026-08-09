@@ -6,14 +6,14 @@ The production split is **Hostinger static frontend + Windows VPS backend**. Hos
 
 - Date: 2026-08-09
 - Git branch: `main`
-- Git commit: `6549c24`
+- Frontend source commit: `d83b697`
 - Frontend: `https://wheat-viper-505237.hostingersite.com`
 - API: `https://fomocloud-api.173-212-249-202.sslip.io`
-- Frontend archive: `fomocloud-frontend-6549c24.zip`
-- Frontend SHA-256: `792e37458817ea64a9a71c9f91a698e3729756b300db85e24779af3c94c8b133`
-- Deployed `index.html` SHA-256: `7fc26406d32bf2f1c366940af6d87b1f3479e1a15ac60f25ca413b006814535b`
+- Frontend archive: `fomocloud-frontend-d83b697.zip`
+- Frontend SHA-256: `52d1427b2755d87a96470fdc3daa1b7b7db109f64d219b60fae3d730212196d4`
+- Deployed `index.html` SHA-256: `4fad4d7c6e057e5c9d77378770910058c0e1908228b36c7d208985d43549d7d1`
 - Hostinger document root: `/home/u876818953/domains/wheat-viper-505237.hostingersite.com/public_html`
-- Pre-deploy backup: `/home/u876818953/fomocloud-backups/public_html-pre-6549c24-20260809-024327.tar.gz`
+- Pre-deploy backup: `/home/u876818953/fomocloud-backups/public_html-pre-d83b697-20260809-030739.tar.gz`
 - Earlier frontend backup: `/home/u876818953/fomocloud-backups/public_html-pre-39103c9-20260809-023436.tar.gz`
 - VPS API release: `C:\fomocloud-releases\39103c9`
 - VPS API service backup: `C:\fomocloud-backups\fomocloud-api-pre-39103c9.txt`
