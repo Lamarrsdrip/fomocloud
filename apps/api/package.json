@@ -1,5 +1,5 @@
 {
-  "name": "@fomocloud/api",
+  "name": "@memecloud/api",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -11,8 +11,8 @@
     "test": "echo api tests"
   },
   "dependencies": {
-    "@fomocloud/db": "workspace:*",
-    "@fomocloud/shared": "workspace:*",
+    "@memecloud/db": "workspace:*",
+    "@memecloud/shared": "workspace:*",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
@@ -20,12 +20,13 @@
     "jsonwebtoken": "^9.0.2",
     "bs58": "^6.0.0",
     "tweetnacl": "^1.0.3",
-    "@fomocloud/notifications": "workspace:*",
-    "@fomocloud/config": "workspace:*",
+    "@memecloud/notifications": "workspace:*",
+    "@memecloud/config": "workspace:*",
     "bcryptjs": "^3.0.2",
     "express-rate-limit": "^8.1.0",
     "bullmq": "^5.58.5",
-    "ioredis": "^5.7.0"
+    "ioredis": "^5.7.0",
+    "@memecloud/providers": "workspace:*"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",

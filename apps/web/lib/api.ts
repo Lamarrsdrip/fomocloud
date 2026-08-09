@@ -1,7 +1,5 @@
-const API = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV==="production"
-  ? "https://fomocloud-api.173-212-249-202.sslip.io"
-  : "http://localhost:4000");
-const TOKEN_KEY = "fomocloud_access";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const TOKEN_KEY = "memecloud_access";
 
 export function getAccessToken() {
   if (typeof window === "undefined") return null;

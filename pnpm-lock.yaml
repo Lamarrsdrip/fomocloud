@@ -17,16 +17,19 @@ importers:
 
   apps/api:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/notifications':
+      '@memecloud/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
-      '@fomocloud/shared':
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@memecloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       bcryptjs:
@@ -112,7 +115,7 @@ importers:
 
   packages/config:
     dependencies:
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../db
     devDependencies:
@@ -142,9 +145,21 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/discovery:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   packages/execution:
     dependencies:
-      '@fomocloud/shared':
+      '@memecloud/shared':
         specifier: workspace:*
         version: link:../shared
       '@solana/web3.js':
@@ -169,7 +184,7 @@ importers:
 
   packages/intelligence:
     dependencies:
-      '@fomocloud/strategy':
+      '@memecloud/strategy':
         specifier: workspace:*
         version: link:../strategy
     devDependencies:
@@ -191,10 +206,10 @@ importers:
 
   packages/notifications:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../db
       nodemailer:
@@ -219,13 +234,29 @@ importers:
 
   packages/ops:
     dependencies:
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../db
     devDependencies:
       '@types/node':
         specifier: ^22.18.0
         version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/providers:
+    dependencies:
+      '@privy-io/node':
+        specifier: 0.27.0
+        version: 0.27.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -263,7 +294,7 @@ importers:
 
   packages/strategy:
     dependencies:
-      '@fomocloud/shared':
+      '@memecloud/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -276,10 +307,10 @@ importers:
 
   services/analytics-worker:
     dependencies:
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
     devDependencies:
@@ -295,13 +326,13 @@ importers:
 
   services/balance-worker:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
       '@solana/web3.js':
@@ -318,23 +349,54 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
-  services/executor:
+  services/discovery-worker:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/execution':
-        specifier: workspace:*
-        version: link:../../packages/execution
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
-      '@fomocloud/shared':
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/executor:
+    dependencies:
+      '@memecloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@memecloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@memecloud/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
+      '@memecloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@memecloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@memecloud/strategy':
+        specifier: workspace:*
+        version: link:../../packages/strategy
       '@solana/web3.js':
         specifier: ^1.98.4
         version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -357,20 +419,57 @@ importers:
 
   services/exits:
     dependencies:
-      '@fomocloud/db':
+      '@memecloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/execution':
+      '@memecloud/execution':
         specifier: workspace:*
         version: link:../../packages/execution
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
-      '@fomocloud/shared':
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@memecloud/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@memecloud/strategy':
+        specifier: workspace:*
+        version: link:../../packages/strategy
+      '@solana/web3.js':
+        specifier: ^1.98.4
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       bullmq:
         specifier: ^5.58.5
+        version: 5.81.3
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.1
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/forward-worker:
+    dependencies:
+      '@memecloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@memecloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      bullmq:
+        specifier: ^5.58.0
         version: 5.81.3
       ioredis:
         specifier: ^5.7.0
@@ -388,13 +487,13 @@ importers:
 
   services/listener:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
       '@solana/web3.js':
@@ -419,18 +518,21 @@ importers:
 
   services/market-worker:
     dependencies:
-      '@fomocloud/config':
+      '@memecloud/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/execution':
+      '@memecloud/execution':
         specifier: workspace:*
         version: link:../../packages/execution
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@solana/web3.js':
         specifier: ^1.98.4
         version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
@@ -450,13 +552,13 @@ importers:
 
   services/notification-worker:
     dependencies:
-      '@fomocloud/db':
+      '@memecloud/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@fomocloud/notifications':
+      '@memecloud/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
-      '@fomocloud/ops':
+      '@memecloud/ops':
         specifier: workspace:*
         version: link:../../packages/ops
       bullmq:
@@ -465,6 +567,71 @@ importers:
       ioredis:
         specifier: ^5.7.0
         version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.4
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/paper-worker:
+    dependencies:
+      '@memecloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@memecloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@memecloud/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
+      '@memecloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      '@memecloud/strategy':
+        specifier: workspace:*
+        version: link:../../packages/strategy
+      '@solana/web3.js':
+        specifier: ^1.98.4
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      bullmq:
+        specifier: ^5.58.5
+        version: 5.81.3
+      ioredis:
+        specifier: ^5.7.0
+        version: 5.11.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.1
+        version: 22.20.1
+      tsx:
+        specifier: ^4.20.5
+        version: 4.23.11
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  services/scoring-worker:
+    dependencies:
+      '@memecloud/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@memecloud/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@memecloud/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
+      '@memecloud/ops':
+        specifier: workspace:*
+        version: link:../../packages/ops
+      '@memecloud/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
     devDependencies:
       '@types/node':
         specifier: ^22.18.0
@@ -640,6 +807,18 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@hpke/chacha20poly1305@1.8.0':
+    resolution: {integrity: sha512-FcBfAQ+Y99vMNJP2yrZ9wpL8V0GOwp1+zMyzvc6alasrBygfFjFm1yeUtyADJCu/27C3Lm5mJzx6u7pwg+cX5w==}
+    engines: {node: '>=16.0.0'}
+
+  '@hpke/common@1.10.1':
+    resolution: {integrity: sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw==}
+    engines: {node: '>=16.0.0'}
+
+  '@hpke/core@1.9.0':
+    resolution: {integrity: sha512-pFxWl1nNJeQCSUFs7+GAblHvXBCjn9EPN65vdKlYQil2aURaRxfGMO6vBKGqm1YHTKwiAxJQNEI70PbSowMP9Q==}
+    engines: {node: '>=16.0.0'}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -900,6 +1079,29 @@ packages:
   '@prisma/get-platform@6.19.3':
     resolution: {integrity: sha512-xFj1VcJ1N3MKooOQAGO0W5tsd0W2QzIvW7DD7c/8H14Zmp4jseeWAITm+w2LLoLrlhoHdPPh0NMZ8mfL6puoHA==}
 
+  '@privy-io/node@0.27.0':
+    resolution: {integrity: sha512-Wv8maMIjTLIGA0OCQU2mzuzuYLpahQNUnD5NzqKmfVHaS2yxpdDZSpVqJFu11pQvl7M7zsKV86VokU2zkTCjSA==}
+    peerDependencies:
+      '@solana/kit': ^5.1.0
+      '@x402/evm': ^2.3.0
+      '@x402/fetch': ^2.3.0
+      '@x402/svm': ^2.3.0
+      viem: ^2.44.2
+    peerDependenciesMeta:
+      '@solana/kit':
+        optional: true
+      '@x402/evm':
+        optional: true
+      '@x402/fetch':
+        optional: true
+      '@x402/svm':
+        optional: true
+      viem:
+        optional: true
+
+  '@scure/base@1.2.6':
+    resolution: {integrity: sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==}
+
   '@solana/buffer-layout@4.0.1':
     resolution: {integrity: sha512-E1ImOIAD1tBZFRdjeM4/pzTiTApC0AOBGwyAMS4fwIodCWArzJ3DWdoh8cKxeFM2fElkxBh2Aqts1BPC373rHA==}
     engines: {node: '>=5.10'}
@@ -925,6 +1127,9 @@ packages:
 
   '@solana/web3.js@1.98.4':
     resolution: {integrity: sha512-vv9lfnvjUsRiq//+j5pBdXig0IQdtzA0BRZ3bXEP4KaIyF1CcaydWqgyzQgfZMNIsWNWmG+AUHwPy4AHOD6gpw==}
+
+  '@stablelib/base64@1.0.1':
+    resolution: {integrity: sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ==}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -1119,6 +1324,10 @@ packages:
   caniuse-lite@1.0.30001809:
     resolution: {integrity: sha512-xxWVywk6a6Arlk+hymeycyn/VgqEfLDxupvhH/xiY5SJ/18kmi9o6MiO320DCUzypORHLtvh0I4i04tUhCNHNQ==}
 
+  canonicalize@2.1.0:
+    resolution: {integrity: sha512-F705O3xrsUtgt98j7leetNhTWPe+5S72rlL5O4jA1pKqBVQ/dT1O1D6PFxmSXvc0SUOinWS57DKx0I3CHrXJHQ==}
+    hasBin: true
+
   chalk@5.6.2:
     resolution: {integrity: sha512-7NzBL0rN6fMUW+f7A6Io4h40qQlG+xGmtMxfbnH/K7TAtt8JQWVQK+6g0UXKMeVJoyV5EkkNsErQ8pVD3bLHbA==}
     engines: {node: ^12.17.0 || ^14.13 || >=16.0.0}
@@ -1300,6 +1509,9 @@ packages:
     resolution: {integrity: sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A==}
     engines: {node: '>=8.0.0'}
 
+  fast-sha256@1.3.0:
+    resolution: {integrity: sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==}
+
   fast-stable-stringify@1.0.0:
     resolution: {integrity: sha512-wpYMUmFu5f00Sm0cj2pfivpmawLZ0NKdviQ4w9zJeR8JVtOpOxHmLaJuj0vxvGqMJQWyP/COUkF75/57OKyRag==}
 
@@ -1405,6 +1617,9 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
+  jose@6.2.8:
+    resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
+
   json-stringify-safe@5.0.1:
     resolution: {integrity: sha512-ZClg6AaYvamvYEE82d3Iyd3vSSIjQ+odgjaTzRuO3s7toCdFKczob2i0zCh7JE8kWn17yvAWhUVxvqGwUalsRA==}
 
@@ -1438,6 +1653,10 @@ packages:
 
   lodash.once@4.1.1:
     resolution: {integrity: sha512-Sb487aTOCr9drQVL8pIxOzVhafOjZN9UU54hiN8PU3uAiSV7lx1yYNpbNmex2PK6dSJoNTSJUUswT651yww3Mg==}
+
+  lru-cache@11.5.2:
+    resolution: {integrity: sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==}
+    engines: {node: 20 || >=22}
 
   lucide-react@0.542.0:
     resolution: {integrity: sha512-w3hD8/SQB7+lzU2r4VdFyzzOzKnUjTZIF/MQJGSSvni7Llewni4vuViRppfRAa2guOsY5k4jZyxw/i9DQHv+dw==}
@@ -1699,6 +1918,9 @@ packages:
   standard-as-callback@2.1.0:
     resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
 
+  standardwebhooks@1.0.0:
+    resolution: {integrity: sha512-BbHGOQK9olHPMvQNHWul6MYlrRTAOKn03rOe4A8O3CLWhNf4YHBqq2HJKKC+sfqpxiBY52pNeesD6jIiLDz8jg==}
+
   statuses@2.0.2:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
     engines: {node: '>= 0.8'}
@@ -1725,6 +1947,9 @@ packages:
   superstruct@2.0.2:
     resolution: {integrity: sha512-uV+TFRZdXsqXTL2pRvujROjdZQ4RAlBUS5BTh9IGm+jTqQntYThciG/qu57Gs69yjnVUSqdxF9YLmSnpupBW9A==}
     engines: {node: '>=14.0.0'}
+
+  svix@1.99.1:
+    resolution: {integrity: sha512-JfpvbAg5iT5NagDAfOq3e6Ci6NbOMbMm6C3DnfDBB60m2JDK+Z2hXPE9XNAmutb53DCdPoih1V70IbklZnX09A==}
 
   text-encoding-utf-8@1.0.2:
     resolution: {integrity: sha512-8bw4MY9WjdsD2aMtO0OzOCY3pXGYNx2d2FfHRVUKkiCPDWjKuOlhLVASS+pD7VkLTVjW268LYJHwsnPFlBpbAg==}
@@ -1916,6 +2141,16 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
+  '@hpke/chacha20poly1305@1.8.0':
+    dependencies:
+      '@hpke/common': 1.10.1
+
+  '@hpke/common@1.10.1': {}
+
+  '@hpke/core@1.9.0':
+    dependencies:
+      '@hpke/common': 1.10.1
+
   '@img/colour@1.1.0':
     optional: true
 
@@ -2100,6 +2335,20 @@ snapshots:
     dependencies:
       '@prisma/debug': 6.19.3
 
+  '@privy-io/node@0.27.0':
+    dependencies:
+      '@hpke/chacha20poly1305': 1.8.0
+      '@hpke/core': 1.9.0
+      '@noble/curves': 1.9.7
+      '@noble/hashes': 1.8.0
+      '@scure/base': 1.2.6
+      canonicalize: 2.1.0
+      jose: 6.2.8
+      lru-cache: 11.5.2
+      svix: 1.99.1
+
+  '@scure/base@1.2.6': {}
+
   '@solana/buffer-layout@4.0.1':
     dependencies:
       buffer: 6.0.3
@@ -2143,6 +2392,8 @@ snapshots:
       - encoding
       - typescript
       - utf-8-validate
+
+  '@stablelib/base64@1.0.1': {}
 
   '@standard-schema/spec@1.1.0': {}
 
@@ -2364,6 +2615,8 @@ snapshots:
 
   caniuse-lite@1.0.30001809: {}
 
+  canonicalize@2.1.0: {}
+
   chalk@5.6.2: {}
 
   chokidar@4.0.3:
@@ -2549,6 +2802,8 @@ snapshots:
     dependencies:
       pure-rand: 6.1.0
 
+  fast-sha256@1.3.0: {}
+
   fast-stable-stringify@1.0.0: {}
 
   finalhandler@2.1.1:
@@ -2679,6 +2934,8 @@ snapshots:
 
   jiti@2.7.0: {}
 
+  jose@6.2.8: {}
+
   json-stringify-safe@5.0.1: {}
 
   jsonwebtoken@9.0.3:
@@ -2718,6 +2975,8 @@ snapshots:
   lodash.isstring@4.0.1: {}
 
   lodash.once@4.1.1: {}
+
+  lru-cache@11.5.2: {}
 
   lucide-react@0.542.0(react@19.2.8):
     dependencies:
@@ -3018,6 +3277,11 @@ snapshots:
 
   standard-as-callback@2.1.0: {}
 
+  standardwebhooks@1.0.0:
+    dependencies:
+      '@stablelib/base64': 1.0.1
+      fast-sha256: 1.3.0
+
   statuses@2.0.2: {}
 
   stream-chain@2.2.5: {}
@@ -3032,6 +3296,10 @@ snapshots:
       react: 19.2.8
 
   superstruct@2.0.2: {}
+
+  svix@1.99.1:
+    dependencies:
+      standardwebhooks: 1.0.0
 
   text-encoding-utf-8@1.0.2: {}
 

@@ -19,14 +19,14 @@ Keep API and all workers on localhost/internal ports behind Caddy. Only Caddy HT
 
 Recommended persistent services:
 
-- `fomocloud-api`
-- `fomocloud-listener`
-- `fomocloud-executor`
-- `fomocloud-exits`
-- `fomocloud-market-worker`
-- `fomocloud-balance-worker`
-- `fomocloud-analytics-worker`
-- `fomocloud-notification-worker`
+- `memecloud-api`
+- `memecloud-listener`
+- `memecloud-executor`
+- `memecloud-exits`
+- `memecloud-market-worker`
+- `memecloud-balance-worker`
+- `memecloud-analytics-worker`
+- `memecloud-notification-worker`
 
 MongoDB and Redis remain loopback/private. Do not expose 27017 or 6379 publicly.
 

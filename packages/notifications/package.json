@@ -1,9 +1,9 @@
 {
-  "name": "@fomocloud/notifications",
+  "name": "@memecloud/notifications",
   "version": "0.5.0",
   "type": "module",
   "exports": {
-    ".": { "types": "./src/index.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+    ".": "./src/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -12,8 +12,8 @@
     "test": "echo notification tests"
   },
   "dependencies": {
-    "@fomocloud/db": "workspace:*",
-    "@fomocloud/config": "workspace:*",
+    "@memecloud/db": "workspace:*",
+    "@memecloud/config": "workspace:*",
     "web-push": "^3.6.7",
     "nodemailer": "^6.10.1"
   },

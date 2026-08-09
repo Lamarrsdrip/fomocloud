@@ -1,5 +1,5 @@
 {
-  "name": "@fomocloud/notification-worker",
+  "name": "@memecloud/notification-worker",
   "version": "0.5.0",
   "type": "module",
   "scripts": {
@@ -11,9 +11,9 @@
     "test": "echo notification-worker tests"
   },
   "dependencies": {
-    "@fomocloud/db": "workspace:*",
-    "@fomocloud/notifications": "workspace:*",
-    "@fomocloud/ops": "workspace:*",
+    "@memecloud/db": "workspace:*",
+    "@memecloud/notifications": "workspace:*",
+    "@memecloud/ops": "workspace:*",
     "bullmq": "^5.58.5",
     "ioredis": "^5.7.0"
   },

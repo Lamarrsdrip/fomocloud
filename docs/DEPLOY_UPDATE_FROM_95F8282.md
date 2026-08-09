@@ -27,20 +27,20 @@ pnpm db:push
 Then build the Hostinger static frontend with the VPS HTTPS API:
 
 ```bash
-NEXT_PUBLIC_API_URL=https://fomocloud-api.173-212-249-202.sslip.io \
-  pnpm --filter @fomocloud/web build
+NEXT_PUBLIC_API_URL=https://memecloud-api.173-212-249-202.sslip.io \
+  pnpm --filter @memecloud/web build
 ```
 
 Upload the *contents* of `apps/web/out/` to Hostinger `public_html`.
 
-For VPS deployment, update code first, install dependencies, generate Prisma client, apply the reviewed schema with `db push`, build/typecheck, then restart only the FomoCloud services. Do not overwrite shared Caddy configuration or disturb unrelated MT5/ClipForge services.
+For VPS deployment, update code first, install dependencies, generate Prisma client, apply the reviewed schema with `db push`, build/typecheck, then restart only the MemeCloud services. Do not overwrite shared Caddy configuration or disturb unrelated MT5/ClipForge services.
 
 New persistent workers included by this version:
 
-- `fomocloud-market-worker`
-- `fomocloud-balance-worker`
-- `fomocloud-analytics-worker`
-- `fomocloud-notification-worker`
+- `memecloud-market-worker`
+- `memecloud-balance-worker`
+- `memecloud-analytics-worker`
+- `memecloud-notification-worker`
 
 Use `deployment/windows/install-services.example.ps1` as the service template rather than running workers in open terminal windows.
 

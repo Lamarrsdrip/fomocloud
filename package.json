@@ -1,5 +1,5 @@
 {
-  "name": "fomocloud",
+  "name": "memecloud",
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "scripts": {
@@ -8,10 +8,10 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "db:generate": "pnpm --filter @fomocloud/db prisma generate",
-    "db:push": "pnpm --filter @fomocloud/db prisma db push",
-    "db:seed": "pnpm --filter @fomocloud/db seed",
-    "db:migrate:v05": "pnpm --filter @fomocloud/db migrate:v05"
+    "db:generate": "pnpm --filter @memecloud/db prisma generate",
+    "db:push": "pnpm --filter @memecloud/db prisma db push",
+    "db:seed": "pnpm --filter @memecloud/db seed",
+    "db:migrate:v05": "pnpm --filter @memecloud/db migrate:v05"
   },
   "devDependencies": {
     "turbo": "^2.5.6",

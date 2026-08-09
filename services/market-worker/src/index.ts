@@ -1,75 +1,110 @@
-import { Connection, PublicKey } from "@solana/web3.js";
+import {Connection,PublicKey} from "@solana/web3.js";
 import { Redis } from "ioredis";
-import { db } from "@fomocloud/db";
-import { JupiterExecution } from "@fomocloud/execution";
-import { startHeartbeat } from "@fomocloud/ops";
-import { getConfig } from "@fomocloud/config";
+import {db} from "@memecloud/db";
+import {JupiterExecution} from "@memecloud/execution";
+import {BirdeyeClient} from "@memecloud/providers";
+import {startHeartbeat} from "@memecloud/ops";
+import {getConfig} from "@memecloud/config";
 
 const marketCfg=await getConfig<any>("marketData");
 const execCfg=await getConfig<any>("execution");
 const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
-if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
+if(!rpc)throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
 const conn=new Connection(rpc,"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+const birdeyeKey=marketCfg?.birdeyeApiKey||process.env.BIRDEYE_API_KEY;
+const birdeye=birdeyeKey?new BirdeyeClient(birdeyeKey,marketCfg?.birdeyeBaseUrl):null;
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
-const decimalsCache=new Map<string,{decimals:number,supply:number,at:number}>();
-let tracked=0,updates=0,quoteErrors=0;
+const decimalsCache=new Map<string,{decimals:number;supply:number;at:number}>();
+let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false;
 
 async function tokenMeta(mint:string){
-  const c=decimalsCache.get(mint);
-  if(c&&Date.now()-c.at<60*60_000) return c;
+  const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<60*60_000)return c;
   const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
-  const v={
-    decimals:supply.value.decimals,
-    supply:Number(supply.value.uiAmountString??0),
-    at:Date.now()
-  };
-  decimalsCache.set(mint,v); return v;
+  const v={decimals:supply.value.decimals,supply:Number(supply.value.uiAmountString??0),at:Date.now()};
+  decimalsCache.set(mint,v);return v;
 }
 
 async function trackedMints(){
-  const since=new Date(Date.now()-24*60*60_000);
-  const [signals,positions]=await Promise.all([
-    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true},take:1000}),
-    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:1000})
+  const since=new Date(Date.now()-48*60*60_000);
+  const [signals,positions,discoveries]=await Promise.all([
+    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true},take:1500}),
+    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:1500}),
+    db.discoveryToken.findMany({where:{chain:"SOLANA",lastSeenAt:{gte:since}},select:{mint:true},take:300})
   ]);
-  return [...new Set([...signals.map(s=>s.outputMint),...positions.map(p=>p.mint)])].slice(0,250);
+  return [...new Set([...signals.map(s=>s.outputMint),...positions.map(p=>p.mint),...discoveries.map(x=>x.mint)])].slice(0,350);
+}
+
+async function jupiterMark(mint:string){
+  const meta=await tokenMeta(mint);
+  const amountRaw=String(Math.round(quoteUsd*1_000_000));
+  const q=await jupiter.quote({inputMint:usdc,outputMint:mint,amountRaw,slippageBps:1500});
+  const tokens=Number(q.outAmount)/(10**meta.decimals);
+  if(!Number.isFinite(tokens)||tokens<=0)throw new Error("INVALID_JUPITER_MARK");
+  const priceUsd=quoteUsd/tokens,marketCapUsd=meta.supply>0?meta.supply*priceUsd:undefined;
+  return {priceUsd,marketCapUsd,priceImpactPct:Math.abs(Number(q.priceImpactPct??0))};
+}
+
+async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;priceImpactPct:number}){
+  if(!birdeye)return null;
+  const [m,t,h,l]=await Promise.all([
+    birdeye.marketData(mint),
+    birdeye.tradeData(mint),
+    birdeye.holderProfile(mint),
+    birdeye.exitLiquidity(mint)
+  ]);
+  const x=birdeye.normalizeMarket(m,t,h,l);
+  // Jupiter's actual executable mark is preferred for price. Birdeye provides the deeper context.
+  const observedAt=new Date();
+  const snap=await db.memeMarketSnapshot.create({data:{
+    chain:"SOLANA",mint,priceUsd:j.priceUsd,marketCapUsd:x.marketCapUsd??j.marketCapUsd,liquidityUsd:Number(x.liquidityUsd??0),exitLiquidityUsd:x.exitLiquidityUsd,
+    ageMinutes:Number(x.ageMinutes??1440),volume1mUsd:Number(x.volume1mUsd??0),volume5mUsd:Number(x.volume5mUsd??0),volume15mUsd:Number(x.volume15mUsd??0),
+    volumeAcceleration1m:Number(x.volumeAcceleration1m??1),volumeAcceleration5m:Number(x.volumeAcceleration5m??1),
+    buys1m:Number(x.buys1m??0),sells1m:Number(x.sells1m??0),buys5m:Number(x.buys5m??0),sells5m:Number(x.sells5m??0),
+    buyVolume5mUsd:Number(x.buyVolume5mUsd??0),sellVolume5mUsd:Number(x.sellVolume5mUsd??0),
+    uniqueBuyers1m:Number(x.uniqueBuyers1m??0),uniqueBuyers5m:Number(x.uniqueBuyers5m??0),uniqueSellers5m:Number(x.uniqueSellers5m??0),
+    holderCount:x.holderCount,holderGrowth5mPct:x.holderGrowth5mPct,top10EffectivePct:x.top10EffectivePct,bundledSupplyPct:x.bundledSupplyPct,
+    creatorHoldingPct:x.creatorHoldingPct,liquidityChange5mPct:x.liquidityChange5mPct,
+    source:"JUPITER+BIRDEYE",provenance:{jupiter:{priceImpactPct:j.priceImpactPct},birdeye:{marketData:true,tradeData:true,holderProfile:true,exitLiquidity:true}},observedAt
+  }});
+  await redis.set(`meme:SOLANA:${mint}`,JSON.stringify(snap),"EX",45);
+  richUpdates++;
+  return snap;
 }
 
 async function updateMint(mint:string){
   try{
-    const meta=await tokenMeta(mint);
-    const amountRaw=String(Math.round(quoteUsd*1_000_000));
-    const q=await jupiter.quote({inputMint:usdc,outputMint:mint,amountRaw,slippageBps:1500});
-    const tokens=Number(q.outAmount)/(10**meta.decimals);
-    if(!Number.isFinite(tokens)||tokens<=0) return;
-    const priceUsd=quoteUsd/tokens;
-    const marketCapUsd=meta.supply>0?meta.supply*priceUsd:undefined;
+    const j=await jupiterMark(mint);
     const observedAt=new Date();
-    await db.marketPrice.create({data:{chain:"SOLANA",mint,priceUsd,marketCapUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt}});
-    await redis.set(`price:SOLANA:${mint}`,JSON.stringify({priceUsd,marketCapUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt:observedAt.toISOString()}),"EX",90);
+    let liquidityUsd:number|undefined;
+    try{
+      const rich=await richSnapshot(mint,j);liquidityUsd=rich?.liquidityUsd;
+    }catch(e){enrichmentErrors++;console.error("[market-worker] enrichment",mint,e)}
+    await db.marketPrice.create({data:{chain:"SOLANA",mint,priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:birdeye?"JUPITER_EXECUTABLE+BIRDEYE":"JUPITER_EXECUTABLE_QUOTE",observedAt}});
+    await redis.set(`price:SOLANA:${mint}`,JSON.stringify({priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt:observedAt.toISOString()}),"EX",90);
     updates++;
-    // Keep raw history bounded per mint.
-    const old=await db.marketPrice.findMany({where:{chain:"SOLANA",mint},orderBy:{observedAt:"desc"},skip:720,take:200,select:{id:true}});
-    if(old.length) await db.marketPrice.deleteMany({where:{id:{in:old.map(x=>x.id)}}});
-  }catch(e){quoteErrors++;console.error("[market-worker]",mint,e);}
+    const old=await db.marketPrice.findMany({where:{chain:"SOLANA",mint},orderBy:{observedAt:"desc"},skip:1440,take:500,select:{id:true}});
+    if(old.length)await db.marketPrice.deleteMany({where:{id:{in:old.map(x=>x.id)}}});
+    const oldRich=await db.memeMarketSnapshot.findMany({where:{chain:"SOLANA",mint},orderBy:{observedAt:"desc"},skip:720,take:300,select:{id:true}});
+    if(oldRich.length)await db.memeMarketSnapshot.deleteMany({where:{id:{in:oldRich.map(x=>x.id)}}});
+  }catch(e){quoteErrors++;console.error("[market-worker]",mint,e)}
 }
 
-let running=false;
 async function tick(){
-  if(running) return;
-  running=true;
+  if(running)return;running=true;
   try{
-    const mints=await trackedMints(); tracked=mints.length;
-    for(let i=0;i<mints.length;i+=10){
-      await Promise.all(mints.slice(i,i+10).map(updateMint));
-      await new Promise(r=>setTimeout(r,250));
+    const mints=await trackedMints();tracked=mints.length;
+    // Avoid bursting provider limits. Admin can run more workers later if the paid plan supports it.
+    const batch=Math.max(1,Math.min(8,Number(process.env.MARKET_BATCH_SIZE??4)));
+    for(let i=0;i<mints.length;i+=batch){
+      await Promise.all(mints.slice(i,i+batch).map(updateMint));
+      await new Promise(r=>setTimeout(r,Number(process.env.MARKET_BATCH_DELAY_MS??500)));
     }
-  }finally{running=false;}
+  }finally{running=false}
 }
-startHeartbeat("market-worker",()=>({tracked,updates,quoteErrors,source:"Jupiter executable quotes"}));
-setInterval(()=>void tick(),5000);
+startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running}));
+setInterval(()=>void tick(),Math.max(3000,Number(process.env.MARKET_INTERVAL_MS??7000)));
 void tick();
 console.log("[market-worker] running");

@@ -1,9 +1,9 @@
 {
-  "name": "@fomocloud/market",
+  "name": "@memecloud/market",
   "version": "0.3.0",
   "type": "module",
   "exports": {
-    ".": { "types": "./src/index.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+    ".": "./src/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

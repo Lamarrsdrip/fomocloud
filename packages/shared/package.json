@@ -1,15 +1,15 @@
 {
-  "name": "@fomocloud/shared",
+  "name": "@memecloud/shared",
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": { "types": "./src/index.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+    ".": "./src/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo shared lint",
-    "test": "pnpm build && node --test dist/*.test.js"
+    "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
     "zod": "^4.0.17"

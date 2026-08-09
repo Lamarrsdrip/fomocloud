@@ -39,7 +39,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
 
   return <div className="auth-page">
     <section className="auth-art">
-      <a className="brand" href="/"><span className="brandmark">∞</span><b>FomoCloud</b></a>
+      <a className="brand" href="/"><span className="brandmark">∞</span><b>MemeCloud</b></a>
       <div className="auth-art-copy"><span>YOUR PRIVATE TRADING WORKSPACE</span><h1>One account.<br/>Your traders.<br/>Your history.</h1><p>Each user gets independent balances, copy settings, positions, activity and P&amp;L. One source-wallet move can create completely different decisions for different users.</p></div>
       <div className="auth-points">
         <div className="auth-point"><CheckCircle2 size={15}/> Follow, watch or Auto Copy each trader independently</div>
@@ -49,7 +49,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
     </section>
     <section className="auth-box-wrap">
       <div className="auth-box">
-        <a className="brand" href="/"><span className="brandmark small">∞</span><b>FomoCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark small">∞</span><b>MemeCloud</b></a>
         <h2>{mode==="signup"?"Create your account":"Welcome back"}</h2>
         <p>{mode==="signup"?"Start with an account, then choose your traders and connect a trading wallet separately.":"Sign in to your private dashboard."}</p>
         <form className="auth-form" onSubmit={submit}>

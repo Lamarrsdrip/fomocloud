@@ -1,7 +1,7 @@
 import {Connection,PublicKey} from "@solana/web3.js";
-import {db} from "@fomocloud/db";
-import {startHeartbeat} from "@fomocloud/ops";
-import {getConfig} from "@fomocloud/config";
+import {db} from "@memecloud/db";
+import {startHeartbeat} from "@memecloud/ops";
+import {getConfig} from "@memecloud/config";
 
 const marketCfg=await getConfig<any>("marketData");
 const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;

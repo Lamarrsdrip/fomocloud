@@ -2,11 +2,13 @@ import { Worker, Queue } from "bullmq";
 import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { db } from "@fomocloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct } from "@fomocloud/shared";
-import { JupiterExecution } from "@fomocloud/execution";
-import { startHeartbeat } from "@fomocloud/ops";
-import { getConfig } from "@fomocloud/config";
+import { db } from "@memecloud/db";
+import { calculateExitAccounting, decideCopy, walletChasePct } from "@memecloud/shared";
+import { JupiterExecution } from "@memecloud/execution";
+import { evaluateEntry } from "@memecloud/strategy";
+import { PrivySolanaSigner } from "@memecloud/providers";
+import { startHeartbeat } from "@memecloud/ops";
+import { getConfig } from "@memecloud/config";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection});
@@ -17,6 +19,12 @@ const solanaRpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_R
 const solanaConnection=solanaRpc?new Connection(solanaRpc,"confirmed"):null;
 const decimalsCache=new Map<string,{decimals:number,at:number}>();
 const usdcSol=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const signerCfg=await getConfig<any>("signer");
+const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
+const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+const privy=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+
 let processed=0,allowedCount=0,skippedCount=0,errors=0;
 
 
@@ -57,6 +65,35 @@ async function userEvent(userId:string,type:string,title:string,body:string,data
   await notificationQueue.add("notify",{userId,type,title,body,data,deliveryKey:event.id},{jobId:event.id,removeOnComplete:1000,attempts:3,backoff:{type:"exponential",delay:1000}});
 }
 
+
+async function recoverPrivyHash(referenceId:string){
+  if(!privy)return null;
+  try{
+    const tx:any=await privy.transactionByReferenceId(referenceId);
+    const status=String(tx?.status??"").toLowerCase();
+    if(["failed","reverted","provider_error"].includes(status))return null;
+    return String(tx?.transaction_hash??tx?.hash??"")||null;
+  }catch(e){console.warn("[executor] Privy reference recovery unavailable",referenceId,e);return null}
+}
+
+async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitted:any,signal:any,follow:any,decimals:number){
+  if(!solanaRpc)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
+  await jupiter.waitConfirmed(solanaRpc,txHash,60_000);
+  const fill=await reconcileConfirmedSwap(txHash,permitted.address,usdcSol,signal.outputMint);
+  const actualUsd=Number(BigInt(fill.actualInputRaw))/1_000_000;
+  const actualTokens=Number(BigInt(fill.actualOutputRaw))/(10**decimals);
+  if(!Number.isFinite(actualTokens)||actualTokens<=0)throw Object.assign(new Error("INVALID_CONFIRMED_TOKEN_AMOUNT"),{code:"INVALID_CONFIRMED_TOKEN_AMOUNT"});
+  const actualEntry=actualUsd/actualTokens;
+  const already=await db.position.findFirst({where:{userId:follow.userId,mode:"LIVE",entryTxHash:txHash}});
+  await db.$transaction([
+    db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
+    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsd:actualUsd,avgEntryPriceUsd:actualEntry,currentPriceUsd:actualEntry,peakPriceUsd:actualEntry,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date()}})]),
+    db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}})
+  ]);
+  if(!already)await userEvent(follow.userId,"TRADE_COPIED",`${signal.trader.displayName}: live trade confirmed`,`Bought $${actualUsd.toFixed(2)} of the token. The transaction is confirmed on Solana.`,{signalId:signal.id,orderId:order.id,txHash,mode:"LIVE"});
+  return {actualUsd,actualEntry};
+}
+
 function decisionKey(signalId:string,userId:string){
   return crypto.createHash("sha256").update(`${signalId}:${userId}:copy-v2`).digest("hex");
 }
@@ -71,6 +108,23 @@ function remainingCostBasisUsd(p:{costUsd:number;remainingTokenRaw:string;entryT
 }
 
 
+
+function tokenBalanceRaw(tx:any,owner:string,mint:string,side:"pre"|"post"){
+  const rows=side==="pre"?(tx?.meta?.preTokenBalances??[]):(tx?.meta?.postTokenBalances??[]);
+  return rows.filter((x:any)=>x.owner===owner&&x.mint===mint).reduce((a:bigint,x:any)=>a+BigInt(x.uiTokenAmount?.amount??"0"),0n);
+}
+async function reconcileConfirmedSwap(signature:string,owner:string,inputMint:string,outputMint:string){
+  if(!solanaConnection)throw new Error("SOLANA_RPC_REQUIRED");
+  const tx=await solanaConnection.getParsedTransaction(signature,{commitment:"confirmed",maxSupportedTransactionVersion:0});
+  if(!tx||tx.meta?.err)throw Object.assign(new Error("CONFIRMED_TRANSACTION_UNAVAILABLE"),{code:"RECONCILIATION_FAILED"});
+  const inPre=tokenBalanceRaw(tx,owner,inputMint,"pre"),inPost=tokenBalanceRaw(tx,owner,inputMint,"post");
+  const outPre=tokenBalanceRaw(tx,owner,outputMint,"pre"),outPost=tokenBalanceRaw(tx,owner,outputMint,"post");
+  const actualInput=inPre>inPost?inPre-inPost:0n;
+  const actualOutput=outPost>outPre?outPost-outPre:0n;
+  if(actualInput<=0n||actualOutput<=0n)throw Object.assign(new Error("CONFIRMED_SWAP_DELTAS_INVALID"),{code:"RECONCILIATION_FAILED"});
+  return {actualInputRaw:actualInput.toString(),actualOutputRaw:actualOutput.toString(),feeLamports:tx.meta?.fee??0};
+}
+
 async function handleSourceSell(signal:any){
   const mode=(process.env.EXECUTION_MODE??"simulation").toUpperCase() as "SIMULATION"|"LIVE";
   const positions=await db.position.findMany({
@@ -84,7 +138,7 @@ async function handleSourceSell(signal:any){
     if(existing) continue;
     const soldPct=Number(signal.sourceSoldPct??NaN);
     if(!Number.isFinite(soldPct)||soldPct<=0){
-      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SOURCE_EXIT_CONTEXT",reason:"SOURCE_SELL_PERCENT_UNKNOWN",explanation:"The trader sold, but FomoCloud could not verify what percentage of the source position was sold. It will not invent an exit size."}});
+      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SOURCE_EXIT_CONTEXT",reason:"SOURCE_SELL_PERCENT_UNKNOWN",explanation:"The trader sold, but MemeCloud could not verify what percentage of the source position was sold. It will not invent an exit size."}});
       await userEvent(userId,"SOURCE_SELL",`${signal.trader.displayName} sold`,"The source sale was detected, but the sold percentage could not be verified, so no automatic mirror exit was invented.",{signalId:signal.id});
       continue;
     }
@@ -105,13 +159,14 @@ async function handleSourceSell(signal:any){
       if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0) continue;
       const remaining=BigInt(p.remainingTokenRaw), original=BigInt(p.entryTokenRaw);
       if(remaining<=0n||original<=0n) continue;
-      let rawToExit=soldPct>=99.9?remaining:(remaining*BigInt(Math.round(fraction*1_000_000)))/1_000_000n;
+      let rawToExit=(remaining*BigInt(Math.round(fraction*1_000_000)))/1_000_000n;
       if(rawToExit<=0n&&fraction>0) rawToExit=1n;
       if(rawToExit>remaining) rawToExit=remaining;
       const accounting=calculateExitAccounting({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:p.remainingTokenRaw,tokenRaw:rawToExit.toString(),costUsd:p.costUsd,avgEntryPriceUsd:p.avgEntryPriceUsd,executionPriceUsd:market.priceUsd});
-      const pnl=accounting.realizedPnlUsd, proceeds=accounting.netProceedsUsd;
+      const proceeds=accounting.netProceedsUsd;
+      const pnl=accounting.realizedPnlUsd;
       const nextRaw=BigInt(accounting.remainingTokenRaw);
-      const isClosed=nextRaw<=0n;
+      const isClosed=nextRaw<=0n||soldPct>=99.9;
       await db.$transaction([
         db.positionExit.create({data:{positionId:p.id,reason:"SOURCE_SELL_MIRROR_SIMULATION",tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
         db.position.update({where:{id:p.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}})
@@ -241,12 +296,12 @@ const worker=new Worker("signals",async job=>{
       });
       await userEvent(follow.userId,reason==="WAIT_PULLBACK"?"WAIT_PULLBACK":"TRADE_SKIPPED",
         reason==="WAIT_PULLBACK"?`${signal.trader.displayName}: waiting for a better entry`:`${signal.trader.displayName}: trade skipped`,
-        reason==="WAIT_PULLBACK"?"The price moved quickly after the trader bought it. FomoCloud is watching for a cleaner pullback.":base.reason,
+        reason==="WAIT_PULLBACK"?"The price moved quickly after the trader bought it. MemeCloud is watching for a cleaner pullback.":base.reason,
         {signalId:signal.id,traderId:signal.traderId,walletChasePct:chase});
       skippedCount++; continue;
     }
 
-    const amountUsd=Number(base.amountUsd);
+    let amountUsd=Number(base.amountUsd);
 
     // Every Solana copy decision -- simulation or future LIVE -- uses the user's actual
     // requested size to obtain the authoritative executable quote. A cached market mark may help
@@ -257,35 +312,109 @@ const worker=new Worker("signals",async job=>{
       skippedCount++; continue;
     }
     if(!sourceExecutionPriceUsd){
-      await saveDecision({allowed:false,action:"WAIT_DATA",reason:"SOURCE_EXECUTION_PRICE_MISSING",explanation:"The source wallet transaction was detected, but its genuine execution price is not available yet. FomoCloud will not invent a chase value."});
+      await saveDecision({allowed:false,action:"WAIT_DATA",reason:"SOURCE_EXECUTION_PRICE_MISSING",explanation:"The source wallet transaction was detected, but its genuine execution price is not available yet. MemeCloud will not invent a chase value."});
       skippedCount++; continue;
     }
 
-    const amountRaw=String(Math.round(amountUsd*1_000_000));
+    let amountRaw=String(Math.round(amountUsd*1_000_000));
     try{
-      const quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:follow.maxSlippageBps});
+      let quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:follow.maxSlippageBps});
       const decimals=await tokenDecimals(signal.outputMint);
-      const tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
+      let tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
       if(!Number.isFinite(tokenAmount)||tokenAmount<=0)throw Object.assign(new Error("INVALID_EXECUTABLE_QUOTE"),{code:"INVALID_EXECUTABLE_QUOTE"});
-      const executablePriceUsd=amountUsd/tokenAmount;
-      const actualChase=walletChasePct(sourceExecutionPriceUsd,executablePriceUsd);
-      const priceImpactPct=Math.abs(Number(quote.priceImpactPct??0));
+      let executablePriceUsd=amountUsd/tokenAmount;
+      let actualChase=walletChasePct(sourceExecutionPriceUsd,executablePriceUsd);
+      let priceImpactPct=Math.abs(Number(quote.priceImpactPct??0));
       const hardImpactLimit=Math.max(1,Math.min(50,Number(riskCfg?.maxExecutablePriceImpactPct??35)));
+      // A buy route alone is not enough. Before allowing entry, prove that the expected token
+      // amount can also be routed back to USDC. This catches many unusable/one-way markets before
+      // funds move. The live exits worker re-quotes again at the actual exit size/time.
+      let sellRouteAvailable=false;
+      let reverseImpactPct: number|undefined;
+      try{
+        const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:follow.maxSlippageBps});
+        sellRouteAvailable=Boolean(reverse.outAmount&&BigInt(reverse.outAmount)>0n);
+        reverseImpactPct=Math.abs(Number(reverse.priceImpactPct??0));
+      }catch{}
+      if(!sellRouteAvailable){
+        await saveDecision({allowed:false,action:"SKIP",reason:"NO_EXECUTABLE_SELL_ROUTE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The buy quote exists, but MemeCloud could not verify an executable route back to USDC for the expected position. No trade was created."});
+        skippedCount++;continue;
+      }
 
-      if(actualChase>maxChase){
-        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your real $${amountUsd.toFixed(2)} executable quote is ${actualChase.toFixed(1)}% above the followed wallet's buy. The token's 24h move is irrelevant; FomoCloud is waiting for a cleaner entry.`});
+      // Rich intelligence is mandatory for an automatic live entry. We never invent missing volume,
+      // liquidity, holder, creator or social values.
+      const rich=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:signal.outputMint},orderBy:{observedAt:"desc"}});
+      const richFresh=rich&&Date.now()-rich.observedAt.getTime()<=Number(riskCfg?.maxIntelligenceAgeMs??30_000);
+      if(!richFresh){
+        await saveDecision({allowed:false,action:"WAIT_DATA",reason:"RICH_INTELLIGENCE_UNAVAILABLE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The executable quote is real, but the liquidity/flow/holder intelligence snapshot is missing or stale. MemeCloud will not invent those inputs."});
+        skippedCount++;continue;
+      }
+      const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:signal.sourceWallet}}}).catch(()=>null);
+      const sourceQuality=Number(candidate?.sourceQualityScore??65);
+      const intelligence=evaluateEntry({
+        ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
+        priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
+        volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
+        volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
+        buys1m:rich.buys1m,sells1m:rich.sells1m,buys5m:rich.buys5m,sells5m:rich.sells5m,
+        buyVolume5mUsd:rich.buyVolume5mUsd,sellVolume5mUsd:rich.sellVolume5mUsd,
+        uniqueBuyers1m:rich.uniqueBuyers1m,uniqueBuyers5m:rich.uniqueBuyers5m,uniqueSellers5m:rich.uniqueSellers5m,
+        holderCount:rich.holderCount??undefined,holderGrowth5mPct:rich.holderGrowth5mPct??undefined,top10EffectivePct:rich.top10EffectivePct??undefined,
+        bundledSupplyPct:rich.bundledSupplyPct??undefined,creatorHoldingPct:rich.creatorHoldingPct??undefined,creatorNetSell5mPct:rich.creatorNetSell5mPct??undefined,
+        smartMoneyNetFlow5mUsd:rich.smartMoneyNetFlow5mUsd??undefined,mintAuthorityActive:rich.mintAuthorityActive??undefined,freezeAuthorityActive:rich.freezeAuthorityActive??undefined,
+        token2022DangerousExtension:rich.dangerousExtension??undefined,sellRouteAvailable,executablePriceImpactPct:Math.max(priceImpactPct,reverseImpactPct??0),
+        exitLiquidityForPositionUsd:rich.exitLiquidityUsd??undefined,liquidityChange5mPct:rich.liquidityChange5mPct??undefined,lpRiskScore:rich.lpRiskScore??undefined,
+        socialMentions5m:rich.socialMentions5m??undefined,socialUniqueAuthors5m:rich.socialUniqueAuthors5m??undefined,socialVelocity:rich.socialVelocity??undefined,
+        socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,influencerQualityScore:rich.influencerQualityScore??undefined,narrativeScore:rich.narrativeScore??undefined,
+        sourceTraderStillHolding:true,sourceTraderSoldPct:0
+      },sourceQuality);
+      const effectiveChase=Math.min(maxChase,intelligence.chaseCapPct);
+      if(intelligence.action==="SKIP"){
+        await saveDecision({allowed:false,action:"SKIP",reason:"MEME_INTELLIGENCE_REJECTED",sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:[...intelligence.reasons,...intelligence.warnings].join(" · ")||"The current market evidence is not strong enough."});
+        skippedCount++;continue;
+      }
+      if(intelligence.action==="WAIT_PULLBACK"){
+        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"INTELLIGENCE_WAIT_PULLBACK",sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:[...intelligence.reasons,...intelligence.warnings].join(" · ")});
+        skippedCount++;continue;
+      }
+
+      // BUY_SMALLER is an actual execution instruction, not a cosmetic label. Re-quote the
+      // reduced user size because a different size changes output, price impact and chase.
+      if(intelligence.action==="BUY_SMALLER"&&intelligence.sizeMultiplier>0&&intelligence.sizeMultiplier<1){
+        amountUsd=Math.max(1,Math.round(amountUsd*intelligence.sizeMultiplier*100)/100);
+        amountRaw=String(Math.round(amountUsd*1_000_000));
+        quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:follow.maxSlippageBps});
+        tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
+        if(!Number.isFinite(tokenAmount)||tokenAmount<=0)throw Object.assign(new Error("INVALID_REDUCED_EXECUTABLE_QUOTE"),{code:"INVALID_REDUCED_EXECUTABLE_QUOTE"});
+        executablePriceUsd=amountUsd/tokenAmount;
+        actualChase=walletChasePct(sourceExecutionPriceUsd,executablePriceUsd);
+        priceImpactPct=Math.abs(Number(quote.priceImpactPct??0));
+        try{
+          const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:follow.maxSlippageBps});
+          sellRouteAvailable=Boolean(reverse.outAmount&&BigInt(reverse.outAmount)>0n);
+          reverseImpactPct=Math.abs(Number(reverse.priceImpactPct??0));
+        }catch{sellRouteAvailable=false}
+        if(!sellRouteAvailable){
+          await saveDecision({allowed:false,action:"SKIP",reason:"NO_EXECUTABLE_SELL_ROUTE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:"The reduced entry size still has no verified executable route back to USDC."});
+          skippedCount++;continue;
+        }
+      }
+
+      if(actualChase>effectiveChase){
+        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your real $${amountUsd.toFixed(2)} executable quote is ${actualChase.toFixed(1)}% above the followed wallet's buy. The token's 24h move is irrelevant; MemeCloud is waiting for a cleaner entry.`});
         await userEvent(follow.userId,"WAIT_PULLBACK",`${signal.trader.displayName}: waiting for a better entry`,`Your actual-size executable quote moved ${actualChase.toFixed(1)}% from the source wallet's buy, beyond your ${maxChase.toFixed(1)}% chase window.`,{signalId:signal.id,walletChasePct:actualChase,amountUsd});
         skippedCount++; continue;
       }
       if(Number.isFinite(priceImpactPct)&&priceImpactPct>hardImpactLimit){
         await saveDecision({allowed:false,action:"SKIP",reason:"EXECUTION_PRICE_IMPACT_TOO_HIGH",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`The real executable quote has ${priceImpactPct.toFixed(2)}% price impact, above the platform hard limit of ${hardImpactLimit.toFixed(2)}%.`});
-        await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: execution quality too poor`,`The route's real price impact was ${priceImpactPct.toFixed(2)}%, so FomoCloud did not create a fill.`,{signalId:signal.id,priceImpactPct});
+        await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: execution quality too poor`,`The route's real price impact was ${priceImpactPct.toFixed(2)}%, so MemeCloud did not create a fill.`,{signalId:signal.id,priceImpactPct});
         skippedCount++; continue;
       }
 
       const decision=await saveDecision({
         allowed:true,action:"BUY",amountUsd,reason:null,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,
-        explanation:`Eligible copy from ${signal.trader.displayName}. Actual-size wallet chase ${actualChase.toFixed(1)}%; executable price impact ${priceImpactPct.toFixed(2)}%.`
+        confidence:intelligence.confidence,
+        explanation:`Eligible copy from ${signal.trader.displayName}. Intelligence ${intelligence.confidence}/100; actual-size wallet chase ${actualChase.toFixed(1)}%; executable price impact ${priceImpactPct.toFixed(2)}%. ${intelligence.reasons.join(" · ")}`
       });
 
       if(executionMode==="live"){
@@ -298,11 +427,54 @@ const worker=new Worker("signals",async job=>{
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"TRADING_PERMISSION_REQUIRED",explanation:"This account has no active delegated trading permission for this chain."}});
           skippedCount++; continue;
         }
-        // Deliberate fail-closed boundary. There is no seed/private-key fallback. A reviewed
-        // SignerProvider must submit the exact allowed swap and confirm it on-chain before a LIVE
-        // Order/Position may be created.
-        await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_SIGNER",reason:"SIGNER_PROVIDER_REQUIRED",explanation:"The executable route and wallet chase passed, but the reviewed server-side delegated signer adapter is not configured in this build."}});
-        skippedCount++; continue;
+        if(!privy){
+          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_SIGNER",reason:"SIGNER_PROVIDER_REQUIRED",explanation:"The trade passed intelligence, but Privy delegated signing is not configured. No funds were moved."}});
+          skippedCount++;continue;
+        }
+        const orderKey=decisionKey(signal.id,follow.userId);
+        let order=await db.order.findUnique({where:{idempotencyKey:orderKey}});
+        if(order){
+          if(order.status==="CONFIRMED")continue;
+          const attempt=await db.liveExecutionAttempt.findFirst({where:{orderId:order.id,purpose:"BUY"},orderBy:{createdAt:"desc"}});
+          if(!attempt)throw Object.assign(new Error("LIVE_BUY_ATTEMPT_MISSING"),{code:"LIVE_BUY_ATTEMPT_MISSING"});
+          const ref=attempt.idempotencyKey.slice(0,64);
+          const hash=attempt.txHash||order.txHash||await recoverPrivyHash(ref);
+          if(hash){
+            await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:order.submittedAt??new Date()}});
+            await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"SUBMITTED",txHash:hash}});
+            await finalizeLiveBuy(order,attempt.idempotencyKey,hash,permitted,signal,follow,decimals);
+            allowedCount++;continue;
+          }
+          // A SIGNING request without a recoverable provider transaction is ambiguous. Never
+          // re-submit automatically; that could duplicate a real buy after a network/process crash.
+          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_RECONCILIATION",reason:"AMBIGUOUS_PRIOR_BUY_ATTEMPT",explanation:"A previous live buy attempt has no locally stored hash and cannot yet be reconciled through the provider reference ID. MemeCloud will not submit a duplicate."}});
+          skippedCount++;continue;
+        }
+        const built=await jupiter.buildSwap(quote,permitted.address);
+        order=await db.order.create({data:{idempotencyKey:orderKey,decisionId:decision.id,userId:follow.userId,chain:"SOLANA",mode:"LIVE",side:"BUY",inputMint:usdcSol,outputMint:signal.outputMint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,intelligence:{confidence:intelligence.confidence,reasons:intelligence.reasons,warnings:intelligence.warnings}} as any}});
+        const attemptKey=crypto.createHash("sha256").update(`BUY:${order.id}`).digest("hex");
+        await db.liveExecutionAttempt.create({data:{idempotencyKey:attemptKey,userId:follow.userId,orderId:order.id,purpose:"BUY",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
+        try{
+          const sent=await privy.signAndSend(permitted.permissionRef!,built,attemptKey.slice(0,64));
+          await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:sent.hash,submittedAt:new Date()}});
+          await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:sent.hash}});
+          await finalizeLiveBuy(order,attemptKey,sent.hash,permitted,signal,follow,decimals);
+          allowedCount++;continue;
+        }catch(e:any){
+          // Recover a transaction that Privy accepted even if the HTTP response/process died before
+          // the hash reached MongoDB. reference_id is the durable reconciliation bridge.
+          const recovered=await recoverPrivyHash(attemptKey.slice(0,64));
+          if(recovered){
+            await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:new Date()}}).catch(()=>{});
+            await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:recovered}}).catch(()=>{});
+            await finalizeLiveBuy(order,attemptKey,recovered,permitted,signal,follow,decimals);
+            allowedCount++;continue;
+          }
+          await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT")}}).catch(()=>{});
+          await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT"),errorMessage:String(e?.message??e)}}).catch(()=>{});
+          await db.riskIncident.create({data:{severity:"CRITICAL",scope:"LIVE_EXECUTION",userId:follow.userId,chain:"SOLANA",mint:signal.outputMint,code:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT"),detail:{orderId:order.id,message:String(e?.message??e),referenceId:attemptKey.slice(0,64)}}}).catch(()=>{});
+          throw e;
+        }
       }
 
       const orderKey=decisionKey(signal.id,follow.userId);
@@ -333,7 +505,7 @@ const worker=new Worker("signals",async job=>{
       const orderKey=decisionKey(signal.id,follow.userId);
       const committed=await db.order.findUnique({where:{idempotencyKey:orderKey},select:{id:true}}).catch(()=>null);
       if(committed)continue;
-      await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:e?.code==="SOLANA_RPC_REQUIRED"?"MARKET_DATA_INCOMPLETE":"QUOTE_UNAVAILABLE",amountUsd,explanation:"A genuine executable quote and token precision could not be verified, so FomoCloud did not fabricate a fill."});
+      await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:e?.code==="SOLANA_RPC_REQUIRED"?"MARKET_DATA_INCOMPLETE":"QUOTE_UNAVAILABLE",amountUsd,explanation:"A genuine executable quote and token precision could not be verified, so MemeCloud did not fabricate a fill."});
       await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: no reliable quote`,
         "A genuine executable quote could not be fully verified, so no simulation or live fill was invented.",{signalId:signal.id});
       skippedCount++;

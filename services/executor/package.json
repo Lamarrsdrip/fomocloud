@@ -1,6 +1,6 @@
 {
-  "name": "@fomocloud/executor",
-  "version": "0.1.0",
+  "name": "@memecloud/executor",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -11,14 +11,16 @@
     "test": "echo executor tests"
   },
   "dependencies": {
-    "@fomocloud/db": "workspace:*",
-    "@fomocloud/shared": "workspace:*",
-    "@fomocloud/execution": "workspace:*",
+    "@memecloud/db": "workspace:*",
+    "@memecloud/shared": "workspace:*",
+    "@memecloud/execution": "workspace:*",
     "bullmq": "^5.58.1",
     "ioredis": "^5.7.0",
-    "@fomocloud/ops": "workspace:*",
-    "@fomocloud/config": "workspace:*",
-    "@solana/web3.js": "^1.98.4"
+    "@memecloud/ops": "workspace:*",
+    "@memecloud/config": "workspace:*",
+    "@solana/web3.js": "^1.98.4",
+    "@memecloud/strategy": "workspace:*",
+    "@memecloud/providers": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

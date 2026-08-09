@@ -1,6 +1,6 @@
 # v0.5 multi-user platform upgrade
 
-Baseline inspected on GitHub: `Lamarrsdrip/fomocloud` `main`, including split-deployment commit `95f828290167ff5343fbad81b45c11e4b71ffc9d`.
+Baseline inspected on GitHub: `Lamarrsdrip/memecloud` `main`, including split-deployment commit `95f828290167ff5343fbad81b45c11e4b71ffc9d`.
 
 ## Product conversion
 

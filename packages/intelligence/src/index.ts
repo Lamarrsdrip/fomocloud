@@ -1,4 +1,4 @@
-import { evaluateEntry, evaluateExit, MarketSnapshot, PositionState } from "@fomocloud/strategy";
+import { evaluateEntry, evaluateExit, MarketSnapshot, PositionState } from "@memecloud/strategy";
 
 export type IntelligenceEvidence = {
   sourceQuality:number;

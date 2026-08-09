@@ -1,6 +1,6 @@
-# FomoCloud v0.5 — Multi-user social copy-trading platform
+# MemeCloud v0.5 — Multi-user social copy-trading platform
 
-FomoCloud is now structured as a **real multi-user application**, not a shared trading dashboard.
+MemeCloud is now structured as a **real multi-user application**, not a shared trading dashboard.
 
 - `apps/web` — public landing page, signup/login, onboarding, private user app, integrated role-protected admin
 - `apps/api` — account/auth APIs, private user data, trader registry, settings, admin, push/email/broadcast APIs
@@ -134,8 +134,8 @@ See `docs/DEPLOY_SPLIT.md`.
 cp .env.example .env
 docker compose up -d
 pnpm install
-pnpm --filter @fomocloud/db prisma generate
-pnpm --filter @fomocloud/db prisma db push
+pnpm --filter @memecloud/db prisma generate
+pnpm --filter @memecloud/db prisma db push
 pnpm dev
 ```
 
@@ -144,7 +144,7 @@ The development Mongo Compose service initializes a single-node replica set, whi
 ## Hostinger frontend build
 
 ```bash
-NEXT_PUBLIC_API_URL=https://your-api.example pnpm --filter @fomocloud/web build
+NEXT_PUBLIC_API_URL=https://your-api.example pnpm --filter @memecloud/web build
 ```
 
 Upload the contents of `apps/web/out/` to Hostinger `public_html`.

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { db } from "@fomocloud/db";
+import { db } from "@memecloud/db";
 
 function keyBytes() {
   const source = process.env.ENVELOPE_ENCRYPTION_KEY ?? "";
@@ -12,7 +12,7 @@ function keyBytes() {
     if (b64.length === 32) return b64;
   } catch {}
   if (/^[a-f0-9]{64}$/i.test(source)) return Buffer.from(source, "hex");
-  return crypto.createHash("sha256").update(source || "development-only-fomocloud-key").digest();
+  return crypto.createHash("sha256").update(source || "development-only-memecloud-key").digest();
 }
 
 export function encryptJson(value: unknown): string {

@@ -1,12 +1,10 @@
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import crypto from "node:crypto";
-import { db } from "@fomocloud/db";
-import { startHeartbeat } from "@fomocloud/ops";
-import { getConfig } from "@fomocloud/config";
-import { classifySolanaSwap, SOLANA_USDC, SOLANA_USDT, WRAPPED_SOL } from "./decoder.js";
-import { planSignatureReplay } from "./replay.js";
+import { db } from "@memecloud/db";
+import { startHeartbeat } from "@memecloud/ops";
+import { getConfig } from "@memecloud/config";
 
 const marketCfg=await getConfig<any>("marketData");
 const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
@@ -14,17 +12,84 @@ if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is requir
 const conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const queue=new Queue("signals",{connection:redis});
+const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
+const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
-const checkpointSlots=new Map<string,bigint>();
-let detected=0, decoded=0, replayed=0, replayGaps=0, errors=0;
+let detected=0, decoded=0, errors=0;
 
 const DEFAULT_QUOTES=[
-  SOLANA_USDC,
-  SOLANA_USDT,
-  WRAPPED_SOL
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+  "So11111111111111111111111111111111111111112"  // WSOL
 ];
 const quoteMints=new Set((process.env.SOLANA_QUOTE_MINTS??DEFAULT_QUOTES.join(",")).split(",").map(x=>x.trim()).filter(Boolean));
 const usdcMint=process.env.USDC_MINT_SOLANA??DEFAULT_QUOTES[0];
+
+type Delta={mint:string;raw:bigint;decimals:number};
+function tokenDeltas(tx:ParsedTransactionWithMeta,wallet:string):Delta[]{
+  const pre=tx.meta?.preTokenBalances??[], post=tx.meta?.postTokenBalances??[];
+  const map=new Map<string,{raw:bigint;decimals:number}>();
+  const apply=(rows:typeof pre,sign:bigint)=>{
+    for(const r of rows){
+      if(r.owner!==wallet) continue;
+      const cur=map.get(r.mint)??{raw:0n,decimals:r.uiTokenAmount.decimals};
+      cur.raw+=sign*BigInt(r.uiTokenAmount.amount||"0"); cur.decimals=r.uiTokenAmount.decimals;
+      map.set(r.mint,cur);
+    }
+  };
+  apply(post,1n); apply(pre,-1n);
+  return [...map].map(([mint,v])=>({mint,...v})).filter(x=>x.raw!==0n);
+}
+
+
+function ownerMintBalanceRaw(tx:ParsedTransactionWithMeta,wallet:string,mint:string,side:"pre"|"post"){
+  const rows=side==="pre"?(tx.meta?.preTokenBalances??[]):(tx.meta?.postTokenBalances??[]);
+  return rows.filter(r=>r.owner===wallet&&r.mint===mint).reduce((a,r)=>a+BigInt(r.uiTokenAmount.amount||"0"),0n);
+}
+
+function classifySwap(tx:ParsedTransactionWithMeta,wallet:string){
+  const deltas=tokenDeltas(tx,wallet);
+  const positives=deltas.filter(x=>x.raw>0n).sort((a,b)=>a.raw>b.raw?-1:1);
+  const negatives=deltas.filter(x=>x.raw<0n).sort((a,b)=>a.raw<b.raw?-1:1);
+  if(!positives.length||!negatives.length) return null;
+
+  // Prefer a clear quote-asset <-> token leg. This prevents treating every token transfer as a buy.
+  const spentQuote=negatives.find(x=>quoteMints.has(x.mint));
+  const receivedQuote=positives.find(x=>quoteMints.has(x.mint));
+  let input:Delta|undefined,output:Delta|undefined,action:"BUY"|"SELL";
+  if(spentQuote){
+    input=spentQuote; output=positives.find(x=>!quoteMints.has(x.mint)); action="BUY";
+  }else if(receivedQuote){
+    input=negatives.find(x=>!quoteMints.has(x.mint)); output=receivedQuote; action="SELL";
+  }else{
+    // Token-to-token with no recognized quote is ambiguous; don't invent a copy signal.
+    return null;
+  }
+  if(!input||!output) return null;
+
+  const inputRaw=(input.raw<0n?-input.raw:input.raw).toString();
+  const outputRaw=(output.raw<0n?-output.raw:output.raw).toString();
+  let sourcePriceUsd:number|undefined;
+  if(action==="BUY"&&input.mint===usdcMint){
+    const dollars=Number(inputRaw)/(10**input.decimals);
+    const tokens=Number(outputRaw)/(10**output.decimals);
+    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
+  }else if(action==="SELL"&&output.mint===usdcMint){
+    const dollars=Number(outputRaw)/(10**output.decimals);
+    const tokens=Number(inputRaw)/(10**input.decimals);
+    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
+  }
+  let sourceTokenBalanceBeforeRaw:string|undefined, sourceTokenBalanceAfterRaw:string|undefined, sourceSoldPct:number|undefined;
+  if(action==="SELL"){
+    const before=ownerMintBalanceRaw(tx,wallet,input.mint,"pre"), after=ownerMintBalanceRaw(tx,wallet,input.mint,"post");
+    sourceTokenBalanceBeforeRaw=before.toString(); sourceTokenBalanceAfterRaw=after.toString();
+    if(before>0n){
+      const sold=before>after?before-after:0n;
+      sourceSoldPct=Math.max(0,Math.min(100,Number((sold*10000n)/before)/100));
+    }
+  }
+  return {action,inputMint:input.mint,outputMint:output.mint,inputRaw,outputRaw,sourcePriceUsd,sourceTokenBalanceBeforeRaw,sourceTokenBalanceAfterRaw,sourceSoldPct};
+}
 
 async function fetchParsedTransactionWithRetry(signature:string){
   const waits=[0,120,300,700];
@@ -36,21 +101,19 @@ async function fetchParsedTransactionWithRetry(signature:string){
   return null;
 }
 
-async function handleSignature(traderId:string,wallet:string,signature:string):Promise<boolean>{
+async function handleSignature(traderId:string,wallet:string,signature:string){
   detected++;
   const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
-  if(existing) return true;
+  if(existing) return;
   const tx=await fetchParsedTransactionWithRetry(signature);
-  if(!tx){errors++;return false;}
-  if(tx.meta?.err) return true;
+  if(!tx||tx.meta?.err){if(!tx)errors++;return;}
 
-  await db.sourceTransaction.upsert({
-    where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}},update:{},
-    create:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
+  await db.sourceTransaction.create({
+    data:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
   });
 
-  const swap=classifySolanaSwap(tx,wallet,quoteMints,usdcMint);
-  if(!swap) return true;
+  const swap=classifySwap(tx,wallet);
+  if(!swap) return;
   decoded++;
   const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
   const idempotencyKey=crypto.createHash("sha256").update(["SOLANA",signature,wallet,tokenMint,swap.action].join(":")).digest("hex");
@@ -64,44 +127,11 @@ async function handleSignature(traderId:string,wallet:string,signature:string):P
     }
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
-  return true;
-}
-
-async function checkpointWallet(walletId:string,signature:string,slot:number){
-  const nextSlot=BigInt(slot);
-  const current=checkpointSlots.get(walletId)??0n;
-  if(nextSlot<current) return;
-  checkpointSlots.set(walletId,nextSlot);
-  await db.traderWallet.update({where:{id:walletId},data:{
-    lastSeenSignature:signature,lastSeenSlot:nextSlot,lastSeenAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null
-  }});
-}
-
-async function syncWallet(tw:any,pubkey:PublicKey){
-  if(tw.lastSeenSlot!=null) checkpointSlots.set(tw.id,BigInt(tw.lastSeenSlot));
-  const plan=await planSignatureReplay(
-    (before,limit)=>conn.getSignaturesForAddress(pubkey,{before,limit},"confirmed"),
-    tw.lastSeenSignature??undefined,
-    Number(process.env.SOLANA_REPLAY_LIMIT??500)
-  );
-  if(plan.baseline){
-    await checkpointWallet(tw.id,plan.baseline.signature,plan.baseline.slot);
-    await db.traderWallet.update({where:{id:tw.id},data:{lastReplayAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null}});
-    return true;
+  const trader=await db.trader.findUnique({where:{id:traderId},select:{trackingStatus:true}});
+  if(swap.action==="BUY" && trader && ["PAPER_TRACKING","PROVEN"].includes(trader.trackingStatus)){
+    await forwardScheduleQueue.add("schedule",{signalId:signal.id},{jobId:`forward:${signal.id}`,removeOnComplete:1000});
+    await paperQueue.add("paper",{signalId:signal.id},{jobId:`paper:${signal.id}`,removeOnComplete:1000,attempts:4,backoff:{type:"exponential",delay:1000}});
   }
-  if(!plan.complete){
-    replayGaps++;
-    await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"REPLAY_GAP",monitoringError:"Stored signature was not found within the bounded replay window. Manual review is required before monitoring resumes.",lastReplayAt:new Date()}});
-    return false;
-  }
-  for(const item of plan.signatures){
-    const processed=await handleSignature(tw.traderId,tw.address,item.signature);
-    if(!processed) throw new Error(`Transaction ${item.signature} was unavailable after retries`);
-    await checkpointWallet(tw.id,item.signature,item.slot);
-    replayed++;
-  }
-  await db.traderWallet.update({where:{id:tw.id},data:{lastReplayAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null}});
-  return true;
 }
 
 async function refreshWatchlist(){
@@ -110,56 +140,31 @@ async function refreshWatchlist(){
   const wallets=await db.traderWallet.findMany({
     where:{
       verified:true,
-      trader:{enabled:true,OR:[{kind:"PLATFORM"},{kind:"CUSTOM",follows:{some:{}}}]}
+      OR:[
+        {trader:{trackingStatus:{in:["PAPER_TRACKING","PROVEN"]}}},
+        {trader:{enabled:true,OR:[{kind:"PLATFORM"},{kind:"CUSTOM",follows:{some:{}}}]}}
+      ]
     },
     include:{trader:true}
   });
-  const wanted=new Set(wallets.filter(w=>w.chain==="SOLANA").map(w=>w.address));
+  const wanted=new Set(wallets.map(w=>w.address));
   for(const [address,id] of subscriptions){
     if(!wanted.has(address)){await conn.removeOnLogsListener(id);subscriptions.delete(address);}
   }
   for(const tw of wallets){
-    if(tw.chain!=="SOLANA"){
-      if(tw.monitoringStatus!=="UNSUPPORTED_CHAIN") await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"UNSUPPORTED_CHAIN",monitoringError:"No source listener is implemented for this chain."}});
-      continue;
-    }
+    if(tw.chain!=="SOLANA"||subscriptions.has(tw.address)) continue;
     try{
       const pubkey=new PublicKey(tw.address);
-      const account=await conn.getAccountInfo(pubkey,"confirmed");
-      if(account?.executable){
-        const existingId=subscriptions.get(tw.address);
-        if(existingId!=null){await conn.removeOnLogsListener(existingId);subscriptions.delete(tw.address);}
-        await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"INVALID_SOURCE_PROGRAM",monitoringError:"This address is an executable Solana program, not a trader wallet."}});
-        continue;
-      }
-      const safeToWatch=await syncWallet(tw,pubkey);
-      if(!safeToWatch){
-        const existingId=subscriptions.get(tw.address);
-        if(existingId!=null){await conn.removeOnLogsListener(existingId);subscriptions.delete(tw.address);}
-        continue;
-      }
-      if(!subscriptions.has(tw.address)){
-        const id=conn.onLogs(pubkey,async (logs,context)=>{
-          try{
-            const processed=await handleSignature(tw.traderId,tw.address,logs.signature);
-            if(processed) await checkpointWallet(tw.id,logs.signature,context.slot);
-          }catch(e){
-            errors++;
-            await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"ERROR",monitoringError:e instanceof Error?e.message:String(e)}}).catch(()=>{});
-            console.error("[listener] tx error",logs.signature,e);
-          }
-        },"confirmed");
-        subscriptions.set(tw.address,id);
-        console.log("[listener] watching",tw.trader.handle,tw.address);
-      }
-    }catch(e){
-      errors++;
-      await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"ERROR",monitoringError:e instanceof Error?e.message:String(e)}}).catch(()=>{});
-      console.error("[listener] wallet sync error",tw.address,e);
-    }
+      const id=conn.onLogs(pubkey,async logs=>{
+        try{await handleSignature(tw.traderId,tw.address,logs.signature);}
+        catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
+      },"confirmed");
+      subscriptions.set(tw.address,id);
+      console.log("[listener] watching",tw.trader.handle,tw.address);
+    }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
   }
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,replayed,replayGaps,errors,rpc:new URL(rpc).host}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:new URL(rpc).host}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 console.log("[listener] running");

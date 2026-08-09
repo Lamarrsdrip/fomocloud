@@ -1,8 +1,8 @@
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
-import { db } from "@fomocloud/db";
-import { sendEmail, sendPush } from "@fomocloud/notifications";
-import { startHeartbeat, beat } from "@fomocloud/ops";
+import { db } from "@memecloud/db";
+import { sendEmail, sendPush } from "@memecloud/notifications";
+import { startHeartbeat, beat } from "@memecloud/ops";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 let active=0, processed=0;

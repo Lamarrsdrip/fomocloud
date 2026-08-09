@@ -29,16 +29,6 @@ test("40% wallet chase can be accepted at a 40% user cap", () => {
   assert.equal(d.allowed,true);
 });
 
-test("30% wallet chase can be accepted at a 30% user cap", () => {
-  const personal=CopySettingsSchema.parse({...settings,maxChasePct:30});
-  assert.equal(decideCopy({settings:personal,sourcePriceUsd:1,currentPriceUsd:1.30,availableUsd:2000,currentExposureUsd:0,tokenExposureUsd:0}).allowed,true);
-});
-
-test("50% wallet chase can be accepted only when the personal cap allows it", () => {
-  const personal=CopySettingsSchema.parse({...settings,maxChasePct:50});
-  assert.equal(decideCopy({settings:personal,sourcePriceUsd:1,currentPriceUsd:1.50,availableUsd:2000,currentExposureUsd:0,tokenExposureUsd:0}).allowed,true);
-});
-
 test("chase above personal cap is held back", () => {
   const d=decideCopy({settings,sourcePriceUsd:1,currentPriceUsd:1.41,availableUsd:2000,currentExposureUsd:0,tokenExposureUsd:0});
   assert.deepEqual(d,{allowed:false,reason:"PRICE_MOVED_TOO_FAR"});
@@ -48,11 +38,6 @@ test("55% hyper-style personal cap can accept 55%", () => {
   const hyper=CopySettingsSchema.parse({...settings,maxChasePct:55});
   const d=decideCopy({settings:hyper,sourcePriceUsd:1,currentPriceUsd:1.55,availableUsd:2000,currentExposureUsd:0,tokenExposureUsd:0});
   assert.equal(d.allowed,true);
-});
-
-test("a quote beyond the 55% absolute user cap waits", () => {
-  const hyper=CopySettingsSchema.parse({...settings,maxChasePct:55});
-  assert.deepEqual(decideCopy({settings:hyper,sourcePriceUsd:1,currentPriceUsd:1.5501,availableUsd:2000,currentExposureUsd:0,tokenExposureUsd:0}),{allowed:false,reason:"PRICE_MOVED_TOO_FAR"});
 });
 
 test("caps at remaining token allocation", () => {

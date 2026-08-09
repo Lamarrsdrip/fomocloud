@@ -1,5 +1,5 @@
-import {db} from "@fomocloud/db";
-import {startHeartbeat} from "@fomocloud/ops";
+import {db} from "@memecloud/db";
+import {startHeartbeat} from "@memecloud/ops";
 let usersScanned=0,snapshots=0,errors=0;
 async function tick(){
  const users=await db.user.findMany({where:{status:"ACTIVE"},select:{id:true},take:20_000}); usersScanned+=users.length;

@@ -1,18 +1,18 @@
 {
-  "name": "@fomocloud/strategy",
+  "name": "@memecloud/strategy",
   "version": "0.2.0",
   "type": "module",
   "exports": {
-    ".": { "types": "./src/index.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+    ".": "./src/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo strategy lint",
-    "test": "pnpm build && node --test dist/strategy.test.js"
+    "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@fomocloud/shared": "workspace:*"
+    "@memecloud/shared": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

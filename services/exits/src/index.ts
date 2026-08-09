@@ -1,100 +1,250 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { db } from "@fomocloud/db";
-import { startHeartbeat } from "@fomocloud/ops";
-import { calculateExitAccounting, calculatePositionMark } from "@fomocloud/shared";
+import crypto from "node:crypto";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { db } from "@memecloud/db";
+import { calculateExitAccounting } from "@memecloud/shared";
+import { startHeartbeat } from "@memecloud/ops";
+import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
+import { JupiterExecution } from "@memecloud/execution";
+import { PrivySolanaSigner } from "@memecloud/providers";
+import { getConfig } from "@memecloud/config";
 
-const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
-const notificationQueue=new Queue("user-notifications",{connection});
-let scanned=0,marked=0,stale=0,errors=0,profitEvents=0,ticking=false;
+const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+const notificationQueue=new Queue("user-notifications",{connection:redis});
+const execCfg=await getConfig<any>("execution");
+const marketCfg=await getConfig<any>("marketData");
+const signerCfg=await getConfig<any>("signer");
+const riskCfg=await getConfig<any>("risk");
+const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
+const chain=rpc?new Connection(rpc,"confirmed"):null;
+const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
+const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+const signer=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const maxSnapshotAge=Math.max(5_000,Number(riskCfg?.maxIntelligenceAgeMs??30_000));
+let scanned=0,marked=0,stale=0,errors=0,profitEvents=0,liveSubmitted=0,liveConfirmed=0,ticking=false;
 
 async function userEvent(userId:string,type:string,title:string,body:string,data:Record<string,unknown>={}){
   const event=await db.userActivityEvent.create({data:{userId,type,title,body,data:data as any}});
-  // The activity row is the durable event identity. Reusing it as BullMQ jobId +
-  // Notification.deliveryKey prevents DB notification duplicates when a worker retries.
   await notificationQueue.add("notify",{userId,type,title,body,data,deliveryKey:event.id},{jobId:event.id,removeOnComplete:1000,attempts:3,backoff:{type:"exponential",delay:1000}});
 }
+function frac(raw:bigint,base:bigint){if(base<=0n)return 0;return Number((raw*1_000_000n)/base)/1_000_000}
+function pctRaw(raw:bigint,pct:number){
+  if(raw<=0n||pct<=0)return 0n;
+  let out=(raw*BigInt(Math.round(Math.min(100,pct)*10_000)))/1_000_000n;
+  if(out<=0n)out=1n;if(out>raw)out=raw;return out;
+}
+function exitKey(positionId:string,remaining:string,action:string,sellPct:number){return crypto.createHash("sha256").update(`EXIT:${positionId}:${remaining}:${action}:${sellPct.toFixed(4)}`).digest("hex")}
 
-/**
- * Simulation-only price floors. These do not invent momentum, volume or social evidence.
- * `takeProfitPct >= 75` uses the fresh-meme ladder (default 100/150/200, 30/20/15%
- * of the original position). Lower first targets use the established ladder (default
- * 50/100, 35/25%). The remainder is always a runner; there is deliberately no final TP.
- */
-async function applySimulationProfitFloors(p:any,current:number,entry:number){
-  let remaining=BigInt(p.remainingTokenRaw), original=BigInt(p.entryTokenRaw);
-  if(remaining<=0n||original<=0n)return remaining;
-  const gainPct=((current-entry)/entry)*100;
-  const freshStyle=Number(p.takeProfitPct)>=75;
-  const first=Math.max(1,Number(p.takeProfitPct));
-  const ladder=freshStyle
-    ? [{name:"TP1",target:first,partial:0.30},{name:"TP2",target:first+50,partial:0.20},{name:"TP3",target:first+100,partial:0.15}]
-    : [{name:"TP1",target:first,partial:0.35},{name:"TP2",target:Math.max(100,first*2),partial:0.25}];
-  const prior=await db.positionExit.findMany({where:{positionId:p.id,reason:{in:ladder.map(x=>`${x.name}_SIMULATION`)}} ,select:{reason:true}});
-  const done=new Set(prior.map(x=>x.reason));
+async function tokenDecimals(mint:string){
+  if(!chain)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
+  return (await chain.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals;
+}
 
-  for(const step of ladder){
-    const reason=`${step.name}_SIMULATION`;
-    if(gainPct+1e-9<step.target||done.has(reason)||remaining<=0n)continue;
-    let rawToExit=(original*BigInt(Math.round(step.partial*1_000_000)))/1_000_000n;
-    if(rawToExit<=0n)rawToExit=1n;
-    if(rawToExit>remaining)rawToExit=remaining;
-    const accounting=calculateExitAccounting({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:remaining.toString(),tokenRaw:rawToExit.toString(),costUsd:p.costUsd,avgEntryPriceUsd:entry,executionPriceUsd:current});
-    const pnl=accounting.realizedPnlUsd;
-    const next=BigInt(accounting.remainingTokenRaw);
+async function reconcile(signature:string,owner:string,inputMint:string,outputMint:string){
+  if(!chain)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
+  const tx=await chain.getParsedTransaction(signature,{commitment:"confirmed",maxSupportedTransactionVersion:0});
+  if(!tx||tx.meta?.err)throw Object.assign(new Error("CONFIRMED_TX_UNAVAILABLE"),{code:"CONFIRMED_TX_UNAVAILABLE"});
+  const keys=tx.transaction.message.accountKeys.map((k:any)=>typeof k.pubkey?.toBase58==="function"?k.pubkey.toBase58():String(k.pubkey??k));
+  const ownerIndex=new Set(keys.map((k,i)=>k===owner?i:-1).filter(i=>i>=0));
+  const delta=(mint:string)=>{
+    let d=0n;
+    for(const b of tx.meta?.preTokenBalances??[])if(b.mint===mint&&(b.owner===owner||ownerIndex.has(b.accountIndex)))d-=BigInt(b.uiTokenAmount.amount);
+    for(const b of tx.meta?.postTokenBalances??[])if(b.mint===mint&&(b.owner===owner||ownerIndex.has(b.accountIndex)))d+=BigInt(b.uiTokenAmount.amount);
+    return d;
+  };
+  const input=delta(inputMint),output=delta(outputMint);
+  if(input>=0n||output<=0n)throw Object.assign(new Error("CONFIRMED_SWAP_DELTAS_INVALID"),{code:"CONFIRMED_SWAP_DELTAS_INVALID",input:input.toString(),output:output.toString()});
+  return {actualInputRaw:(-input).toString(),actualOutputRaw:output.toString()};
+}
+
+async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
+  const rich=await db.memeMarketSnapshot.findFirst({where:{chain:p.chain,mint:p.mint},orderBy:{observedAt:"desc"}});
+  if(!rich||Date.now()-rich.observedAt.getTime()>maxSnapshotAge)return null;
+  const entry=Number(p.avgEntryPriceUsd);
+  const peak=Math.max(Number(p.peakPriceUsd??entry),current);
+  const profit=((current-entry)/entry)*100;
+  const peakProfit=((peak-entry)/entry)*100;
+  const recentSourceSell=await db.signal.findFirst({where:{traderId:p.sourceTraderId,chain:p.chain,action:"SELL",inputMint:p.mint,observedAt:{gt:new Date(Date.now()-15*60_000)}},orderBy:{observedAt:"desc"},select:{sourceSoldPct:true}});
+  const sourceSold=recentSourceSell?.sourceSoldPct==null?undefined:Number(recentSourceSell.sourceSoldPct);
+  return {
+    ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
+    priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:Math.max(0,peakProfit-profit),
+    volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
+    volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
+    buys1m:rich.buys1m,sells1m:rich.sells1m,buys5m:rich.buys5m,sells5m:rich.sells5m,
+    buyVolume5mUsd:rich.buyVolume5mUsd,sellVolume5mUsd:rich.sellVolume5mUsd,
+    uniqueBuyers1m:rich.uniqueBuyers1m,uniqueBuyers5m:rich.uniqueBuyers5m,uniqueSellers5m:rich.uniqueSellers5m,
+    holderCount:rich.holderCount??undefined,holderGrowth5mPct:rich.holderGrowth5mPct??undefined,
+    top10EffectivePct:rich.top10EffectivePct??undefined,bundledSupplyPct:rich.bundledSupplyPct??undefined,
+    creatorHoldingPct:rich.creatorHoldingPct??undefined,creatorNetSell5mPct:rich.creatorNetSell5mPct??undefined,
+    smartMoneyNetFlow5mUsd:rich.smartMoneyNetFlow5mUsd??undefined,mintAuthorityActive:rich.mintAuthorityActive??undefined,
+    freezeAuthorityActive:rich.freezeAuthorityActive??undefined,token2022DangerousExtension:rich.dangerousExtension??undefined,
+    sellRouteAvailable:true,executablePriceImpactPct:0,exitLiquidityForPositionUsd:rich.exitLiquidityUsd??undefined,
+    liquidityChange5mPct:rich.liquidityChange5mPct??undefined,lpRiskScore:rich.lpRiskScore??undefined,
+    socialMentions5m:rich.socialMentions5m??undefined,socialUniqueAuthors5m:rich.socialUniqueAuthors5m??undefined,
+    socialVelocity:rich.socialVelocity??undefined,socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,
+    influencerQualityScore:rich.influencerQualityScore??undefined,narrativeScore:rich.narrativeScore??undefined,
+    sourceTraderStillHolding:sourceSold==null?undefined:sourceSold<90,sourceTraderSoldPct:sourceSold
+  };
+}
+
+async function positionState(p:any){
+  const exits=await db.positionExit.findMany({where:{positionId:p.id},select:{reason:true,proceedsUsd:true}});
+  const has=(x:string)=>exits.some(e=>e.reason.includes(x));
+  const original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);
+  const recovered=Math.max(0,exits.reduce((a,e)=>a+Number(e.proceedsUsd??0),0))/Math.max(0.01,p.costUsd)*100;
+  const entry=Number(p.avgEntryPriceUsd),peak=Number(p.peakPriceUsd??entry);
+  return {tp1Taken:has("TP1"),tp2Taken:has("TP2"),tp3Taken:has("TP3"),principalRecoveredPct:recovered,peakProfitPct:((peak-entry)/entry)*100,remainingPct:frac(remaining,original)*100};
+}
+
+async function applySimulationExit(p:any,current:number,instruction:any){
+  if(instruction.action==="HOLD")return BigInt(p.remainingTokenRaw);
+  const remaining=BigInt(p.remainingTokenRaw),original=BigInt(p.entryTokenRaw);
+  if(remaining<=0n)return remaining;
+  const sellPct=instruction.action==="EXIT"?100:Number(instruction.sellPct??0);
+  const rawToExit=pctRaw(remaining,sellPct);
+  if(rawToExit<=0n)return remaining;
+  const entry=Number(p.avgEntryPriceUsd);
+  const accounting=calculateExitAccounting({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:p.remainingTokenRaw,tokenRaw:rawToExit.toString(),costUsd:p.costUsd,avgEntryPriceUsd:entry,executionPriceUsd:current});
+  const proceeds=accounting.netProceedsUsd,pnl=accounting.realizedPnlUsd,next=BigInt(accounting.remainingTokenRaw);
+  const reason=`${instruction.action}_${instruction.reason.replace(/[^A-Za-z0-9]+/g,"_").slice(0,70)}_SIMULATION`;
+  await db.$transaction([
+    db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
+    db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}})
+  ]);
+  profitEvents++;
+  await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Position closed in simulation":"Profit protected in simulation",instruction.reason,{positionId:p.id,sellPct,pnlUsd:pnl,mode:"SIMULATION"});
+  return next;
+}
+
+async function findEntryDecisionId(p:any){
+  if(p.entryTxHash){const o=await db.order.findFirst({where:{userId:p.userId,txHash:p.entryTxHash},select:{decisionId:true}});if(o)return o.decisionId}
+  const o=await db.order.findFirst({where:{userId:p.userId,mode:p.mode,side:"BUY",outputMint:p.mint,status:"CONFIRMED"},orderBy:{confirmedAt:"desc"},select:{decisionId:true}});
+  return o?.decisionId??null;
+}
+
+
+async function recoverPrivyExitHash(referenceId:string){
+  if(!signer)return null;
+  try{
+    const tx:any=await signer.transactionByReferenceId(referenceId);
+    const status=String(tx?.status??"").toLowerCase();
+    if(["failed","reverted","provider_error"].includes(status))return null;
+    return String(tx?.transaction_hash??tx?.hash??"")||null;
+  }catch(e){console.warn("[exits] Privy reference recovery unavailable",referenceId,e);return null}
+}
+
+async function executeLiveExit(p:any,instruction:any){
+  if(process.env.LIVE_EXECUTION_ENABLED!=="true")return;
+  if(p.chain!=="SOLANA"||!rpc||!signer)throw Object.assign(new Error("LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"),{code:"LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"});
+  const permitted=await db.wallet.findFirst({where:{userId:p.userId,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}});
+  if(!permitted)throw Object.assign(new Error("TRADING_PERMISSION_REQUIRED"),{code:"TRADING_PERMISSION_REQUIRED"});
+  const remaining=BigInt(p.remainingTokenRaw);if(remaining<=0n)return;
+  const sellPct=instruction.action==="EXIT"?100:Number(instruction.sellPct??0);
+  const rawToSell=pctRaw(remaining,sellPct);if(rawToSell<=0n)return;
+  const idem=exitKey(p.id,p.remainingTokenRaw,instruction.action,sellPct);
+  const existing=await db.liveExecutionAttempt.findUnique({where:{idempotencyKey:idem}});
+  if(existing?.status==="CONFIRMED")return;
+  const decisionId=await findEntryDecisionId(p);if(!decisionId)throw Object.assign(new Error("ENTRY_DECISION_NOT_FOUND"),{code:"ENTRY_DECISION_NOT_FOUND"});
+  const decimals=await tokenDecimals(p.mint);
+  let order=existing?.orderId?await db.order.findUnique({where:{id:existing.orderId}}):null;
+
+  // If a previous worker instance already submitted the exit, never send another transaction.
+  if(existing?.txHash&&existing.status==="SUBMITTED"){
+    await jupiter.waitConfirmed(rpc,existing.txHash,60_000);
+    const fill=await reconcile(existing.txHash,permitted.address,p.mint,usdc);
+    const tokenSold=BigInt(fill.actualInputRaw),usdcRaw=BigInt(fill.actualOutputRaw);
+    const proceeds=Number(usdcRaw)/1_000_000;
+    const costBasis=p.costUsd*frac(tokenSold,BigInt(p.entryTokenRaw));const pnl=proceeds-costBasis;
+    const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)return;
+    const nowRemaining=BigInt(fresh.remainingTokenRaw);const next=nowRemaining>tokenSold?nowRemaining-tokenSold:0n;
     await db.$transaction([
-      db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:accounting.tokenRaw,proceedsUsd:accounting.netProceedsUsd,pnlUsd:pnl}}),
-      db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}})
+      db.positionExit.create({data:{positionId:p.id,reason:`${instruction.action}_${instruction.reason}`.slice(0,180),tokenRaw:tokenSold.toString(),proceedsUsd:proceeds,pnlUsd:pnl,txHash:existing.txHash}}),
+      db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}}),
+      db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"CONFIRMED"}}),
+      ...(order?[db.order.update({where:{id:order.id},data:{status:"CONFIRMED",actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}})]:[])
     ]);
-    remaining=next; done.add(reason); profitEvents++;
-    await userEvent(
-      p.userId,
-      next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",
-      `${step.name} profit taken in simulation`,
-      `${step.name} triggered at +${step.target.toFixed(0)}%. ${Math.round(step.partial*100)}% of the original position was simulated as sold at the latest genuine market mark. The remaining runner stays open.`,
-      {positionId:p.id,targetPct:step.target,partialPct:step.partial*100,pnlUsd:pnl,mode:"SIMULATION"}
-    );
+    liveConfirmed++;await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Live position closed":"Live profit protected",instruction.reason,{positionId:p.id,txHash:existing.txHash,sellPct,pnlUsd:pnl,mode:"LIVE"});return;
   }
-  return remaining;
+  if(existing && ["SIGNING","FAILED"].includes(existing.status)){
+    const recovered=await recoverPrivyExitHash(idem.slice(0,64));
+    if(recovered){
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"SUBMITTED",txHash:recovered}});
+      if(order)await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:order.submittedAt??new Date()}});
+      return executeLiveExit(p,instruction);
+    }
+    // Never double-submit an ambiguous exit. An operator/next tick can reconcile by provider
+    // reference ID; automatic resubmission is intentionally forbidden.
+    throw Object.assign(new Error("AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"),{code:"AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"});
+  }
+
+  const quote=await jupiter.quote({inputMint:p.mint,outputMint:usdc,amountRaw:rawToSell.toString(),slippageBps:Number(execCfg?.exitSlippageBps??700)});
+  const impact=Math.abs(Number(quote.priceImpactPct??0));
+  const maxImpact=Math.max(1,Math.min(50,Number(riskCfg?.maxExecutablePriceImpactPct??35)));
+  if(!Number.isFinite(impact)||impact>maxImpact)throw Object.assign(new Error("EXIT_PRICE_IMPACT_TOO_HIGH"),{code:"EXIT_PRICE_IMPACT_TOO_HIGH",impact});
+  if(!quote.outAmount||BigInt(quote.outAmount)<=0n)throw Object.assign(new Error("NO_EXECUTABLE_SELL_ROUTE"),{code:"NO_EXECUTABLE_SELL_ROUTE"});
+  const built=await jupiter.buildSwap(quote,permitted.address);
+  order=await db.order.create({data:{idempotencyKey:idem,decisionId,userId:p.userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdc,requestedInputRaw:rawToSell.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{reason:instruction.reason,sellPct,quote:quote.raw} as any}});
+  await db.liveExecutionAttempt.create({data:{idempotencyKey:idem,userId:p.userId,orderId:order.id,positionId:p.id,purpose:"EXIT",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
+  try{
+    const sent=await signer.signAndSend(permitted.permissionRef!,built,idem.slice(0,64));liveSubmitted++;
+    await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:sent.hash,submittedAt:new Date()}});
+    await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"SUBMITTED",txHash:sent.hash}});
+    // Re-enter through the recovery-safe path; a crash after this line resumes from SUBMITTED.
+    await executeLiveExit(p,instruction);
+  }catch(e:any){
+    // If the provider accepted the exit before the process/HTTP response failed, recover by the
+    // unique reference ID instead of ever submitting a second sell.
+    const recovered=await recoverPrivyExitHash(idem.slice(0,64));
+    if(recovered){
+      await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:new Date()}}).catch(()=>{});
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"SUBMITTED",txHash:recovered}}).catch(()=>{});
+      return executeLiveExit(p,instruction);
+    }
+    const attempt=await db.liveExecutionAttempt.findUnique({where:{idempotencyKey:idem}}).catch(()=>null);
+    if(attempt?.status!=="SUBMITTED"){
+      await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_EXIT_ATTEMPT")}}).catch(()=>{});
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_EXIT_ATTEMPT"),errorMessage:String(e?.message??e)}}).catch(()=>{});
+    }
+    throw e;
+  }
 }
 
 async function tick(){
-  const positions=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});
-  scanned+=positions.length;
+  const positions=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});scanned+=positions.length;
   for(const p of positions){
     try{
-      if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0) continue;
-      const price=await db.marketPrice.findFirst({where:{chain:p.chain,mint:p.mint},orderBy:{observedAt:"desc"}});
-      if(!price || Date.now()-price.observedAt.getTime()>60_000){stale++;continue;}
-      const current=price.priceUsd, entry=p.avgEntryPriceUsd;
-      let remaining=BigInt(p.remainingTokenRaw);
-
-      if(p.mode==="SIMULATION") remaining=await applySimulationProfitFloors(p,current,entry);
-
-      const mark=calculatePositionMark({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:remaining.toString(),costUsd:p.costUsd,avgEntryPriceUsd:entry,currentPriceUsd:current});
-      await db.position.update({
-        where:{id:p.id},
-        data:{
-          currentPriceUsd:current,
-          peakPriceUsd:Math.max(p.peakPriceUsd??entry,current),
-          unrealizedPnlUsd:mark.unrealizedPnlUsd,
-          lastMarkedAt:new Date()
-        }
-      });
-      marked++;
-
-      // The runner intentionally has no arbitrary final TP. Adaptive trailing still requires a
-      // complete genuine market snapshot (flow/volume/liquidity/trend), so this worker never
-      // fabricates those inputs. Live exits remain fail-closed until the reviewed signer exists.
-    }catch(e){errors++;console.error("[exits]",p.id,e);}
+      if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0)continue;
+      const mark=await db.marketPrice.findFirst({where:{chain:p.chain,mint:p.mint},orderBy:{observedAt:"desc"}});
+      if(!mark||Date.now()-mark.observedAt.getTime()>60_000){stale++;continue}
+      const current=mark.priceUsd,entry=p.avgEntryPriceUsd,original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);
+      if(original<=0n||remaining<=0n)continue;
+      await db.position.update({where:{id:p.id},data:{currentPriceUsd:current,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current),lastMarkedAt:new Date()}});
+      const market=await richMarket({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)},current);
+      if(!market){
+        // No fabricated flow/holder/liquidity data. Mark-to-market continues, but automatic adaptive
+        // exits wait for a fresh rich snapshot. A configured emergency source-sell path remains separate.
+        const remainingCost=p.costUsd*frac(remaining,original);const value=remainingCost*(current/entry);
+        await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:value-remainingCost}});stale++;continue;
+      }
+      const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
+      const instruction=evaluateExit(market,state);
+      if(p.mode==="SIMULATION")await applySimulationExit(p,current,instruction);
+      else if(instruction.action!=="HOLD")await executeLiveExit(p,instruction);
+      const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)continue;
+      const rr=BigInt(fresh.remainingTokenRaw),remainingCost=fresh.costUsd*frac(rr,BigInt(fresh.entryTokenRaw)),value=remainingCost*(current/entry);
+      await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:rr<=0n?0:value-remainingCost,lastMarkedAt:new Date()}});marked++;
+    }catch(e:any){
+      errors++;console.error("[exits]",p.id,e);
+      await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code:String(e?.code??"EXIT_ERROR"),detail:{message:String(e?.message??e)}}}).catch(()=>{});
+    }
   }
 }
-async function guardedTick(){
-  if(ticking)return;
-  ticking=true;
-  try{await tick()}catch(e){errors++;console.error("[exits]",e)}finally{ticking=false}
-}
-startHeartbeat("exits",()=>({scanned,marked,stale,errors,profitEvents,ticking}));
-setInterval(()=>void guardedTick(),3000);
-void guardedTick();
-console.log("[exits] monitoring positions");
+async function guardedTick(){if(ticking)return;ticking=true;try{await tick()}catch(e){errors++;console.error("[exits]",e)}finally{ticking=false}}
+startHeartbeat("exits",()=>({scanned,marked,stale,errors,profitEvents,liveSubmitted,liveConfirmed,ticking,adaptiveExit:true,signerConfigured:Boolean(signer)}));
+setInterval(()=>void guardedTick(),3000);void guardedTick();
+console.log("[exits] adaptive position monitor active");

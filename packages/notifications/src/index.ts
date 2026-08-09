@@ -1,8 +1,8 @@
 import webpush from "web-push";
 import nodemailer from "nodemailer";
 import crypto from "node:crypto";
-import { db } from "@fomocloud/db";
-import { getConfig, setConfig } from "@fomocloud/config";
+import { db } from "@memecloud/db";
+import { getConfig, setConfig } from "@memecloud/config";
 
 export type PushConfig = {
   vapidPublicKey:string;

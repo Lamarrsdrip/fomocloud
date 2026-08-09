@@ -1,0 +1,882 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Chain {
+  SOLANA
+  BASE
+  ETHEREUM
+  BNB
+  ARBITRUM
+  AVALANCHE
+  SUI
+  HYPERLIQUID
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPPORT
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum VerificationStatus {
+  VERIFIED
+  COMMUNITY_VERIFIED
+  UNVERIFIED
+}
+
+enum TraderKind {
+  PLATFORM
+  CUSTOM
+}
+
+enum FollowMode {
+  FOLLOW_ONLY
+  WATCH_ONLY
+  AUTO_COPY
+  PAUSED
+}
+
+enum SignalAction {
+  BUY
+  SELL
+}
+
+enum SignalStatus {
+  DETECTED
+  VALIDATING
+  APPROVED
+  SKIPPED
+  EXECUTING
+  COMPLETED
+  FAILED
+}
+
+enum OrderStatus {
+  QUOTED
+  SIGNING
+  SUBMITTED
+  CONFIRMING
+  CONFIRMED
+  FAILED
+}
+
+enum PositionStatus {
+  OPEN
+  PARTIALLY_CLOSED
+  CLOSED
+  FAILED
+}
+
+enum ExecutionMode {
+  SIMULATION
+  LIVE
+}
+
+model User {
+  id                    String                  @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  email                 String?
+  passwordHash          String?
+  emailVerifiedAt       DateTime?
+  displayName           String?
+  username              String?
+  avatarUrl             String?
+  publicProfileEnabled  Boolean                 @default(false)
+  role                  UserRole                @default(USER)
+  status                AccountStatus           @default(ACTIVE)
+  lastLoginAt           DateTime?
+  onboardingCompletedAt DateTime?
+  wallets               Wallet[]
+  follows               UserFollow[]
+  positions             Position[]
+  orders                Order[]
+  copyDecisions         CopyDecision[]
+  notifications         Notification[]
+  pushSubscriptions     PushSubscription[]
+  notificationPrefs     NotificationPreference?
+  auditLogs             AuditLog[]
+  cashAllocations       TradingCashAllocation[]
+  tradingSettings       GlobalTradingSettings?
+  refreshSessions       RefreshSession[]
+  activityEvents        UserActivityEvent[]
+  pnlSnapshots          PnLSnapshot[]
+  linkedSocialAccounts  LinkedSocialAccount[]
+  emailIdentity         EmailIdentity?
+  userHandle            UserHandle?
+  customTraders         Trader[]                @relation("CustomTraderOwner")
+  followers             UserSocialFollow[]      @relation("FollowingUser")
+  following             UserSocialFollow[]      @relation("FollowerUser")
+
+  @@index([createdAt])
+  @@index([role, status])
+}
+
+model EmailIdentity {
+  id              String @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String @unique @db.ObjectId
+  emailNormalized String @unique
+  user            User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserHandle {
+  id                 String @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String @unique @db.ObjectId
+  usernameNormalized String @unique
+  user               User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshSession {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String    @db.ObjectId
+  tokenHash  String    @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model VerificationToken {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  purpose   String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, purpose, expiresAt])
+}
+
+model WalletChallenge {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain      Chain
+  address    String
+  message    String
+  purpose    String    @default("LOGIN")
+  userId     String?   @db.ObjectId
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([chain, address, expiresAt])
+}
+
+model Wallet {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String    @db.ObjectId
+  chain            Chain
+  address          String
+  label            String?
+  isPrimary        Boolean   @default(false)
+  tradingEnabled   Boolean   @default(false)
+  permissionRef    String?
+  permissionExpiry DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, address])
+  @@index([userId])
+}
+
+model GlobalTradingSettings {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId                 String   @unique @db.ObjectId
+  autoCopyEnabled        Boolean  @default(false)
+  defaultAmountUsd       Float    @default(100)
+  maxAmountPerTradeUsd   Float    @default(500)
+  maxTotalExposureUsd    Float    @default(2500)
+  maxConcurrentPositions Int      @default(10)
+  adaptiveChase          Boolean  @default(true)
+  freshMemeMode          Boolean  @default(true)
+  runnerMode             Boolean  @default(true)
+  allowedChains          Chain[]  @default([SOLANA])
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationPreference {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @unique @db.ObjectId
+  pushEnabled       Boolean @default(true)
+  emailEnabled      Boolean @default(true)
+  traderBought      Boolean @default(true)
+  tradeCopied       Boolean @default(true)
+  skippedTrade      Boolean @default(true)
+  profitTaken       Boolean @default(true)
+  positionClosed    Boolean @default(true)
+  securityAlerts    Boolean @default(true)
+  platformBroadcast Boolean @default(true)
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TradingCashAllocation {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String    @db.ObjectId
+  chain        Chain
+  asset        String    @default("USDC")
+  usdcRaw      String    @default("0")
+  availableUsd Float     @default(0)
+  inTradesUsd  Float     @default(0)
+  lastSyncedAt DateTime?
+  source       String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, chain])
+  @@index([userId])
+}
+
+model Trader {
+  id              String             @id @default(auto()) @map("_id") @db.ObjectId
+  handle          String             @unique
+  displayName     String
+  xHandle         String?
+  avatarUrl       String?
+  bio             String?
+  category        String?
+  verification    VerificationStatus @default(UNVERIFIED)
+  kind            TraderKind         @default(PLATFORM)
+  ownerUserId     String?            @db.ObjectId
+  enabled         Boolean            @default(true)
+  featured        Boolean            @default(false)
+  recommended     Boolean            @default(false)
+  defaultSelected Boolean            @default(false)
+  trackingStatus  String             @default("TRACKING")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  wallets         TraderWallet[]
+  follows         UserFollow[]
+  signals         Signal[]
+  positions       Position[]
+  owner           User?              @relation("CustomTraderOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([kind, enabled, featured])
+  @@index([ownerUserId])
+}
+
+model TraderWallet {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  traderId  String   @db.ObjectId
+  chain     Chain
+  address   String
+  verified  Boolean  @default(false)
+  source    String?
+  createdAt DateTime @default(now())
+  trader    Trader   @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, address])
+  @@index([traderId])
+}
+
+model UserFollow {
+  id                  String     @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String     @db.ObjectId
+  traderId            String     @db.ObjectId
+  mode                FollowMode @default(FOLLOW_ONLY)
+  fixedAmountUsd      Float      @default(100)
+  takeProfitPct       Float      @default(100)
+  stopLossPct         Float?
+  maxChasePct         Float      @default(40)
+  maxSlippageBps      Int        @default(500)
+  maxPositionUsd      Float      @default(500)
+  maxTotalExposureUsd Float      @default(2500)
+  minLiquidityUsd     Float      @default(5000)
+  exitMode            String     @default("ADAPTIVE")
+  copyAdditionalBuys  Boolean    @default(true)
+  copyReentries       Boolean    @default(true)
+  customLabel         String?
+  customXHandle       String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trader              Trader     @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, traderId])
+  @@index([traderId, mode])
+  @@index([userId, mode])
+}
+
+model SourceTransaction {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain         Chain
+  txHash        String
+  walletAddress String
+  slot          BigInt?
+  blockTime     DateTime?
+  rawJson       Json
+  createdAt     DateTime  @default(now())
+
+  @@unique([chain, txHash, walletAddress])
+}
+
+model Signal {
+  id                          String         @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey              String         @unique
+  chain                       Chain
+  traderId                    String         @db.ObjectId
+  sourceWallet                String
+  sourceTx                    String
+  action                      SignalAction
+  inputMint                   String
+  outputMint                  String
+  inputRaw                    String
+  outputRaw                   String
+  sourcePriceUsd              Float?
+  sourcePriceMethod           String?
+  sourceMarketCapUsd          Float?
+  sourceTokenBalanceBeforeRaw String?
+  sourceTokenBalanceAfterRaw  String?
+  sourceSoldPct               Float?
+  dailyMovePct                Float?
+  status                      SignalStatus   @default(DETECTED)
+  observedAt                  DateTime
+  createdAt                   DateTime       @default(now())
+  trader                      Trader         @relation(fields: [traderId], references: [id], onDelete: Cascade)
+  copyDecisions               CopyDecision[]
+
+  @@index([traderId, observedAt])
+  @@index([chain, observedAt])
+}
+
+model CopyDecision {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  signalId           String   @db.ObjectId
+  userId             String   @db.ObjectId
+  allowed            Boolean
+  action             String   @default("SKIP")
+  reason             String?
+  explanation        String?
+  amountUsd          Float?
+  sourcePriceUsd     Float?
+  executablePriceUsd Float?
+  walletChasePct     Float?
+  confidence         Int?
+  createdAt          DateTime @default(now())
+  signal             Signal   @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders             Order[]
+
+  @@unique([signalId, userId])
+  @@index([userId, createdAt])
+}
+
+model Order {
+  id                String        @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey    String        @unique
+  decisionId        String        @db.ObjectId
+  userId            String        @db.ObjectId
+  chain             Chain
+  mode              ExecutionMode
+  side              SignalAction
+  inputMint         String
+  outputMint        String
+  requestedInputRaw String
+  expectedOutputRaw String?
+  minOutputRaw      String?
+  actualInputRaw    String?
+  actualOutputRaw   String?
+  txHash            String?
+  venue             String?
+  feeUsd            Float?
+  status            OrderStatus   @default(QUOTED)
+  errorCode         String?
+  quoteJson         Json?
+  submittedAt       DateTime?
+  confirmedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  decision          CopyDecision  @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([chain, txHash])
+  @@index([userId, createdAt])
+}
+
+model Position {
+  id                String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String         @db.ObjectId
+  sourceTraderId    String         @db.ObjectId
+  chain             Chain
+  mode              ExecutionMode  @default(SIMULATION)
+  mint              String
+  quoteMint         String
+  entryTxHash       String?
+  entryInputRaw     String
+  entryTokenRaw     String
+  remainingTokenRaw String
+  costUsd           Float
+  avgEntryPriceUsd  Float?
+  currentPriceUsd   Float?
+  peakPriceUsd      Float?
+  realizedPnlUsd    Float          @default(0)
+  unrealizedPnlUsd  Float          @default(0)
+  profitTakenUsd    Float          @default(0)
+  takeProfitPct     Float
+  stopLossPct       Float?
+  status            PositionStatus @default(OPEN)
+  openedAt          DateTime       @default(now())
+  lastMarkedAt      DateTime?
+  closedAt          DateTime?
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceTrader      Trader         @relation(fields: [sourceTraderId], references: [id], onDelete: Restrict)
+  exits             PositionExit[]
+
+  @@index([userId, status])
+  @@index([mint, status])
+  @@index([sourceTraderId, openedAt])
+}
+
+model PositionExit {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  positionId  String   @db.ObjectId
+  reason      String
+  tokenRaw    String
+  proceedsUsd Float?
+  pnlUsd      Float?
+  txHash      String?
+  createdAt   DateTime @default(now())
+  position    Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+}
+
+model UserActivityEvent {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  type      String
+  title     String
+  body      String?
+  status    String?
+  data      Json?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PnLSnapshot {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @db.ObjectId
+  accountValueUsd  Float
+  realizedPnlUsd   Float
+  unrealizedPnlUsd Float
+  netPnlUsd        Float
+  createdAt        DateTime @default(now())
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Notification {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String    @db.ObjectId
+  deliveryKey String    @unique
+  type        String
+  title       String
+  body        String
+  data        Json?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PushSubscription {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model LinkedSocialAccount {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String    @db.ObjectId
+  provider        String
+  providerUserId  String
+  username        String?
+  displayName     String?
+  avatarUrl       String?
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+}
+
+model OAuthState {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  provider    String
+  stateHash   String   @unique
+  verifierEnc String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId, provider, expiresAt])
+}
+
+model UserSocialFollow {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  followerId  String   @db.ObjectId
+  followingId String   @db.ObjectId
+  createdAt   DateTime @default(now())
+  follower    User     @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?  @db.ObjectId
+  actor     String
+  action    String
+  target    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+model AppConfig {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  key            String   @unique
+  valueJson      Json?
+  encryptedValue String?
+  isSecret       Boolean  @default(false)
+  updatedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Broadcast {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  title        String
+  body         String
+  channel      String
+  audience     String
+  linkUrl      String?
+  status       String    @default("DRAFT")
+  createdBy    String?
+  targetCount  Int       @default(0)
+  sentCount    Int       @default(0)
+  failedCount  Int       @default(0)
+  skippedCount Int       @default(0)
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  sentAt       DateTime?
+  error        String?
+
+  @@index([createdAt])
+}
+
+model EmailLog {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String?  @db.ObjectId
+  toEmail    String
+  subject    String
+  status     String
+  providerId String?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model WorkerHeartbeat {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String   @unique
+  status     String
+  detail     Json?
+  lastBeatAt DateTime @default(now())
+  startedAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model MarketPrice {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain        Chain
+  mint         String
+  priceUsd     Float
+  liquidityUsd Float?
+  marketCapUsd Float?
+  source       String
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([chain, mint, observedAt])
+}
+
+enum CandidateStage {
+  DISCOVERED
+  ANALYZING
+  PAPER_TRACKING
+  PROVEN
+  REJECTED
+  PAUSED
+}
+
+model SmartWalletCandidate {
+  id                 String         @id @default(auto()) @map("_id") @db.ObjectId
+  chain              Chain
+  address            String
+  stage              CandidateStage @default(DISCOVERED)
+  source             String
+  sourceToken        String?
+  label              String?
+  traderId           String?        @db.ObjectId
+  sourceQualityScore Float          @default(50)
+  copyabilityScore   Float          @default(0)
+  riskScore          Float          @default(50)
+  consistencyScore   Float          @default(0)
+  entryQualityScore  Float          @default(0)
+  sampleTrades       Int            @default(0)
+  profitableTrades   Int            @default(0)
+  realizedPnlUsd     Float          @default(0)
+  totalPnlUsd        Float          @default(0)
+  volumeUsd          Float          @default(0)
+  averageWinnerPct   Float?
+  averageLoserPct    Float?
+  averageChasePct    Float?
+  rugExposurePct     Float?
+  insiderRiskPct     Float?
+  lastScoredAt       DateTime?
+  paperStartedAt     DateTime?
+  provenAt           DateTime?
+  rejectedReason     String?
+  metadata           Json?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@unique([chain, address])
+  @@index([stage, copyabilityScore])
+  @@index([source, createdAt])
+}
+
+model DiscoveryToken {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain          Chain
+  mint           String
+  symbol         String?
+  name           String?
+  source         String
+  marketCapUsd   Float?
+  liquidityUsd   Float?
+  volume24hUsd   Float?
+  priceChange1h  Float?
+  priceChange24h Float?
+  tokenAgeMin    Float?
+  discoveredAt   DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  metadata       Json?
+
+  @@unique([chain, mint])
+  @@index([chain, lastSeenAt])
+}
+
+model WalletScoreSnapshot {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain              Chain
+  address            String
+  candidateId        String?  @db.ObjectId
+  sourceQualityScore Float
+  copyabilityScore   Float
+  consistencyScore   Float
+  entryQualityScore  Float
+  riskScore          Float
+  sampleTrades       Int
+  profitableTrades   Int
+  totalPnlUsd        Float?
+  realizedPnlUsd     Float?
+  volumeUsd          Float?
+  metadata           Json?
+  createdAt          DateTime @default(now())
+
+  @@index([chain, address, createdAt])
+  @@index([candidateId, createdAt])
+}
+
+model SourceSignalObservation {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  signalId         String   @db.ObjectId
+  traderId         String   @db.ObjectId
+  sourceWallet     String
+  chain            Chain
+  mint             String
+  horizonSeconds   Int
+  sourcePriceUsd   Float?
+  observedPriceUsd Float?
+  returnPct        Float?
+  marketCapUsd     Float?
+  liquidityUsd     Float?
+  data             Json?
+  observedAt       DateTime
+  createdAt        DateTime @default(now())
+
+  @@unique([signalId, horizonSeconds])
+  @@index([sourceWallet, observedAt])
+  @@index([traderId, observedAt])
+}
+
+model MemeMarketSnapshot {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain                  Chain
+  mint                   String
+  priceUsd               Float
+  marketCapUsd           Float?
+  liquidityUsd           Float
+  exitLiquidityUsd       Float?
+  ageMinutes             Float
+  volume1mUsd            Float
+  volume5mUsd            Float
+  volume15mUsd           Float
+  volumeAcceleration1m   Float
+  volumeAcceleration5m   Float
+  buys1m                 Int
+  sells1m                Int
+  buys5m                 Int
+  sells5m                Int
+  buyVolume5mUsd         Float
+  sellVolume5mUsd        Float
+  uniqueBuyers1m         Int
+  uniqueBuyers5m         Int
+  uniqueSellers5m        Int
+  holderCount            Int?
+  holderGrowth5mPct      Float?
+  top10EffectivePct      Float?
+  bundledSupplyPct       Float?
+  creatorHoldingPct      Float?
+  creatorNetSell5mPct    Float?
+  smartMoneyNetFlow5mUsd Float?
+  liquidityChange5mPct   Float?
+  lpRiskScore            Float?
+  mintAuthorityActive    Boolean?
+  freezeAuthorityActive  Boolean?
+  dangerousExtension     Boolean?
+  socialMentions5m       Int?
+  socialUniqueAuthors5m  Int?
+  socialVelocity         Float?
+  socialSentiment        Float?
+  socialSpamRatio        Float?
+  influencerQualityScore Float?
+  narrativeScore         Float?
+  source                 String
+  provenance             Json?
+  observedAt             DateTime
+  createdAt              DateTime @default(now())
+
+  @@index([chain, mint, observedAt])
+}
+
+model LiveExecutionAttempt {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey String   @unique
+  userId         String   @db.ObjectId
+  orderId        String?  @db.ObjectId
+  positionId     String?  @db.ObjectId
+  purpose        String
+  chain          Chain
+  walletAddress  String
+  provider       String
+  providerRef    String?
+  txHash         String?
+  status         String
+  requestHash    String?
+  errorCode      String?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([positionId, createdAt])
+}
+
+model RiskIncident {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  severity   String
+  scope      String
+  userId     String?   @db.ObjectId
+  chain      Chain?
+  mint       String?
+  positionId String?   @db.ObjectId
+  code       String
+  detail     Json?
+  resolvedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([severity, createdAt])
+  @@index([userId, createdAt])
+}
+
+model PaperCopyTrade {
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  signalId          String    @unique @db.ObjectId
+  traderId          String    @db.ObjectId
+  sourceWallet      String
+  chain             Chain
+  mint              String
+  sourcePriceUsd    Float
+  entryPriceUsd     Float?
+  walletChasePct    Float?
+  amountUsd         Float     @default(100)
+  tokenRaw          String?
+  remainingTokenRaw String?
+  tokenDecimals     Int?
+  confidence        Int?
+  entryAction       String?
+  entryReason       String?
+  status            String    @default("PENDING")
+  tp1Taken          Boolean   @default(false)
+  tp2Taken          Boolean   @default(false)
+  tp3Taken          Boolean   @default(false)
+  profitTakenUsd    Float     @default(0)
+  peakPriceUsd      Float?
+  peakReturnPct     Float     @default(0)
+  maxDrawdownPct    Float     @default(0)
+  realizedPnlUsd    Float     @default(0)
+  unrealizedPnlUsd  Float     @default(0)
+  exitReason        String?
+  enteredAt         DateTime?
+  closedAt          DateTime?
+  lastMarkedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([sourceWallet, status, createdAt])
+  @@index([traderId, status, createdAt])
+  @@index([status, lastMarkedAt])
+}
