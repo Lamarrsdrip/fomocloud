@@ -247,6 +247,8 @@ model Trader {
   handle          String             @unique
   displayName     String
   xHandle         String?
+  fomoUsername    String?
+  fomoProfileUrl  String?
   avatarUrl       String?
   bio             String?
   category        String?
@@ -270,14 +272,27 @@ model Trader {
 }
 
 model TraderWallet {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  traderId  String   @db.ObjectId
-  chain     Chain
-  address   String
-  verified  Boolean  @default(false)
-  source    String?
-  createdAt DateTime @default(now())
-  trader    Trader   @relation(fields: [traderId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  traderId            String   @db.ObjectId
+  chain               Chain
+  address             String
+  verified            Boolean  @default(false)
+  source              String?
+  verificationMethod  String?
+  evidenceUrl         String?
+  evidenceNote        String?
+  submittedByUserId   String?  @db.ObjectId
+  verifiedByUserId    String?  @db.ObjectId
+  verifiedAt          DateTime?
+  monitoringStatus    String   @default("PENDING_VERIFICATION")
+  monitoringError     String?
+  lastSeenSignature   String?
+  lastSeenSlot        BigInt?
+  lastSeenAt          DateTime?
+  lastReplayAt        DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  trader              Trader   @relation(fields: [traderId], references: [id], onDelete: Cascade)
   @@unique([chain, address])
   @@index([traderId])
 }

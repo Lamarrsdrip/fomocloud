@@ -6,6 +6,7 @@ import { db } from "@fomocloud/db";
 import { startHeartbeat } from "@fomocloud/ops";
 import { getConfig } from "@fomocloud/config";
 import { classifySolanaSwap, SOLANA_USDC, SOLANA_USDT, WRAPPED_SOL } from "./decoder.js";
+import { planSignatureReplay } from "./replay.js";
 
 const marketCfg=await getConfig<any>("marketData");
 const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
@@ -14,7 +15,8 @@ const conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const queue=new Queue("signals",{connection:redis});
 const subscriptions=new Map<string,number>();
-let detected=0, decoded=0, errors=0;
+const checkpointSlots=new Map<string,bigint>();
+let detected=0, decoded=0, replayed=0, replayGaps=0, errors=0;
 
 const DEFAULT_QUOTES=[
   SOLANA_USDC,
@@ -34,19 +36,21 @@ async function fetchParsedTransactionWithRetry(signature:string){
   return null;
 }
 
-async function handleSignature(traderId:string,wallet:string,signature:string){
+async function handleSignature(traderId:string,wallet:string,signature:string):Promise<boolean>{
   detected++;
   const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
-  if(existing) return;
+  if(existing) return true;
   const tx=await fetchParsedTransactionWithRetry(signature);
-  if(!tx||tx.meta?.err){if(!tx)errors++;return;}
+  if(!tx){errors++;return false;}
+  if(tx.meta?.err) return true;
 
-  await db.sourceTransaction.create({
-    data:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
+  await db.sourceTransaction.upsert({
+    where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}},update:{},
+    create:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
   });
 
   const swap=classifySolanaSwap(tx,wallet,quoteMints,usdcMint);
-  if(!swap) return;
+  if(!swap) return true;
   decoded++;
   const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
   const idempotencyKey=crypto.createHash("sha256").update(["SOLANA",signature,wallet,tokenMint,swap.action].join(":")).digest("hex");
@@ -60,6 +64,44 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
     }
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
+  return true;
+}
+
+async function checkpointWallet(walletId:string,signature:string,slot:number){
+  const nextSlot=BigInt(slot);
+  const current=checkpointSlots.get(walletId)??0n;
+  if(nextSlot<current) return;
+  checkpointSlots.set(walletId,nextSlot);
+  await db.traderWallet.update({where:{id:walletId},data:{
+    lastSeenSignature:signature,lastSeenSlot:nextSlot,lastSeenAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null
+  }});
+}
+
+async function syncWallet(tw:any,pubkey:PublicKey){
+  if(tw.lastSeenSlot!=null) checkpointSlots.set(tw.id,BigInt(tw.lastSeenSlot));
+  const plan=await planSignatureReplay(
+    (before,limit)=>conn.getSignaturesForAddress(pubkey,{before,limit},"confirmed"),
+    tw.lastSeenSignature??undefined,
+    Number(process.env.SOLANA_REPLAY_LIMIT??500)
+  );
+  if(plan.baseline){
+    await checkpointWallet(tw.id,plan.baseline.signature,plan.baseline.slot);
+    await db.traderWallet.update({where:{id:tw.id},data:{lastReplayAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null}});
+    return true;
+  }
+  if(!plan.complete){
+    replayGaps++;
+    await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"REPLAY_GAP",monitoringError:"Stored signature was not found within the bounded replay window. Manual review is required before monitoring resumes.",lastReplayAt:new Date()}});
+    return false;
+  }
+  for(const item of plan.signatures){
+    const processed=await handleSignature(tw.traderId,tw.address,item.signature);
+    if(!processed) throw new Error(`Transaction ${item.signature} was unavailable after retries`);
+    await checkpointWallet(tw.id,item.signature,item.slot);
+    replayed++;
+  }
+  await db.traderWallet.update({where:{id:tw.id},data:{lastReplayAt:new Date(),monitoringStatus:"WATCHING",monitoringError:null}});
+  return true;
 }
 
 async function refreshWatchlist(){
@@ -72,24 +114,45 @@ async function refreshWatchlist(){
     },
     include:{trader:true}
   });
-  const wanted=new Set(wallets.map(w=>w.address));
+  const wanted=new Set(wallets.filter(w=>w.chain==="SOLANA").map(w=>w.address));
   for(const [address,id] of subscriptions){
     if(!wanted.has(address)){await conn.removeOnLogsListener(id);subscriptions.delete(address);}
   }
   for(const tw of wallets){
-    if(tw.chain!=="SOLANA"||subscriptions.has(tw.address)) continue;
+    if(tw.chain!=="SOLANA"){
+      if(tw.monitoringStatus!=="UNSUPPORTED_CHAIN") await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"UNSUPPORTED_CHAIN",monitoringError:"No source listener is implemented for this chain."}});
+      continue;
+    }
     try{
       const pubkey=new PublicKey(tw.address);
-      const id=conn.onLogs(pubkey,async logs=>{
-        try{await handleSignature(tw.traderId,tw.address,logs.signature);}
-        catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
-      },"confirmed");
-      subscriptions.set(tw.address,id);
-      console.log("[listener] watching",tw.trader.handle,tw.address);
-    }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
+      const safeToWatch=await syncWallet(tw,pubkey);
+      if(!safeToWatch){
+        const existingId=subscriptions.get(tw.address);
+        if(existingId!=null){await conn.removeOnLogsListener(existingId);subscriptions.delete(tw.address);}
+        continue;
+      }
+      if(!subscriptions.has(tw.address)){
+        const id=conn.onLogs(pubkey,async (logs,context)=>{
+          try{
+            const processed=await handleSignature(tw.traderId,tw.address,logs.signature);
+            if(processed) await checkpointWallet(tw.id,logs.signature,context.slot);
+          }catch(e){
+            errors++;
+            await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"ERROR",monitoringError:e instanceof Error?e.message:String(e)}}).catch(()=>{});
+            console.error("[listener] tx error",logs.signature,e);
+          }
+        },"confirmed");
+        subscriptions.set(tw.address,id);
+        console.log("[listener] watching",tw.trader.handle,tw.address);
+      }
+    }catch(e){
+      errors++;
+      await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"ERROR",monitoringError:e instanceof Error?e.message:String(e)}}).catch(()=>{});
+      console.error("[listener] wallet sync error",tw.address,e);
+    }
   }
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:new URL(rpc).host}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,replayed,replayGaps,errors,rpc:new URL(rpc).host}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 console.log("[listener] running");

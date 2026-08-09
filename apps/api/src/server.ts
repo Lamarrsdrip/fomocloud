@@ -59,6 +59,17 @@ function validPublicAddress(chain:Chain,address:string){
   if(["BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return /^0x[a-fA-F0-9]{40}$/.test(address);
   return address.length>=20&&address.length<=128;
 }
+const walletVerificationMethods=new Set(["PUBLIC_PROFILE","SIGNED_MESSAGE","OFFICIAL_DISCLOSURE","MANUAL_REVIEW"]);
+function walletEvidence(body:any){
+  const verificationMethod=String(body?.verificationMethod??"").trim().toUpperCase();
+  const evidenceUrl=String(body?.evidenceUrl??"").trim().slice(0,1000);
+  const evidenceNote=String(body?.evidenceNote??"").trim().slice(0,2000);
+  const validUrl=!evidenceUrl||/^https:\/\//i.test(evidenceUrl);
+  return {verificationMethod,evidenceUrl:evidenceUrl||undefined,evidenceNote:evidenceNote||undefined,validUrl};
+}
+function validVerifiedWalletEvidence(evidence:ReturnType<typeof walletEvidence>){
+  return evidence.validUrl&&walletVerificationMethods.has(evidence.verificationMethod)&&Boolean(evidence.evidenceUrl||evidence.evidenceNote);
+}
 function hashToken(value:string) { return crypto.createHash("sha256").update(value).digest("hex"); }
 function randomToken(bytes=32) { return crypto.randomBytes(bytes).toString("base64url"); }
 function safeUser(user:any) {
@@ -756,34 +767,46 @@ app.post("/v1/me/traders/custom", auth, asyncRoute(async (req:AuthedRequest,res)
   const address=String(req.body?.address??"").trim();
   const displayName=String(req.body?.displayName??"Custom trader").trim().slice(0,80);
   const xHandle=String(req.body?.xHandle??"").trim().replace(/^@/,"").slice(0,50)||undefined;
-  if(!address && !xHandle) return res.status(400).json({error:"WALLET_OR_X_REQUIRED"});
+  const fomoUsername=String(req.body?.fomoUsername??"").trim().replace(/^@/,"").slice(0,80)||undefined;
+  const fomoProfileUrl=String(req.body?.fomoProfileUrl??"").trim().slice(0,1000)||undefined;
+  const evidence=walletEvidence(req.body);
+  if(!address && !xHandle && !fomoUsername) return res.status(400).json({error:"WALLET_X_OR_FOMO_USERNAME_REQUIRED"});
   if(address && !validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
+  if(!evidence.validUrl||fomoProfileUrl&&!/^https:\/\//i.test(fomoProfileUrl)) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
 
-  let trader:any;
+  let trader:any, sourceWallet:any;
   if(address){
     const existingWallet=await db.traderWallet.findUnique({where:{chain_address:{chain,address}},include:{trader:true}});
+    sourceWallet=existingWallet;
     trader=existingWallet?.trader;
     if(!trader){
       const handle=`custom-${chain.toLowerCase()}-${crypto.createHash("sha1").update(address).digest("hex").slice(0,16)}`;
       const genericName=`Custom ${chain} wallet ${address.slice(0,4)}…${address.slice(-4)}`;
-      trader=await db.trader.create({data:{handle,displayName:genericName,kind:"CUSTOM",trackingStatus:chain==="SOLANA"?"TRACKING":"ADAPTER_READY",wallets:{create:{chain,address,verified:true,source:"USER_PUBLIC_WALLET"}}}});
+      trader=await db.trader.create({data:{
+        handle,displayName:genericName,kind:"CUSTOM",fomoUsername,fomoProfileUrl,trackingStatus:"PENDING_VERIFICATION",
+        wallets:{create:{chain,address,verified:false,source:"USER_SUBMITTED",submittedByUserId:req.user.sub,verificationMethod:evidence.verificationMethod||undefined,evidenceUrl:evidence.evidenceUrl,evidenceNote:evidence.evidenceNote,monitoringStatus:"PENDING_VERIFICATION"}}
+      },include:{wallets:true}});
+      sourceWallet=trader.wallets[0];
     }
   }else{
-    const handle=`favorite-${req.user.sub.slice(-6)}-${crypto.createHash("sha1").update(xHandle!).digest("hex").slice(0,12)}`;
+    const discoveryHandle=xHandle??fomoUsername!;
+    const handle=`favorite-${req.user.sub.slice(-6)}-${crypto.createHash("sha1").update(discoveryHandle).digest("hex").slice(0,12)}`;
     trader=await db.trader.upsert({
       where:{handle},
-      create:{handle,displayName,kind:"CUSTOM",ownerUserId:req.user.sub,xHandle,trackingStatus:"NEEDS_WALLET"},
-      update:{displayName,xHandle}
+      create:{handle,displayName,kind:"CUSTOM",ownerUserId:req.user.sub,xHandle,fomoUsername,fomoProfileUrl,trackingStatus:"NEEDS_WALLET"},
+      update:{displayName,xHandle,fomoUsername,fomoProfileUrl}
     });
   }
+  const trackingReady=Boolean(sourceWallet?.verified&&sourceWallet?.chain==="SOLANA");
   const defaults=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
   const follow=await db.userFollow.upsert({
     where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}},
-    create:{userId:req.user.sub,traderId:trader.id,mode:address&&chain==="SOLANA"?"WATCH_ONLY":"FOLLOW_ONLY",customLabel:displayName,customXHandle:xHandle,fixedAmountUsd:defaults.defaultAmountUsd,maxPositionUsd:defaults.maxAmountPerTradeUsd,maxTotalExposureUsd:defaults.maxTotalExposureUsd},
+    create:{userId:req.user.sub,traderId:trader.id,mode:trackingReady?"WATCH_ONLY":"FOLLOW_ONLY",customLabel:displayName,customXHandle:xHandle,fixedAmountUsd:defaults.defaultAmountUsd,maxPositionUsd:defaults.maxAmountPerTradeUsd,maxTotalExposureUsd:defaults.maxTotalExposureUsd},
     update:{customLabel:displayName,customXHandle:xHandle}
   });
-  await audit(req.user.sub,"USER",address?"ADD_CUSTOM_TRADER":"ADD_X_FAVORITE",trader.id,{chain,address:address||undefined,xHandle});
-  res.status(201).json({trader:{...trader,displayName,xHandle},follow,trackingReady:Boolean(address&&chain==="SOLANA"),message:address&&chain!=="SOLANA"?"Wallet saved. This chain is adapter-ready but its live source listener is not implemented yet.":undefined});
+  await audit(req.user.sub,"USER",address?"SUBMIT_CUSTOM_TRADER_WALLET":"ADD_X_FAVORITE",trader.id,{chain,address:address||undefined,xHandle,fomoUsername,evidenceUrl:evidence.evidenceUrl});
+  const message=!address?undefined:trackingReady?"This source wallet was already independently verified and is ready for Solana monitoring.":"Wallet saved as unverified. It will not generate copy signals until an administrator verifies the public evidence.";
+  res.status(201).json({trader:{...trader,displayName,xHandle},follow,trackingReady,message});
 }));
 
 app.post("/v1/me/traders/:id/wallet", auth, asyncRoute(async (req:AuthedRequest,res) => {
@@ -792,24 +815,27 @@ app.post("/v1/me/traders/:id/wallet", auth, asyncRoute(async (req:AuthedRequest,
   if(!follow||!pending) return res.status(404).json({error:"PERSONAL_TRADER_NOT_FOUND"});
   if(pending.wallets.length) return res.status(409).json({error:"TRADER_WALLET_ALREADY_SET"});
   const chain=String(req.body?.chain??"SOLANA") as Chain,address=String(req.body?.address??"").trim();
+  const evidence=walletEvidence(req.body);
   if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)||!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
+  if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
   const existing=await db.traderWallet.findUnique({where:{chain_address:{chain,address}},include:{trader:true}});
   if(existing){
+    const trackingReady=existing.verified&&existing.chain==="SOLANA";
     await db.userFollow.upsert({
       where:{userId_traderId:{userId:req.user.sub,traderId:existing.traderId}},
-      create:{userId:req.user.sub,traderId:existing.traderId,mode:"WATCH_ONLY",fixedAmountUsd:follow.fixedAmountUsd,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,maxChasePct:follow.maxChasePct,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:follow.maxPositionUsd,maxTotalExposureUsd:follow.maxTotalExposureUsd,minLiquidityUsd:follow.minLiquidityUsd,exitMode:follow.exitMode,copyAdditionalBuys:follow.copyAdditionalBuys,copyReentries:follow.copyReentries,customLabel:follow.customLabel,customXHandle:follow.customXHandle},
-      update:{customLabel:follow.customLabel,customXHandle:follow.customXHandle}
+      create:{userId:req.user.sub,traderId:existing.traderId,mode:trackingReady?"WATCH_ONLY":"FOLLOW_ONLY",fixedAmountUsd:follow.fixedAmountUsd,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,maxChasePct:follow.maxChasePct,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:follow.maxPositionUsd,maxTotalExposureUsd:follow.maxTotalExposureUsd,minLiquidityUsd:follow.minLiquidityUsd,exitMode:follow.exitMode,copyAdditionalBuys:follow.copyAdditionalBuys,copyReentries:follow.copyReentries,customLabel:follow.customLabel,customXHandle:follow.customXHandle},
+      update:{mode:trackingReady?"WATCH_ONLY":"FOLLOW_ONLY",customLabel:follow.customLabel,customXHandle:follow.customXHandle}
     });
     await db.userFollow.delete({where:{id:follow.id}});
     await db.trader.delete({where:{id:pending.id}});
     await audit(req.user.sub,"USER","MAP_FAVORITE_TO_TRACKED_WALLET",existing.traderId,{chain,address});
-    return res.json({ok:true,traderId:existing.traderId,reused:true,trackingReady:existing.chain==="SOLANA",message:existing.chain==="SOLANA"?"Wallet matched an existing tracked source. Tracking is ready.":"Wallet matched an existing source, but this chain's listener is adapter-ready only."});
+    return res.json({ok:true,traderId:existing.traderId,reused:true,trackingReady,message:trackingReady?"Wallet matched an independently verified Solana source. Tracking is ready.":"Wallet matched an unverified or unsupported-chain source. Copy monitoring remains disabled."});
   }
-  await db.traderWallet.create({data:{traderId:pending.id,chain,address,verified:true,source:"USER_PUBLIC_WALLET"}});
-  await db.trader.update({where:{id:pending.id},data:{trackingStatus:chain==="SOLANA"?"TRACKING":"ADAPTER_READY"}});
-  await db.userFollow.update({where:{id:follow.id},data:{mode:chain==="SOLANA"?"WATCH_ONLY":"FOLLOW_ONLY"}});
-  await audit(req.user.sub,"USER","ADD_FAVORITE_TRADER_WALLET",pending.id,{chain,address});
-  res.json({ok:true,traderId:pending.id,reused:false,trackingReady:chain==="SOLANA",message:chain==="SOLANA"?"Wallet mapped. Source tracking is ready.":"Wallet mapped, but this chain's source listener is adapter-ready only."});
+  await db.traderWallet.create({data:{traderId:pending.id,chain,address,verified:false,source:"USER_SUBMITTED",submittedByUserId:req.user.sub,verificationMethod:evidence.verificationMethod||undefined,evidenceUrl:evidence.evidenceUrl,evidenceNote:evidence.evidenceNote,monitoringStatus:"PENDING_VERIFICATION"}});
+  await db.trader.update({where:{id:pending.id},data:{trackingStatus:"PENDING_VERIFICATION"}});
+  await db.userFollow.update({where:{id:follow.id},data:{mode:"FOLLOW_ONLY"}});
+  await audit(req.user.sub,"USER","SUBMIT_FAVORITE_TRADER_WALLET",pending.id,{chain,address,evidenceUrl:evidence.evidenceUrl});
+  res.json({ok:true,traderId:pending.id,reused:false,trackingReady:false,message:"Wallet saved as unverified. Copy monitoring remains disabled until the public evidence is reviewed."});
 }));
 
 // ------------------------ COMMUNITY FOLLOWING ------------------------
@@ -1044,13 +1070,23 @@ app.post("/v1/admin/traders", adminOnly, asyncRoute(async (req:AuthedRequest,res
   for(const w of wallets){
     const chain=String(w?.chain??"SOLANA") as Chain, address=String(w?.address??"").trim();
     if(!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET",chain});
+    const evidence=walletEvidence(w);
+    if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS",chain});
+    if(Boolean(w?.verified)&&!validVerifiedWalletEvidence(evidence)) return res.status(400).json({error:"VERIFIED_WALLET_EVIDENCE_REQUIRED",chain});
   }
+  const fomoProfileUrl=String(req.body?.fomoProfileUrl??"").trim().slice(0,1000)||undefined;
+  if(fomoProfileUrl&&!/^https:\/\//i.test(fomoProfileUrl)) return res.status(400).json({error:"FOMO_PROFILE_URL_MUST_USE_HTTPS"});
   const trader=await db.trader.create({
     data:{
       handle,displayName,xHandle:String(req.body?.xHandle??handle).replace(/^@/,"")||undefined,bio:req.body?.bio||undefined,category:req.body?.category||undefined,
+      fomoUsername:String(req.body?.fomoUsername??"").trim().replace(/^@/,"").slice(0,80)||undefined,fomoProfileUrl,
       kind:"PLATFORM",enabled:req.body?.enabled!==false,featured:Boolean(req.body?.featured),recommended:Boolean(req.body?.recommended),
       defaultSelected:Boolean(req.body?.defaultSelected),verification:req.body?.verification??"UNVERIFIED",
-      wallets:{create:wallets.map((w:any)=>({chain:w.chain,address:String(w.address),verified:Boolean(w.verified),source:w.source||"ADMIN"}))}
+      wallets:{create:wallets.map((w:any)=>{const evidence=walletEvidence(w),verified=Boolean(w.verified);return {
+        chain:w.chain,address:String(w.address),verified,source:w.source||"ADMIN_RESEARCH",verificationMethod:evidence.verificationMethod||undefined,
+        evidenceUrl:evidence.evidenceUrl,evidenceNote:evidence.evidenceNote,verifiedByUserId:verified?req.user.sub:undefined,verifiedAt:verified?new Date():undefined,
+        monitoringStatus:verified&&w.chain==="SOLANA"?"BASELINING":verified?"UNSUPPORTED_CHAIN":"PENDING_VERIFICATION"
+      }})}
     },
     include:{wallets:true}
   });
@@ -1058,7 +1094,7 @@ app.post("/v1/admin/traders", adminOnly, asyncRoute(async (req:AuthedRequest,res
   res.status(201).json({trader});
 }));
 app.patch("/v1/admin/traders/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
-  const allowed=["displayName","xHandle","bio","category","enabled","featured","recommended","defaultSelected","verification","trackingStatus"] as const;
+  const allowed=["displayName","xHandle","fomoUsername","fomoProfileUrl","bio","category","enabled","featured","recommended","defaultSelected","verification","trackingStatus"] as const;
   const data:any={}; for(const k of allowed) if(req.body?.[k]!==undefined) data[k]=req.body[k];
   const trader=await db.trader.update({where:{id:req.params.id},data});
   await audit(req.user.sub,"ADMIN","UPDATE_PLATFORM_TRADER",trader.id,data);
@@ -1067,6 +1103,9 @@ app.patch("/v1/admin/traders/:id", adminOnly, asyncRoute(async (req:AuthedReques
 app.post("/v1/admin/traders/:id/wallets", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const chain=String(req.body?.chain??"SOLANA") as Chain, address=String(req.body?.address??"").trim();
   if(!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
+  const evidence=walletEvidence(req.body), verified=Boolean(req.body?.verified);
+  if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
+  if(verified&&!validVerifiedWalletEvidence(evidence)) return res.status(400).json({error:"VERIFIED_WALLET_EVIDENCE_REQUIRED"});
   const trader=await db.trader.findFirst({where:{id:req.params.id,kind:"PLATFORM"},select:{id:true}});
   if(!trader) return res.status(404).json({error:"TRADER_NOT_FOUND"});
   const mapped=await db.traderWallet.findUnique({where:{chain_address:{chain,address}}});
@@ -1074,9 +1113,35 @@ app.post("/v1/admin/traders/:id/wallets", adminOnly, asyncRoute(async (req:Authe
     if(mapped.traderId===trader.id) return res.json({wallet:mapped,alreadyMapped:true});
     return res.status(409).json({error:"SOURCE_WALLET_ALREADY_MAPPED",traderId:mapped.traderId});
   }
-  const wallet=await db.traderWallet.create({data:{traderId:trader.id,chain,address,verified:Boolean(req.body?.verified),source:"ADMIN"}});
-  await audit(req.user.sub,"ADMIN","ADD_TRADER_WALLET",wallet.id,{traderId:trader.id,chain,address});
+  const wallet=await db.traderWallet.create({data:{
+    traderId:trader.id,chain,address,verified,source:"ADMIN_RESEARCH",verificationMethod:evidence.verificationMethod||undefined,evidenceUrl:evidence.evidenceUrl,
+    evidenceNote:evidence.evidenceNote,verifiedByUserId:verified?req.user.sub:undefined,verifiedAt:verified?new Date():undefined,
+    monitoringStatus:verified&&chain==="SOLANA"?"BASELINING":verified?"UNSUPPORTED_CHAIN":"PENDING_VERIFICATION"
+  }});
+  await audit(req.user.sub,"ADMIN","ADD_TRADER_WALLET",wallet.id,{traderId:trader.id,chain,address,verified,evidenceUrl:evidence.evidenceUrl});
   res.status(201).json({wallet});
+}));
+
+app.patch("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const current=await db.traderWallet.findUnique({where:{id:req.params.id},include:{trader:true}});
+  if(!current) return res.status(404).json({error:"TRADER_WALLET_NOT_FOUND"});
+  const verified=Boolean(req.body?.verified), evidence=walletEvidence(req.body);
+  if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
+  if(verified&&!validVerifiedWalletEvidence(evidence)) return res.status(400).json({error:"VERIFIED_WALLET_EVIDENCE_REQUIRED"});
+  const wallet=await db.traderWallet.update({where:{id:current.id},data:{
+    verified,verificationMethod:evidence.verificationMethod||undefined,evidenceUrl:evidence.evidenceUrl,evidenceNote:evidence.evidenceNote,
+    verifiedByUserId:verified?req.user.sub:null,verifiedAt:verified?new Date():null,lastSeenSignature:verified?current.lastSeenSignature:null,
+    lastSeenSlot:verified?current.lastSeenSlot:null,lastSeenAt:verified?current.lastSeenAt:null,monitoringError:null,
+    monitoringStatus:verified&&current.chain==="SOLANA"?"BASELINING":verified?"UNSUPPORTED_CHAIN":"PENDING_VERIFICATION"
+  }});
+  await db.trader.update({where:{id:current.traderId},data:{trackingStatus:wallet.monitoringStatus}});
+  if(verified&&current.chain==="SOLANA"&&current.trader.kind==="CUSTOM"){
+    await db.userFollow.updateMany({where:{traderId:current.traderId,mode:"FOLLOW_ONLY"},data:{mode:"WATCH_ONLY"}});
+  }else if(!verified){
+    await db.userFollow.updateMany({where:{traderId:current.traderId,mode:{in:["WATCH_ONLY","AUTO_COPY"]}},data:{mode:"PAUSED"}});
+  }
+  await audit(req.user.sub,"ADMIN",verified?"VERIFY_TRADER_WALLET":"UNVERIFY_TRADER_WALLET",wallet.id,{traderId:wallet.traderId,chain:wallet.chain,address:wallet.address,verificationMethod:evidence.verificationMethod,evidenceUrl:evidence.evidenceUrl});
+  res.json({wallet});
 }));
 
 app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
