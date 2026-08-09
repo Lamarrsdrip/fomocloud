@@ -28,8 +28,8 @@ This report distinguishes code that exists from code that has been exercised and
 - Desktop Chrome displayed the premium install card only after a real `beforeinstallprompt` event.
 - The Install action invoked the browser install flow.
 - iPhone Safari emulation displayed instructions and no fake Install button.
-- Service worker registration fetched `/app/`, auth routes and all 192/512/maskable/Apple icons.
-- Manifest uses `start_url: /app/`, `display: standalone`, and valid PNG icon sizes.
+- Service worker registration fetched `/login/`, `/app/`, auth routes and all 192/512/maskable/Apple icons.
+- Manifest uses `start_url: /login/`, so an installed Home Screen launch opens Login directly; it also uses `display: standalone` and valid PNG icon sizes.
 - Installed state and dismissals are remembered; iPadOS touch-device detection is included.
 
 ### Listener and public chain
