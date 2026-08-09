@@ -1,10 +1,11 @@
-import { Connection, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { db } from "@fomocloud/db";
 import { startHeartbeat } from "@fomocloud/ops";
 import { getConfig } from "@fomocloud/config";
+import { classifySolanaSwap, SOLANA_USDC, SOLANA_USDT, WRAPPED_SOL } from "./decoder.js";
 
 const marketCfg=await getConfig<any>("marketData");
 const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
@@ -16,78 +17,12 @@ const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
 
 const DEFAULT_QUOTES=[
-  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
-  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
-  "So11111111111111111111111111111111111111112"  // WSOL
+  SOLANA_USDC,
+  SOLANA_USDT,
+  WRAPPED_SOL
 ];
 const quoteMints=new Set((process.env.SOLANA_QUOTE_MINTS??DEFAULT_QUOTES.join(",")).split(",").map(x=>x.trim()).filter(Boolean));
 const usdcMint=process.env.USDC_MINT_SOLANA??DEFAULT_QUOTES[0];
-
-type Delta={mint:string;raw:bigint;decimals:number};
-function tokenDeltas(tx:ParsedTransactionWithMeta,wallet:string):Delta[]{
-  const pre=tx.meta?.preTokenBalances??[], post=tx.meta?.postTokenBalances??[];
-  const map=new Map<string,{raw:bigint;decimals:number}>();
-  const apply=(rows:typeof pre,sign:bigint)=>{
-    for(const r of rows){
-      if(r.owner!==wallet) continue;
-      const cur=map.get(r.mint)??{raw:0n,decimals:r.uiTokenAmount.decimals};
-      cur.raw+=sign*BigInt(r.uiTokenAmount.amount||"0"); cur.decimals=r.uiTokenAmount.decimals;
-      map.set(r.mint,cur);
-    }
-  };
-  apply(post,1n); apply(pre,-1n);
-  return [...map].map(([mint,v])=>({mint,...v})).filter(x=>x.raw!==0n);
-}
-
-
-function ownerMintBalanceRaw(tx:ParsedTransactionWithMeta,wallet:string,mint:string,side:"pre"|"post"){
-  const rows=side==="pre"?(tx.meta?.preTokenBalances??[]):(tx.meta?.postTokenBalances??[]);
-  return rows.filter(r=>r.owner===wallet&&r.mint===mint).reduce((a,r)=>a+BigInt(r.uiTokenAmount.amount||"0"),0n);
-}
-
-function classifySwap(tx:ParsedTransactionWithMeta,wallet:string){
-  const deltas=tokenDeltas(tx,wallet);
-  const positives=deltas.filter(x=>x.raw>0n).sort((a,b)=>a.raw>b.raw?-1:1);
-  const negatives=deltas.filter(x=>x.raw<0n).sort((a,b)=>a.raw<b.raw?-1:1);
-  if(!positives.length||!negatives.length) return null;
-
-  // Prefer a clear quote-asset <-> token leg. This prevents treating every token transfer as a buy.
-  const spentQuote=negatives.find(x=>quoteMints.has(x.mint));
-  const receivedQuote=positives.find(x=>quoteMints.has(x.mint));
-  let input:Delta|undefined,output:Delta|undefined,action:"BUY"|"SELL";
-  if(spentQuote){
-    input=spentQuote; output=positives.find(x=>!quoteMints.has(x.mint)); action="BUY";
-  }else if(receivedQuote){
-    input=negatives.find(x=>!quoteMints.has(x.mint)); output=receivedQuote; action="SELL";
-  }else{
-    // Token-to-token with no recognized quote is ambiguous; don't invent a copy signal.
-    return null;
-  }
-  if(!input||!output) return null;
-
-  const inputRaw=(input.raw<0n?-input.raw:input.raw).toString();
-  const outputRaw=(output.raw<0n?-output.raw:output.raw).toString();
-  let sourcePriceUsd:number|undefined;
-  if(action==="BUY"&&input.mint===usdcMint){
-    const dollars=Number(inputRaw)/(10**input.decimals);
-    const tokens=Number(outputRaw)/(10**output.decimals);
-    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
-  }else if(action==="SELL"&&output.mint===usdcMint){
-    const dollars=Number(outputRaw)/(10**output.decimals);
-    const tokens=Number(inputRaw)/(10**input.decimals);
-    if(Number.isFinite(dollars)&&Number.isFinite(tokens)&&tokens>0) sourcePriceUsd=dollars/tokens;
-  }
-  let sourceTokenBalanceBeforeRaw:string|undefined, sourceTokenBalanceAfterRaw:string|undefined, sourceSoldPct:number|undefined;
-  if(action==="SELL"){
-    const before=ownerMintBalanceRaw(tx,wallet,input.mint,"pre"), after=ownerMintBalanceRaw(tx,wallet,input.mint,"post");
-    sourceTokenBalanceBeforeRaw=before.toString(); sourceTokenBalanceAfterRaw=after.toString();
-    if(before>0n){
-      const sold=before>after?before-after:0n;
-      sourceSoldPct=Math.max(0,Math.min(100,Number((sold*10000n)/before)/100));
-    }
-  }
-  return {action,inputMint:input.mint,outputMint:output.mint,inputRaw,outputRaw,sourcePriceUsd,sourceTokenBalanceBeforeRaw,sourceTokenBalanceAfterRaw,sourceSoldPct};
-}
 
 async function fetchParsedTransactionWithRetry(signature:string){
   const waits=[0,120,300,700];
@@ -110,7 +45,7 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
     data:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
   });
 
-  const swap=classifySwap(tx,wallet);
+  const swap=classifySolanaSwap(tx,wallet,quoteMints,usdcMint);
   if(!swap) return;
   decoded++;
   const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
