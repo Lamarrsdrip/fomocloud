@@ -452,7 +452,8 @@ app.get("/v1/me/sessions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   res.json({sessions});
 }));
 app.delete("/v1/me/sessions/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  await db.refreshSession.updateMany({where:{id:req.params.id,userId:req.user.sub,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}});
+  const revoked=await db.refreshSession.updateMany({where:{id:req.params.id,userId:req.user.sub,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}});
+  if(revoked.count!==1) return res.status(404).json({error:"SESSION_NOT_FOUND"});
   await audit(req.user.sub,"USER","REVOKE_SESSION",req.params.id);
   res.json({ok:true});
 }));

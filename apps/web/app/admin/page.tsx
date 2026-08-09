@@ -16,7 +16,7 @@ const configKeys:Record<string,string>={market:"marketData",chains:"chains",exec
 export default function Admin(){
  const[tab,setTab]=useState("overview");const[me,setMe]=useState<any>(null);const[data,setData]=useState<any>({});const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
  async function load(which=tab){setLoading(true);setErr("");try{
-  const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="ADMIN"&&m.role!=="SUPPORT")throw Object.assign(new Error("ADMIN_FORBIDDEN"),{status:403});
+  const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="ADMIN"&&m.role!=="SUPPORT"){location.replace("/app/?admin=forbidden");return}
   let r:any={};
   if(which==="overview")r=await apiFetch("/v1/admin/overview");
   if(which==="users")r=await apiFetch("/v1/admin/users");
