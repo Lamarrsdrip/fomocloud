@@ -1,1 +1,1 @@
-{"name":"FomoCloud","short_name":"FomoCloud","start_url":"/","display":"standalone","background_color":"#07070b","theme_color":"#07070b","description":"Smart on-chain copy trading"}
+{"name":"FomoCloud","short_name":"FomoCloud","id":"/","start_url":"/","scope":"/","display":"standalone","background_color":"#07070b","theme_color":"#07070b","description":"Smart on-chain copy trading","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}

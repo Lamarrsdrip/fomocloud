@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo strategy lint",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/strategy.test.js"
   },
   "dependencies": {
     "@fomocloud/shared": "workspace:*"

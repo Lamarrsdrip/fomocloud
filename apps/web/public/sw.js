@@ -1,3 +1,17 @@
+self.addEventListener("install", event => {
+  event.waitUntil(caches.open("fomocloud-v05").then(cache => cache.addAll(["/", "/login/", "/manifest.webmanifest", "/icon.svg"])).then(() => self.skipWaiting()));
+});
+self.addEventListener("activate", event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== "fomocloud-v05").map(key => caches.delete(key)))).then(() => clients.claim()));
+});
+self.addEventListener("fetch", event => {
+  if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
+  event.respondWith(fetch(event.request).then(response => {
+    const copy=response.clone();
+    void caches.open("fomocloud-v05").then(cache => cache.put(event.request, copy));
+    return response;
+  }).catch(() => caches.match(event.request).then(response => response || caches.match("/"))));
+});
 self.addEventListener("push", event => {
   let data={title:"FomoCloud",body:"You have a new update",url:"/app/"};
   try { data={...data,...event.data.json()}; } catch {}

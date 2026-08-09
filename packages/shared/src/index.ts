@@ -67,7 +67,8 @@ export function decideCopy(params: {
 
   if (params.sourcePriceUsd && params.currentPriceUsd) {
     const chase = percentMove(params.sourcePriceUsd, params.currentPriceUsd);
-    if (chase > settings.maxChasePct)
+    const boundaryTolerance = Number.EPSILON * Math.max(1, Math.abs(chase), settings.maxChasePct) * 8;
+    if (chase - settings.maxChasePct > boundaryTolerance)
       return { allowed: false, reason: "PRICE_MOVED_TOO_FAR" };
   }
 

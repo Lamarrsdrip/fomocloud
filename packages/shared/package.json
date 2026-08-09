@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo shared lint",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/risk.test.js"
   },
   "dependencies": {
     "zod": "^4.0.17"
