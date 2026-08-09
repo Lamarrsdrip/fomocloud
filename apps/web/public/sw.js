@@ -1,4 +1,4 @@
-const CACHE_NAME="fomocloud-v05-ui4";
+const CACHE_NAME="fomocloud-v05-ui5";
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(["/", "/app/", "/login/", "/signup/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"])).then(() => self.skipWaiting()));
 });
