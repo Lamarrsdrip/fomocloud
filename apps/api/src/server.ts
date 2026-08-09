@@ -1062,7 +1062,6 @@ app.patch("/v1/admin/users/:id", adminOnly, asyncRoute(async (req:AuthedRequest,
 
 app.get("/v1/admin/traders", requireAdmin, asyncRoute(async (_req,res) => {
   const traders=await db.trader.findMany({
-    where:{kind:"PLATFORM"},
     include:{wallets:true,_count:{select:{follows:true,signals:true}}},
     orderBy:{createdAt:"desc"}
   });
@@ -1112,7 +1111,7 @@ app.post("/v1/admin/traders/:id/wallets", adminOnly, asyncRoute(async (req:Authe
   const evidence=walletEvidence(req.body), verified=Boolean(req.body?.verified);
   if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
   if(verified&&!validVerifiedWalletEvidence(evidence)) return res.status(400).json({error:"VERIFIED_WALLET_EVIDENCE_REQUIRED"});
-  const trader=await db.trader.findFirst({where:{id:req.params.id,kind:"PLATFORM"},select:{id:true}});
+  const trader=await db.trader.findFirst({where:{id:req.params.id},select:{id:true}});
   if(!trader) return res.status(404).json({error:"TRADER_NOT_FOUND"});
   const mapped=await db.traderWallet.findUnique({where:{chain_address:{chain,address}}});
   if(mapped){
@@ -1132,6 +1131,7 @@ app.patch("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Authe
   const current=await db.traderWallet.findUnique({where:{id:req.params.id},include:{trader:true}});
   if(!current) return res.status(404).json({error:"TRADER_WALLET_NOT_FOUND"});
   const verified=Boolean(req.body?.verified), evidence=walletEvidence(req.body);
+  if(verified&&!validPublicAddress(current.chain,current.address)) return res.status(400).json({error:"INVALID_WALLET"});
   if(!evidence.validUrl) return res.status(400).json({error:"EVIDENCE_URL_MUST_USE_HTTPS"});
   if(verified&&!validVerifiedWalletEvidence(evidence)) return res.status(400).json({error:"VERIFIED_WALLET_EVIDENCE_REQUIRED"});
   const wallet=await db.traderWallet.update({where:{id:current.id},data:{
