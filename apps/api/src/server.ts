@@ -25,6 +25,7 @@ const accessTtl = process.env.ACCESS_TOKEN_TTL ?? "60m";
 const refreshDays = Number(process.env.REFRESH_TOKEN_DAYS ?? 30);
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: 1 });
 const broadcastQueue = new Queue("broadcasts", { connection: redis });
+const signalQueue = new Queue("signals", { connection: redis });
 
 const configuredOrigins = (
   process.env.CORS_ALLOWED_ORIGINS ??
@@ -927,19 +928,46 @@ app.post("/v1/admin/bootstrap", asyncRoute(async (req,res) => {
 }));
 
 app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest,res) => {
-  const [users,traders,signals,orders,positions,broadcasts,heartbeats]=await Promise.all([
-    db.user.count({where:{role:"USER"}}),db.trader.count({where:{kind:"PLATFORM"}}),db.signal.count(),
-    db.order.count(),db.position.count({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
+  const today=new Date();today.setHours(0,0,0,0);
+  const chartStart=new Date(today.getTime()-13*24*60*60_000);
+  const [users,activeUsers,newUsers24h,autoCopyUsers,traders,watchedWallets,signals,signalsToday,decisionsToday,copiedToday,skippedToday,watchOnlyToday,waitingToday,orders,ordersToday,openLivePositions,simulationPositions,broadcasts,heartbeats,signalQueues,broadcastQueues,recentUsers,recentSignals,recentOrders]=await Promise.all([
+    db.user.count({where:{role:"USER"}}),
+    db.user.count({where:{role:"USER",status:"ACTIVE"}}),
+    db.user.count({where:{role:"USER",createdAt:{gte:new Date(Date.now()-24*60*60_000)}}}),
+    db.globalTradingSettings.count({where:{autoCopyEnabled:true,user:{role:"USER",status:"ACTIVE"}}}),
+    db.trader.count({where:{kind:"PLATFORM"}}),
+    db.traderWallet.count({where:{verified:true,trader:{enabled:true}}}),
+    db.signal.count(),db.signal.count({where:{observedAt:{gte:today}}}),db.copyDecision.count({where:{createdAt:{gte:today}}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},allowed:true,action:"BUY"}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:"SKIP"}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:"WATCH"}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:{startsWith:"WAIT"}}}),
+    db.order.count(),db.order.count({where:{createdAt:{gte:today}}}),
+    db.position.count({where:{mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
+    db.position.count({where:{mode:"SIMULATION",status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
     db.broadcast.findMany({orderBy:{createdAt:"desc"},take:10}),
-    db.workerHeartbeat.findMany({orderBy:{name:"asc"}})
+    db.workerHeartbeat.findMany({orderBy:{name:"asc"}}),
+    signalQueue.getJobCounts("waiting","active","failed","delayed"),broadcastQueue.getJobCounts("waiting","active","failed","delayed"),
+    db.user.findMany({where:{role:"USER",createdAt:{gte:chartStart}},select:{createdAt:true}}),
+    db.signal.findMany({where:{observedAt:{gte:chartStart}},select:{observedAt:true}}),
+    db.order.findMany({where:{createdAt:{gte:chartStart}},select:{createdAt:true}})
   ]);
   const now=Date.now();
+  const dayKey=(value:Date)=>value.toISOString().slice(0,10);
+  const days=Array.from({length:14},(_,index)=>new Date(chartStart.getTime()+index*24*60*60_000).toISOString().slice(0,10));
+  const chart=days.map(date=>({
+    date,
+    users:recentUsers.filter(row=>dayKey(row.createdAt)===date).length,
+    signals:recentSignals.filter(row=>dayKey(row.observedAt)===date).length,
+    trades:recentOrders.filter(row=>dayKey(row.createdAt)===date).length
+  }));
   res.json({
-    counts:{users,traders,signals,orders,openPositions:positions},
+    counts:{users,activeUsers,newUsers24h,autoCopyUsers,traders,watchedWallets,signals,signalsToday,decisionsToday,copiedToday,skippedToday,watchOnlyToday,waitingToday,orders,ordersToday,openLivePositions,simulationPositions},
     executionMode:process.env.EXECUTION_MODE??"simulation",
     liveExecutionEnabled:process.env.LIVE_EXECUTION_ENABLED==="true",
     broadcasts,
-    health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
+    health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000})),
+    queues:{signals:signalQueues,broadcasts:broadcastQueues},chart
   });
 }));
 
@@ -948,11 +976,19 @@ app.get("/v1/admin/users", requireAdmin, asyncRoute(async (req:AuthedRequest,res
     where:{role:"USER"},
     select:{
       id:true,email:true,emailVerifiedAt:true,displayName:true,username:true,status:true,createdAt:true,lastLoginAt:true,
-      tradingSettings:true,_count:{select:{wallets:true,positions:true,follows:true}}
+      tradingSettings:true,cashAllocations:{select:{availableUsd:true,inTradesUsd:true}},
+      positions:{select:{mode:true,status:true,realizedPnlUsd:true,unrealizedPnlUsd:true}},
+      _count:{select:{wallets:true,positions:true,follows:true}}
     },
     orderBy:{createdAt:"desc"},take:500
   });
-  res.json({users});
+  res.json({users:users.map(user=>{
+    const live=user.positions.filter(position=>position.mode==="LIVE");
+    return {...user,positions:undefined,summary:{
+      tradingCashUsd:user.cashAllocations.reduce((sum,row)=>sum+row.availableUsd+row.inTradesUsd,0),
+      pnlUsd:live.reduce((sum,row)=>sum+row.realizedPnlUsd+row.unrealizedPnlUsd,0)
+    }};
+  })});
 }));
 app.get("/v1/admin/users/:id", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const user=await db.user.findFirst({
@@ -980,13 +1016,15 @@ app.get("/v1/admin/users/:id", requireAdmin, asyncRoute(async (req:AuthedRequest
 
 app.patch("/v1/admin/users/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const status=String(req.body?.status??"");
-  if(!["ACTIVE","SUSPENDED","CLOSED"].includes(status)) return res.status(400).json({error:"INVALID_STATUS"});
-  const user=await db.user.update({where:{id:req.params.id},data:{status:status as any}});
-  if(status!=="ACTIVE") await Promise.all([
+  if(!status&&req.body?.autoCopyEnabled!==false) return res.status(400).json({error:"ADMIN_USER_ACTION_REQUIRED"});
+  if(status&&!["ACTIVE","SUSPENDED","CLOSED"].includes(status)) return res.status(400).json({error:"INVALID_STATUS"});
+  const user=status?await db.user.update({where:{id:req.params.id},data:{status:status as any}}):await db.user.findUniqueOrThrow({where:{id:req.params.id}});
+  if(status&&status!=="ACTIVE") await Promise.all([
     db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}}),
     db.refreshSession.updateMany({where:{userId:user.id,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}})
   ]);
-  await audit(req.user.sub,"ADMIN","USER_STATUS_CHANGE",user.id,{status});
+  if(req.body?.autoCopyEnabled===false) await db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}});
+  await audit(req.user.sub,"ADMIN",status?"USER_STATUS_CHANGE":"ADMIN_DISABLE_AUTO_COPY",user.id,status?{status}:undefined);
   res.json({user:safeUser(user)});
 }));
 
@@ -1051,10 +1089,27 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 
 app.get("/v1/admin/signals", requireAdmin, asyncRoute(async (_req,res) => {
   const signals=await db.signal.findMany({
-    include:{trader:true,_count:{select:{copyDecisions:true}}},
+    include:{trader:true,copyDecisions:{select:{allowed:true,action:true,reason:true,createdAt:true}}},
     orderBy:{observedAt:"desc"},take:200
   });
-  res.json({signals});
+  res.json({signals:signals.map(signal=>{
+    const decisions=signal.copyDecisions;
+    const last=decisions.reduce<Date|undefined>((latest,decision)=>!latest||decision.createdAt>latest?decision.createdAt:latest,undefined);
+    return {...signal,copyDecisions:undefined,fanout:{
+      followers:decisions.length,eligible:decisions.filter(decision=>decision.allowed).length,
+      copied:decisions.filter(decision=>decision.allowed&&decision.action==="BUY").length,
+      watchOnly:decisions.filter(decision=>decision.action==="WATCH").length,
+      waiting:decisions.filter(decision=>decision.action.startsWith("WAIT")).length,
+      skipped:decisions.filter(decision=>decision.action==="SKIP").length
+    },processingLatencyMs:last?last.getTime()-signal.observedAt.getTime():null};
+  })});
+}));
+app.get("/v1/admin/copy-decisions", requireAdmin, asyncRoute(async (_req,res) => {
+  const decisions=await db.copyDecision.findMany({
+    include:{user:{select:{id:true,email:true,displayName:true}},signal:{include:{trader:{select:{id:true,displayName:true,handle:true}}}},orders:{select:{id:true,mode:true,status:true}}},
+    orderBy:{createdAt:"desc"},take:500
+  });
+  res.json({decisions});
 }));
 app.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) => {
   const orders=await db.order.findMany({
@@ -1062,6 +1117,56 @@ app.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) => {
     orderBy:{createdAt:"desc"},take:250
   });
   res.json({orders});
+}));
+app.get("/v1/admin/positions", requireAdmin, asyncRoute(async (_req,res) => {
+  const positions=await db.position.findMany({
+    include:{user:{select:{id:true,email:true,displayName:true}},sourceTrader:{select:{id:true,displayName:true,handle:true}},exits:{select:{id:true,reason:true,pnlUsd:true,createdAt:true}}},
+    orderBy:{openedAt:"desc"},take:500
+  });
+  res.json({positions});
+}));
+
+app.get("/v1/admin/providers", requireAdmin, asyncRoute(async (_req,res) => {
+  const [market,execution,social,email,push,heartbeats,lastEmail]=await Promise.all([
+    getConfig<any>("marketData"),getConfig<any>("execution"),getConfig<any>("social"),getConfig<any>("email"),getConfig<any>("push"),
+    db.workerHeartbeat.findMany({orderBy:{name:"asc"}}),db.emailLog.findFirst({orderBy:{createdAt:"desc"}})
+  ]);
+  const now=Date.now(),healthy=new Set(heartbeats.filter(row=>now-row.lastBeatAt.getTime()<45_000).map(row=>row.name));
+  const row=(name:string,configured:boolean,working:boolean,detail:string,lastSuccessAt?:Date|null)=>({name,status:!configured?"NOT CONFIGURED":working?"HEALTHY":"DEGRADED",detail,lastSuccessAt});
+  res.json({providers:[
+    row("Solana RPC",Boolean(market?.solanaRpc||market?.heliusRpc||process.env.SOLANA_RPC_HTTP),healthy.has("listener")&&healthy.has("market-worker"),"Source listener and market worker heartbeats"),
+    row("Helius",Boolean(market?.heliusRpc||market?.heliusApiKey||process.env.HELIUS_RPC_HTTP||process.env.HELIUS_API_KEY),healthy.has("listener"),"Optional Solana RPC provider"),
+    row("Birdeye",Boolean(market?.birdeyeApiKey||process.env.BIRDEYE_API_KEY),healthy.has("market-worker"),"Optional market-data enrichment"),
+    row("Jupiter",Boolean(execution?.jupiterBaseUrl||process.env.JUPITER_API_BASE),healthy.has("executor"),"Real executable quote path"),
+    row("0x",Boolean(execution?.zeroXApiKey||process.env.ZEROX_API_KEY),false,"EVM execution adapter is not enabled in this release"),
+    row("X / Twitter",Boolean(social?.xBearerToken||social?.xOAuthClientId||process.env.X_API_BEARER_TOKEN),false,"Credentials may be saved; no recent provider heartbeat exists"),
+    row("SMTP",Boolean(email?.host&&email?.user&&email?.from),lastEmail?.status==="SENT","Status follows the most recent real delivery attempt",lastEmail?.status==="SENT"?lastEmail.createdAt:null),
+    row("VAPID",Boolean(push?.vapidPublicKey&&push?.vapidPrivateKey),healthy.has("notification-worker"),"Push keys and notification worker")
+  ],heartbeats});
+}));
+
+app.get("/v1/admin/notifications", requireAdmin, asyncRoute(async (_req,res) => {
+  const [notifications,unread,pushSubscriptions,emailLogs,recentEmails]=await Promise.all([
+    db.notification.count(),db.notification.count({where:{readAt:null}}),db.pushSubscription.count(),db.emailLog.count(),
+    db.emailLog.findMany({orderBy:{createdAt:"desc"},take:100,select:{id:true,toEmail:true,subject:true,status:true,providerId:true,error:true,createdAt:true}})
+  ]);
+  res.json({counts:{notifications,unread,pushSubscriptions,emailLogs},recentEmails});
+}));
+
+app.get("/v1/admin/security", requireAdmin, asyncRoute(async (_req,res) => {
+  const now=new Date();
+  const [activeSessions,suspendedUsers,unverifiedUsers,adminUsers,recentSecurityEvents]=await Promise.all([
+    db.refreshSession.count({where:{expiresAt:{gt:now},OR:[{revokedAt:null},{revokedAt:{isSet:false}}]}}),
+    db.user.count({where:{role:"USER",status:"SUSPENDED"}}),db.user.count({where:{role:"USER",email:{not:null},emailVerifiedAt:null}}),
+    db.user.count({where:{role:{in:["ADMIN","SUPPORT"]},status:"ACTIVE"}}),
+    db.auditLog.findMany({where:{action:{in:["BOOTSTRAP_ADMIN","USER_STATUS_CHANGE","ADMIN_DISABLE_AUTO_COPY","REVOKE_SESSION","CLOSE_ACCOUNT"]}},orderBy:{createdAt:"desc"},take:100,include:{user:{select:{email:true,displayName:true}}}})
+  ]);
+  res.json({counts:{activeSessions,suspendedUsers,unverifiedUsers,adminUsers},events:recentSecurityEvents});
+}));
+
+app.get("/v1/admin/audit-logs", requireAdmin, asyncRoute(async (_req,res) => {
+  const logs=await db.auditLog.findMany({orderBy:{createdAt:"desc"},take:500,include:{user:{select:{id:true,email:true,displayName:true}}}});
+  res.json({logs});
 }));
 
 const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding"]);

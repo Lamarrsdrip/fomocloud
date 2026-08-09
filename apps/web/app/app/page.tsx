@@ -137,8 +137,9 @@ function PerformanceChart({snapshots}:{snapshots:any[]}){
  async function choose(r:string){setRange(r);setBusy(true);try{const x=await apiFetch<any>(`/v1/me/performance?range=${r}`);setRows(x.points||[]);setChange(Number(x.pnlChangeUsd||0))}catch{}finally{setBusy(false)}}
  const vals=rows.slice(-240).map(x=>Number(x.accountValueUsd||0));
  const last=rows[rows.length-1];
+ const meaningful=rows.length>=2&&rows.some(x=>Number(x.accountValueUsd||0)!==0||Number(x.netPnlUsd||0)!==0);
  return <section className="app-card pnl-card"><div className="card-title"><div><span>PERFORMANCE</span><h2>Your live account history</h2></div><div className="performance-tabs">{["1D","7D","30D","ALL"].map(r=><button key={r} className={range===r?"active":""} onClick={()=>choose(r)}>{r}</button>)}</div></div>
-  {!vals.length?<div className="pnl-empty">Your real account-value chart starts after the analytics worker records genuine live balance/position snapshots. Simulation results are kept separate.</div>:<><div className="performance-summary"><b className={(change??last?.netPnlUsd??0)>=0?"positive":"negative"}>{change===null?money(last?.netPnlUsd):`${change>=0?"+":""}${money(change)}`}</b><small>{change===null?"Current live net P&L":`${range} change in cumulative live P&L`}{busy?" · refreshing…":""}</small></div><PnlSvg vals={vals}/><div className="pnl-meta"><span>{rows.length} snapshot point(s)</span><span>Live P&amp;L only · simulation excluded</span></div></>}
+  {!meaningful?<div className="pnl-empty">Performance appears after genuine live account value or P&amp;L history exists. Zero-only snapshots and simulation results do not create a misleading chart.</div>:<><div className="performance-summary"><b className={(change??last?.netPnlUsd??0)>=0?"positive":"negative"}>{change===null?money(last?.netPnlUsd):`${change>=0?"+":""}${money(change)}`}</b><small>{change===null?"Current live net P&L":`${range} change in cumulative live P&L`}{busy?" · refreshing…":""}</small></div><PnlSvg vals={vals}/><div className="pnl-meta"><span>{rows.length} snapshot point(s)</span><span>Live P&amp;L only · simulation excluded</span></div></>}
  </section>
 }
 function PnlSvg({vals}:{vals:number[]}){const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(1e-9,max-min);const pts=vals.map((v,i)=>`${(i/Math.max(1,vals.length-1))*100},${94-((v-min)/span)*78}`).join(" ");return <div className="pnl-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Account value history"><polyline points={pts}/></svg></div>}
@@ -151,7 +152,7 @@ function activityText(event:any){
 }
 
 function HomeView({d,activity,follows,autoOn,toggleAuto,setView}:{d:any;activity:any;follows:any[];autoOn:boolean;toggleAuto:()=>Promise<void>;setView:(v:View)=>void}){
- const s=d?.summary||{};const sim=d?.simulation||{};
+ const s=d?.summary||{};
  const accountValue=Number(s.accountValueUsd||0),todayPnl=Number(s.todayPnlUsd||0);
  const todayPct=accountValue?todayPnl/Math.max(1,accountValue-todayPnl)*100:0;
  return <div className="native-dashboard">
@@ -187,7 +188,6 @@ function HomeView({d,activity,follows,autoOn,toggleAuto,setView}:{d:any;activity
     <section className="app-card cash-breakdown"><div className="card-title"><div><span>TRADING CASH BY CHAIN</span><h2>Where your USDC is actually available</h2></div></div>
       {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect a supported wallet to sync genuine chain-specific USDC. One chain’s USDC is never treated as spendable on another chain.</div>}
     </section>
-    {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-detail"><div><span>SIMULATION DETAIL</span><h2>Test results remain separate from live money</h2></div><div><b>{sim.openPositions??0}</b><span>Open positions</span></div><div><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b><span>Realized P&amp;L</span></div><div><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b><span>Unrealized P&amp;L</span></div></section>}
   </div>
  </div>;
 }

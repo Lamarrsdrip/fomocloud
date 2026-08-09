@@ -4,9 +4,14 @@ import {apiFetch,plainError,money} from "../../lib/api";
 import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus} from "lucide-react";
 
 const sections=[
- ["overview","Overview",BarChart3],["users","Users",Users],["traders","Traders",Radio],["signals","Signals",Activity],
- ["trades","Trades",WalletCards],["config","Configuration",Settings2],["broadcasts","Broadcasts",Send],["health","System Health",ShieldCheck]
+ ["overview","Overview",BarChart3],["users","Users",Users],["traders","Traders",Radio],["wallets","Trader Wallets",Radio],
+ ["signals","Signals",Activity],["decisions","Copy Decisions",Activity],["trades","Trades",WalletCards],["positions","Positions",WalletCards],
+ ["providers","Providers",Settings2],["market","Market Data",Settings2],["chains","Chains",Settings2],["execution","Execution",Settings2],
+ ["meme","Meme Intelligence",Settings2],["social","Social Intelligence",Settings2],["notifications","Notifications",Bell],
+ ["broadcasts","Broadcasts",Send],["email","Email",Mail],["push","Push",Bell],["fees","Fees",Settings2],
+ ["health","System Health",ShieldCheck],["security","Security",ShieldCheck],["audit","Audit Logs",Activity],["settings","Settings",Settings2]
 ] as const;
+const configKeys:Record<string,string>={market:"marketData",chains:"chains",execution:"execution",meme:"risk",social:"social",email:"email",push:"push",fees:"fees",settings:"branding"};
 
 export default function Admin(){
  const[tab,setTab]=useState("overview");const[me,setMe]=useState<any>(null);const[data,setData]=useState<any>({});const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
@@ -15,10 +20,16 @@ export default function Admin(){
   let r:any={};
   if(which==="overview")r=await apiFetch("/v1/admin/overview");
   if(which==="users")r=await apiFetch("/v1/admin/users");
-  if(which==="traders")r=await apiFetch("/v1/admin/traders");
+  if(which==="traders"||which==="wallets")r=await apiFetch("/v1/admin/traders");
   if(which==="signals")r=await apiFetch("/v1/admin/signals");
+  if(which==="decisions")r=await apiFetch("/v1/admin/copy-decisions");
   if(which==="trades")r=await apiFetch("/v1/admin/trades");
-  if(which==="config")r=await apiFetch("/v1/admin/config");
+  if(which==="positions")r=await apiFetch("/v1/admin/positions");
+  if(which==="providers")r=await apiFetch("/v1/admin/providers");
+  if(which==="notifications")r=await apiFetch("/v1/admin/notifications");
+  if(which==="security")r=await apiFetch("/v1/admin/security");
+  if(which==="audit")r=await apiFetch("/v1/admin/audit-logs");
+  if(configKeys[which])r=await apiFetch("/v1/admin/config");
   if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
   if(which==="health")r=await apiFetch("/v1/admin/health");
   setData(r);
@@ -27,14 +38,20 @@ export default function Admin(){
  function change(t:string){setTab(t);void load(t)}
  return <main className="admin-layout">
   <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">∞</span><b>FomoCloud Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav></aside>
-  <section className="admin-main"><div className="admin-head"><div><small>OWNER CONTROL CENTER</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1></div><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div>
+  <section className="admin-main"><div className="admin-head"><div><small>OWNER CONTROL CENTER</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1></div><div className="admin-head-actions"><select className="admin-mobile-select" value={tab} onChange={event=>change(event.target.value)}>{sections.map(([id,label])=><option value={id} key={id}>{label}</option>)}</select><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div></div>
    {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
     {tab==="overview"&&<Overview d={data}/>}
     {tab==="users"&&<UsersView d={data} reload={()=>load("users")}/>}
-    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="ADMIN"}/>}
+    {(tab==="traders"||tab==="wallets")&&<TradersAdmin d={data} reload={()=>load(tab)} admin={me?.role==="ADMIN"}/>}
     {tab==="signals"&&<Signals d={data}/>}
+    {tab==="decisions"&&<Decisions d={data}/>}
     {tab==="trades"&&<Trades d={data}/>}
-    {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="ADMIN"}/>}
+    {tab==="positions"&&<AdminPositions d={data}/>}
+    {tab==="providers"&&<Providers d={data}/>}
+    {tab==="notifications"&&<Delivery d={data}/>}
+    {tab==="security"&&<Security d={data}/>}
+    {tab==="audit"&&<AuditLogs d={data}/>}
+    {configKeys[tab]&&<Config d={data} reload={()=>load(tab)} admin={me?.role==="ADMIN"} initialKey={configKeys[tab]}/>}
     {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="ADMIN"}/>}
     {tab==="health"&&<Health d={data}/>}
    </>}
@@ -42,16 +59,23 @@ export default function Admin(){
  </main>
 }
 
-function Overview({d}:{d:any}){const c=d.counts||{};return <>
- <div className="app-grid-4"><div className="stat-card"><span>Users</span><b>{c.users??0}</b><small>Real registered users</small></div><div className="stat-card"><span>Platform traders</span><b>{c.traders??0}</b><small>Admin-managed trader registry</small></div><div className="stat-card"><span>Signals detected</span><b>{c.signals??0}</b><small>Source-wallet signals</small></div><div className="stat-card"><span>Open positions</span><b>{c.openPositions??0}</b><small>Across all accounts</small></div></div>
- <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>EXECUTION</span><h2>{String(d.executionMode||"simulation").toUpperCase()}</h2></div></div><div className="notice">Live execution enabled: <b>{d.liveExecutionEnabled?"YES":"NO"}</b>. Public launch should remain simulation until real delegated signing and controlled chain testing are complete.</div></section>
+function Overview({d}:{d:any}){const c=d.counts||{},metrics=[
+ ["Total Users",c.users,"Registered user accounts"],["Active Users",c.activeUsers,"Accounts currently active"],["New Users 24h",c.newUsers24h,"Created in the last day"],["Auto Copy Users",c.autoCopyUsers,"Global Auto Copy enabled"],
+ ["Platform Traders",c.traders,"Admin-managed sources"],["Watched Wallets",c.watchedWallets,"Verified source wallets"],["Signals Today",c.signalsToday,"Detected source moves"],["Decisions Today",c.decisionsToday,"Per-user fan-out"],
+ ["Copied Today",c.copiedToday,"Eligible buy decisions"],["Watch Only",c.watchOnlyToday,"Observed without copying"],["Waiting",c.waitingToday,"Waiting for data or price"],["Skipped",c.skippedToday,"Rejected by settings or risk"],
+ ["Orders Today",c.ordersToday,"Simulation and live labeled"],["Open Live",c.openLivePositions,"Real-money positions"],["Simulation Positions",c.simulationPositions,"Separate test portfolio"],["Queue Backlog",(d.queues?.signals?.waiting||0)+(d.queues?.signals?.delayed||0),"Signals waiting or delayed"]
+ ];return <>
+ <div className="app-grid-4">{metrics.map(([label,value,detail])=><div className="stat-card" key={String(label)}><span>{label}</span><b>{value??0}</b><small>{detail}</small></div>)}</div>
+ <div className="admin-section-grid" style={{marginTop:10}}><section className="app-card"><div className="card-title"><div><span>14 DAY ACTIVITY</span><h2>Users, signals and trades</h2></div></div><div className="admin-spark-bars">{(d.chart||[]).map((row:any)=>{const max=Math.max(1,...(d.chart||[]).map((x:any)=>x.users+x.signals+x.trades));return <div key={row.date} title={`${row.date}: ${row.users} users, ${row.signals} signals, ${row.trades} trades`}><i style={{height:`${Math.max(4,((row.users+row.signals+row.trades)/max)*100)}%`}}/><small>{row.date.slice(5)}</small></div>})}</div></section>
+ <section className="app-card"><div className="card-title"><div><span>EXECUTION</span><h2>{String(d.executionMode||"simulation").toUpperCase()}</h2></div></div><div className="notice">Live execution enabled: <b>{d.liveExecutionEnabled?"YES":"NO"}</b>. Signal queue failed: <b>{d.queues?.signals?.failed??0}</b>. Existing positions keep their explicit LIVE or SIMULATION mode.</div><div className="health-grid" style={{marginTop:12}}>{(d.health||[]).slice(0,8).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>{new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section></div>
  </>}
 function UsersView({d,reload}:{d:any;reload:()=>void}){
  const[detail,setDetail]=useState<any>(null),[detailErr,setDetailErr]=useState("");
  async function status(id:string,s:string){await apiFetch(`/v1/admin/users/${id}`,{method:"PATCH",body:JSON.stringify({status:s})});reload();if(detail?.user?.id===id)await view(id)}
+ async function disableAuto(id:string){await apiFetch(`/v1/admin/users/${id}`,{method:"PATCH",body:JSON.stringify({autoCopyEnabled:false})});reload();if(detail?.user?.id===id)await view(id)}
  async function view(id:string){setDetailErr("");try{setDetail(await apiFetch(`/v1/admin/users/${id}`))}catch(e){setDetailErr(plainError(e))}}
  return <>
-  <section className="app-card admin-table-wrap"><table className="admin-table"><thead><tr><th>User</th><th>Status</th><th>Auto Copy</th><th>Wallets</th><th>Traders</th><th>Positions</th><th>Last login</th><th>Action</th></tr></thead><tbody>{(d.users||[]).map((u:any)=><tr key={u.id}><td><b>{u.displayName||u.email||u.id.slice(-6)}</b><br/><small>{u.email||"wallet account"}</small></td><td>{u.status}</td><td>{u.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</td><td>{u._count?.wallets??0}</td><td>{u._count?.follows??0}</td><td>{u._count?.positions??0}</td><td>{u.lastLoginAt?new Date(u.lastLoginAt).toLocaleString():"—"}</td><td><div className="table-actions"><button className="soft-action" onClick={()=>view(u.id)}>View</button><select value={u.status} onChange={e=>status(u.id,e.target.value)}><option>ACTIVE</option><option>SUSPENDED</option><option>CLOSED</option></select></div></td></tr>)}</tbody></table></section>
+  <section className="app-card admin-table-wrap"><table className="admin-table admin-users-table"><thead><tr><th>User</th><th>Verified</th><th>Status</th><th>Joined</th><th>Trading Cash</th><th>P&amp;L</th><th>Auto Copy</th><th>Wallets</th><th>Traders</th><th>Positions</th><th>Last login</th><th>Action</th></tr></thead><tbody>{(d.users||[]).map((u:any)=><tr key={u.id}><td><b>{u.displayName||u.email||u.id.slice(-6)}</b><br/><small>{u.email||"wallet account"}</small></td><td>{u.email?u.emailVerifiedAt?"YES":"NO":"WALLET"}</td><td>{u.status}</td><td>{new Date(u.createdAt).toLocaleDateString()}</td><td>{money(u.summary?.tradingCashUsd)}</td><td className={(u.summary?.pnlUsd||0)>=0?"positive":"negative"}>{money(u.summary?.pnlUsd)}</td><td>{u.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</td><td>{u._count?.wallets??0}</td><td>{u._count?.follows??0}</td><td>{u._count?.positions??0}</td><td>{u.lastLoginAt?new Date(u.lastLoginAt).toLocaleString():"—"}</td><td><div className="table-actions"><button className="soft-action" onClick={()=>view(u.id)}>View</button>{u.tradingSettings?.autoCopyEnabled&&<button className="soft-action" onClick={()=>disableAuto(u.id)}>Disable Auto Copy</button>}<select value={u.status} onChange={e=>status(u.id,e.target.value)}><option>ACTIVE</option><option>SUSPENDED</option><option>CLOSED</option></select></div></td></tr>)}</tbody></table></section>
   {detailErr&&<div className="auth-error" style={{marginTop:10}}>{detailErr}</div>}
   {detail&&<section className="app-card admin-user-detail" style={{marginTop:10}}><div className="card-title"><div><span>USER DETAIL</span><h2>{detail.user.displayName||detail.user.email||detail.user.id}</h2></div><button className="soft-action" onClick={()=>setDetail(null)}>Close</button></div>
    <div className="app-grid-4"><div className="stat-card"><span>Trading Cash</span><b>{money(detail.summary.tradingCashUsd)}</b><small>{money(detail.summary.availableUsd)} available</small></div><div className="stat-card"><span>Live P&amp;L</span><b className={(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)>=0?"positive":"negative"}>{money(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)}</b><small>Realized + unrealized</small></div><div className="stat-card"><span>Live positions</span><b>{detail.summary.openLivePositions}</b><small>Simulation {detail.summary.simulationPositions}</small></div><div className="stat-card"><span>Auto Copy</span><b>{detail.user.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</b><small>{detail.user.status}</small></div></div>
@@ -78,11 +102,18 @@ function TraderWalletControls({trader,admin,reload}:{trader:any;admin:boolean;re
   {msg&&<small className="negative">{msg}</small>}
  </div>
 }
-function Signals({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>Trader</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Copies</th><th>Detected</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{s.trader?.displayName}</td><td>{s.chain}</td><td>{s.action}</td><td>{s.action==="BUY"?s.outputMint.slice(0,10):s.inputMint.slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s._count?.copyDecisions||0}</td><td>{new Date(s.observedAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
-function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
-function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
+function Signals({d}:{d:any}){return <section className="app-card admin-table-wrap"><table className="admin-table admin-wide-table"><thead><tr><th>Time</th><th>Trader</th><th>Wallet</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Followers</th><th>Eligible</th><th>Copied</th><th>Watch</th><th>Waiting</th><th>Skipped</th><th>Latency</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{new Date(s.observedAt).toLocaleString()}</td><td>{s.trader?.displayName}</td><td>{s.sourceWallet.slice(0,6)}…{s.sourceWallet.slice(-5)}</td><td>{s.chain}</td><td>{s.action}</td><td>{(s.action==="BUY"?s.outputMint:s.inputMint).slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s.fanout?.followers||0}</td><td>{s.fanout?.eligible||0}</td><td>{s.fanout?.copied||0}</td><td>{s.fanout?.watchOnly||0}</td><td>{s.fanout?.waiting||0}</td><td>{s.fanout?.skipped||0}</td><td>{s.processingLatencyMs==null?"—":`${s.processingLatencyMs}ms`}</td></tr>)}</tbody></table></section>}
+function Decisions({d}:{d:any}){return <section className="app-card admin-table-wrap"><table className="admin-table admin-wide-table"><thead><tr><th>Time</th><th>Signal</th><th>Trader</th><th>User</th><th>Decision</th><th>Amount</th><th>Allowed</th><th>Reason</th><th>Chase</th><th>Orders</th></tr></thead><tbody>{(d.decisions||[]).map((x:any)=><tr key={x.id}><td>{new Date(x.createdAt).toLocaleString()}</td><td>{x.signal?.action} {(x.signal?.action==="BUY"?x.signal?.outputMint:x.signal?.inputMint)?.slice(0,8)}…</td><td>{x.signal?.trader?.displayName||"—"}</td><td>{x.user?.email||x.user?.displayName||x.userId.slice(-6)}</td><td><span className={`status-badge ${x.allowed?"":"watch"}`}>{x.action}</span></td><td>{x.amountUsd?money(x.amountUsd):"—"}</td><td>{x.allowed?"YES":"NO"}</td><td>{x.reason||"Eligible"}<br/><small>{x.explanation}</small></td><td>{x.walletChasePct==null?"—":`${Number(x.walletChasePct).toFixed(1)}%`}</td><td>{x.orders?.length||0}</td></tr>)}</tbody></table></section>}
+function Trades({d}:{d:any}){return <section className="app-card admin-table-wrap"><table className="admin-table admin-wide-table"><thead><tr><th>Created</th><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Side</th><th>Amount</th><th>Status</th><th>Venue</th><th>Transaction</th><th>Error</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{new Date(o.createdAt).toLocaleString()}</td><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.side}</td><td>{money(Number(o.requestedInputRaw||0)/1_000_000)}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{o.txHash?`${o.txHash.slice(0,8)}…`:"—"}</td><td>{o.errorCode||"—"}</td></tr>)}</tbody></table></section>}
+function AdminPositions({d}:{d:any}){return <section className="app-card admin-table-wrap"><table className="admin-table admin-wide-table"><thead><tr><th>Opened</th><th>User</th><th>Token</th><th>Trader</th><th>Mode</th><th>Entry</th><th>Current</th><th>Cost</th><th>P&amp;L</th><th>TP</th><th>Runner</th><th>Status</th></tr></thead><tbody>{(d.positions||[]).map((p:any)=><tr key={p.id}><td>{new Date(p.openedAt).toLocaleString()}</td><td>{p.user?.email||p.user?.displayName||p.userId.slice(-6)}</td><td>{p.mint.slice(0,9)}…</td><td>{p.sourceTrader?.displayName||"—"}</td><td>{p.mode}</td><td>{p.avgEntryPriceUsd?money(p.avgEntryPriceUsd):"—"}</td><td>{p.currentPriceUsd?money(p.currentPriceUsd):"—"}</td><td>{money(p.costUsd)}</td><td className={(p.realizedPnlUsd+p.unrealizedPnlUsd)>=0?"positive":"negative"}>{money(p.realizedPnlUsd+p.unrealizedPnlUsd)}</td><td>{p.exits?.length||0} exits</td><td>{BigInt(p.remainingTokenRaw||"0")>BigInt(0)?"ACTIVE":"CLOSED"}</td><td>{p.status}</td></tr>)}</tbody></table></section>}
+function Providers({d}:{d:any}){return <div className="provider-grid">{(d.providers||[]).map((p:any)=><section className="app-card provider-card" key={p.name}><div className="card-title"><div><span>PROVIDER</span><h2>{p.name}</h2></div><span className={`status-badge ${p.status==="HEALTHY"?"":"watch"}`}>{p.status}</span></div><p>{p.detail}</p><small>{p.lastSuccessAt?`Last success ${new Date(p.lastSuccessAt).toLocaleString()}`:"No verified recent success recorded"}</small></section>)}</div>}
+function Delivery({d}:{d:any}){const c=d.counts||{};return <><div className="app-grid-4"><div className="stat-card"><span>Notifications</span><b>{c.notifications||0}</b><small>Durable in-app rows</small></div><div className="stat-card"><span>Unread</span><b>{c.unread||0}</b><small>Across user accounts</small></div><div className="stat-card"><span>Push Devices</span><b>{c.pushSubscriptions||0}</b><small>Registered subscriptions</small></div><div className="stat-card"><span>Email Attempts</span><b>{c.emailLogs||0}</b><small>Logged provider attempts</small></div></div><section className="app-card admin-table-wrap" style={{marginTop:10}}><table className="admin-table"><thead><tr><th>Time</th><th>Recipient</th><th>Subject</th><th>Status</th><th>Provider</th><th>Error</th></tr></thead><tbody>{(d.recentEmails||[]).map((x:any)=><tr key={x.id}><td>{new Date(x.createdAt).toLocaleString()}</td><td>{x.toEmail}</td><td>{x.subject}</td><td>{x.status}</td><td>{x.providerId||"—"}</td><td>{x.error||"—"}</td></tr>)}</tbody></table></section></>}
+function Security({d}:{d:any}){const c=d.counts||{};return <><div className="app-grid-4"><div className="stat-card"><span>Active Sessions</span><b>{c.activeSessions||0}</b><small>Unexpired and not revoked</small></div><div className="stat-card"><span>Suspended Users</span><b>{c.suspendedUsers||0}</b><small>Access disabled</small></div><div className="stat-card"><span>Unverified Email</span><b>{c.unverifiedUsers||0}</b><small>Cannot enable Auto Copy</small></div><div className="stat-card"><span>Admin Operators</span><b>{c.adminUsers||0}</b><small>Admin and support roles</small></div></div><EventTable rows={d.events||[]}/></>}
+function AuditLogs({d}:{d:any}){return <EventTable rows={d.logs||[]}/>}
+function EventTable({rows}:{rows:any[]}){return <section className="app-card admin-table-wrap" style={{marginTop:10}}><table className="admin-table admin-wide-table"><thead><tr><th>Time</th><th>Actor</th><th>User</th><th>Action</th><th>Target</th><th>Metadata</th></tr></thead><tbody>{rows.map((x:any)=><tr key={x.id}><td>{new Date(x.createdAt).toLocaleString()}</td><td>{x.actor}</td><td>{x.user?.email||x.user?.displayName||x.userId||"System"}</td><td>{x.action}</td><td>{x.target||"—"}</td><td><small>{x.metadata?JSON.stringify(x.metadata):"—"}</small></td></tr>)}</tbody></table></section>}
+function Config({d,reload,admin,initialKey="email"}:{d:any;reload:()=>void;admin:boolean;initialKey?:string}){
  const sections=["email","push","marketData","execution","social","chains","fees","risk","branding"];
- const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState("");
+ const[key,setKey]=useState(initialKey),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState("");
  const current=(d.config||[]).find((c:any)=>c.key===key);
  const templates:any={
   email:{host:"",port:587,secure:false,user:"",pass:"",from:""},
@@ -101,6 +132,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  // current changes when Admin data reloads; key is the operator-selected section.
  // eslint-disable-next-line react-hooks/exhaustive-deps
  },[key,current?.updatedAt]);
+ useEffect(()=>setKey(initialKey),[initialKey]);
  function field(name:string,value:any){setForm((x:any)=>({...x,[name]:value}))}
  async function save(){setMsg("");try{const r=await apiFetch<any>(`/v1/admin/config/${key}`,{method:"PUT",body:JSON.stringify(form)});setMsg(r.restartRequired?"Saved securely. Restart the affected VPS worker(s) to apply this provider change.":"Saved securely. Blank secret fields keep their previous encrypted value.");reload()}catch(e){setMsg(plainError(e))}}
  async function vapid(){try{if(form.subject)await apiFetch("/v1/admin/config/push",{method:"PUT",body:JSON.stringify({subject:form.subject})});const r=await apiFetch<any>("/v1/admin/push/generate",{method:"POST"});setMsg(`VAPID ready. Public key ${r.publicKey.slice(0,18)}…`);reload()}catch(e){setMsg(plainError(e))}}
