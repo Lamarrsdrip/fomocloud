@@ -125,6 +125,13 @@ async function refreshWatchlist(){
     }
     try{
       const pubkey=new PublicKey(tw.address);
+      const account=await conn.getAccountInfo(pubkey,"confirmed");
+      if(account?.executable){
+        const existingId=subscriptions.get(tw.address);
+        if(existingId!=null){await conn.removeOnLogsListener(existingId);subscriptions.delete(tw.address);}
+        await db.traderWallet.update({where:{id:tw.id},data:{monitoringStatus:"INVALID_SOURCE_PROGRAM",monitoringError:"This address is an executable Solana program, not a trader wallet."}});
+        continue;
+      }
       const safeToWatch=await syncWallet(tw,pubkey);
       if(!safeToWatch){
         const existingId=subscriptions.get(tw.address);

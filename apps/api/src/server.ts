@@ -54,8 +54,14 @@ const asyncRoute = (fn:(req:any,res:Response,next:NextFunction)=>Promise<any>) =
   (req:Request,res:Response,next:NextFunction) => { Promise.resolve(fn(req,res,next)).catch(next); };
 
 function normalizeEmail(value:string) { return value.trim().toLowerCase(); }
+const invalidSolanaSourceAddresses=new Set([
+  "11111111111111111111111111111111",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+]);
 function validPublicAddress(chain:Chain,address:string){
-  if(chain==="SOLANA"){ try{return bs58.decode(address).length===32}catch{return false} }
+  if(chain==="SOLANA"){ try{return !invalidSolanaSourceAddresses.has(address)&&bs58.decode(address).length===32}catch{return false} }
   if(["BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return /^0x[a-fA-F0-9]{40}$/.test(address);
   return address.length>=20&&address.length<=128;
 }

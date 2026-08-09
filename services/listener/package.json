@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo listener lint",
-    "test": "pnpm build && node --test dist/*.test.js"
+    "test": "pnpm build && node --test dist/*.test.js",
+    "smoke:public-chain": "pnpm build && node scripts/public-chain-smoke.mjs"
   },
   "dependencies": {
     "@fomocloud/db": "workspace:*",

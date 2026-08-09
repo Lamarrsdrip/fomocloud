@@ -1,5 +1,8 @@
 # Live-money readiness checklist
 
+The dated forensic evidence and current NO-GO verdict are in
+[`FORENSIC_GO_LIVE_AUDIT_2026-08-09.md`](./FORENSIC_GO_LIVE_AUDIT_2026-08-09.md).
+
 Do not enable public live execution until every critical item is complete.
 
 ## Wallet / signing
