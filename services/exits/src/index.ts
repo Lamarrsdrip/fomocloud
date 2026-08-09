@@ -2,6 +2,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db } from "@fomocloud/db";
 import { startHeartbeat } from "@fomocloud/ops";
+import { calculateExitAccounting, calculatePositionMark } from "@fomocloud/shared";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection});
@@ -12,11 +13,6 @@ async function userEvent(userId:string,type:string,title:string,body:string,data
   // The activity row is the durable event identity. Reusing it as BullMQ jobId +
   // Notification.deliveryKey prevents DB notification duplicates when a worker retries.
   await notificationQueue.add("notify",{userId,type,title,body,data,deliveryKey:event.id},{jobId:event.id,removeOnComplete:1000,attempts:3,backoff:{type:"exponential",delay:1000}});
-}
-
-function ratio(raw:bigint,base:bigint){
-  if(base<=0n)return 0;
-  return Number((raw*1_000_000n)/base)/1_000_000;
 }
 
 /**
@@ -43,13 +39,11 @@ async function applySimulationProfitFloors(p:any,current:number,entry:number){
     let rawToExit=(original*BigInt(Math.round(step.partial*1_000_000)))/1_000_000n;
     if(rawToExit<=0n)rawToExit=1n;
     if(rawToExit>remaining)rawToExit=remaining;
-    const fractionOfOriginal=ratio(rawToExit,original);
-    const costBasis=p.costUsd*fractionOfOriginal;
-    const proceeds=costBasis*(current/entry);
-    const pnl=proceeds-costBasis;
-    const next=remaining-rawToExit;
+    const accounting=calculateExitAccounting({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:remaining.toString(),tokenRaw:rawToExit.toString(),costUsd:p.costUsd,avgEntryPriceUsd:entry,executionPriceUsd:current});
+    const pnl=accounting.realizedPnlUsd;
+    const next=BigInt(accounting.remainingTokenRaw);
     await db.$transaction([
-      db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
+      db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:accounting.tokenRaw,proceedsUsd:accounting.netProceedsUsd,pnlUsd:pnl}}),
       db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}})
     ]);
     remaining=next; done.add(reason); profitEvents++;
@@ -73,21 +67,17 @@ async function tick(){
       const price=await db.marketPrice.findFirst({where:{chain:p.chain,mint:p.mint},orderBy:{observedAt:"desc"}});
       if(!price || Date.now()-price.observedAt.getTime()>60_000){stale++;continue;}
       const current=price.priceUsd, entry=p.avgEntryPriceUsd;
-      const original=BigInt(p.entryTokenRaw);
       let remaining=BigInt(p.remainingTokenRaw);
 
       if(p.mode==="SIMULATION") remaining=await applySimulationProfitFloors(p,current,entry);
 
-      const remainingFraction=ratio(remaining,original);
-      const remainingCostBasis=p.costUsd*remainingFraction;
-      const currentValue=remainingCostBasis*(current/entry);
-      const unrealized=currentValue-remainingCostBasis;
+      const mark=calculatePositionMark({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:remaining.toString(),costUsd:p.costUsd,avgEntryPriceUsd:entry,currentPriceUsd:current});
       await db.position.update({
         where:{id:p.id},
         data:{
           currentPriceUsd:current,
           peakPriceUsd:Math.max(p.peakPriceUsd??entry,current),
-          unrealizedPnlUsd:remaining<=0n?0:unrealized,
+          unrealizedPnlUsd:mark.unrealizedPnlUsd,
           lastMarkedAt:new Date()
         }
       });

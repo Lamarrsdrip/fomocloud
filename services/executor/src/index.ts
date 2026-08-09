@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@fomocloud/db";
-import { decideCopy, walletChasePct } from "@fomocloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct } from "@fomocloud/shared";
 import { JupiterExecution } from "@fomocloud/execution";
 import { startHeartbeat } from "@fomocloud/ops";
 import { getConfig } from "@fomocloud/config";
@@ -105,18 +105,13 @@ async function handleSourceSell(signal:any){
       if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0) continue;
       const remaining=BigInt(p.remainingTokenRaw), original=BigInt(p.entryTokenRaw);
       if(remaining<=0n||original<=0n) continue;
-      let rawToExit=(remaining*BigInt(Math.round(fraction*1_000_000)))/1_000_000n;
+      let rawToExit=soldPct>=99.9?remaining:(remaining*BigInt(Math.round(fraction*1_000_000)))/1_000_000n;
       if(rawToExit<=0n&&fraction>0) rawToExit=1n;
       if(rawToExit>remaining) rawToExit=remaining;
-      const remainingFraction=Number(remaining*1_000_000n/original)/1_000_000;
-      const exitFractionOfRemaining=Number(rawToExit*1_000_000n/remaining)/1_000_000;
-      const remainingCostBasis=p.costUsd*remainingFraction;
-      const exitCostBasis=remainingCostBasis*exitFractionOfRemaining;
-      const remainingMarketValue=p.costUsd*(market.priceUsd/p.avgEntryPriceUsd)*remainingFraction;
-      const proceeds=remainingMarketValue*exitFractionOfRemaining;
-      const pnl=proceeds-exitCostBasis;
-      const nextRaw=remaining-rawToExit;
-      const isClosed=nextRaw<=0n||soldPct>=99.9;
+      const accounting=calculateExitAccounting({entryTokenRaw:p.entryTokenRaw,remainingTokenRaw:p.remainingTokenRaw,tokenRaw:rawToExit.toString(),costUsd:p.costUsd,avgEntryPriceUsd:p.avgEntryPriceUsd,executionPriceUsd:market.priceUsd});
+      const pnl=accounting.realizedPnlUsd, proceeds=accounting.netProceedsUsd;
+      const nextRaw=BigInt(accounting.remainingTokenRaw);
+      const isClosed=nextRaw<=0n;
       await db.$transaction([
         db.positionExit.create({data:{positionId:p.id,reason:"SOURCE_SELL_MIRROR_SIMULATION",tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
         db.position.update({where:{id:p.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}})

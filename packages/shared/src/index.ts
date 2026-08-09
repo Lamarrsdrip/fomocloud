@@ -99,3 +99,50 @@ export function stopPrice(entry: number, stopLossPct: number) {
 export function walletChasePct(sourceWalletExecutionPriceUsd:number, currentExecutablePriceUsd:number) {
   return percentMove(sourceWalletExecutionPriceUsd, currentExecutablePriceUsd);
 }
+
+function rawFraction(part:bigint,whole:bigint){
+  if(part<0n||whole<=0n||part>whole) throw new Error("INVALID_TOKEN_ACCOUNTING");
+  return Number((part*1_000_000_000n)/whole)/1_000_000_000;
+}
+
+export function calculateExitAccounting(params:{
+  entryTokenRaw:string;
+  remainingTokenRaw:string;
+  tokenRaw:string;
+  costUsd:number;
+  avgEntryPriceUsd:number;
+  executionPriceUsd:number;
+  feesUsd?:number;
+}){
+  const original=BigInt(params.entryTokenRaw),remaining=BigInt(params.remainingTokenRaw),sold=BigInt(params.tokenRaw);
+  if(sold<=0n||sold>remaining||!Number.isFinite(params.costUsd)||params.costUsd<0||!Number.isFinite(params.avgEntryPriceUsd)||params.avgEntryPriceUsd<=0||!Number.isFinite(params.executionPriceUsd)||params.executionPriceUsd<0) throw new Error("INVALID_EXIT_ACCOUNTING");
+  const feesUsd=Math.max(0,Number(params.feesUsd??0));
+  const fractionOfOriginal=rawFraction(sold,original);
+  const allocatedCostUsd=params.costUsd*fractionOfOriginal;
+  const grossProceedsUsd=allocatedCostUsd*(params.executionPriceUsd/params.avgEntryPriceUsd);
+  const netProceedsUsd=Math.max(0,grossProceedsUsd-feesUsd);
+  return {
+    tokenRaw:sold.toString(),
+    remainingTokenRaw:(remaining-sold).toString(),
+    allocatedCostUsd,
+    grossProceedsUsd,
+    feesUsd,
+    netProceedsUsd,
+    realizedPnlUsd:netProceedsUsd-allocatedCostUsd
+  };
+}
+
+export function calculatePositionMark(params:{
+  entryTokenRaw:string;
+  remainingTokenRaw:string;
+  costUsd:number;
+  avgEntryPriceUsd:number;
+  currentPriceUsd:number;
+}){
+  const original=BigInt(params.entryTokenRaw),remaining=BigInt(params.remainingTokenRaw);
+  if(remaining<0n||remaining>original||!Number.isFinite(params.avgEntryPriceUsd)||params.avgEntryPriceUsd<=0||!Number.isFinite(params.currentPriceUsd)||params.currentPriceUsd<0) throw new Error("INVALID_POSITION_MARK");
+  const remainingFraction=rawFraction(remaining,original);
+  const remainingCostBasisUsd=params.costUsd*remainingFraction;
+  const currentValueUsd=remainingCostBasisUsd*(params.currentPriceUsd/params.avgEntryPriceUsd);
+  return {remainingFraction,remainingCostBasisUsd,currentValueUsd,unrealizedPnlUsd:currentValueUsd-remainingCostBasisUsd};
+}
