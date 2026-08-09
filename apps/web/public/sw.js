@@ -1,16 +1,24 @@
+const CACHE_NAME="fomocloud-v05-ui4";
 self.addEventListener("install", event => {
-  event.waitUntil(caches.open("fomocloud-v05-ui3").then(cache => cache.addAll(["/", "/app/", "/login/", "/signup/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"])).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(["/", "/app/", "/login/", "/signup/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"])).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== "fomocloud-v05-ui3").map(key => caches.delete(key)))).then(() => clients.claim()));
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)))).then(() => clients.claim()));
 });
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(fetch(event.request).then(response => {
     const copy=response.clone();
-    void caches.open("fomocloud-v05-ui3").then(cache => cache.put(event.request, copy));
+    void caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
     return response;
-  }).catch(() => caches.match(event.request).then(response => response || (event.request.mode === "navigate" && new URL(event.request.url).pathname.startsWith("/app/") ? caches.match("/app/") : caches.match("/")))));
+  }).catch(() => caches.match(event.request).then(response => {
+    if(response) return response;
+    if(event.request.mode!=="navigate") return undefined;
+    const pathname=new URL(event.request.url).pathname;
+    if(pathname.startsWith("/app/")) return caches.match("/app/");
+    if(pathname.startsWith("/login/")) return caches.match("/login/");
+    return caches.match("/");
+  })));
 });
 self.addEventListener("push", event => {
   let data={title:"FomoCloud",body:"You have a new update",url:"/app/"};
