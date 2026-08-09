@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: "FomoCloud — Smart meme copy trading",
   description: "Follow smart wallets. FomoCloud watches, checks, buys and protects meme trades.",
   manifest: "/manifest.webmanifest",
-  icons: { icon: "/icon.svg", shortcut: "/icon.svg", apple: "/icon.svg" },
+  icons: { icon: [{ url: "/icon.svg", type: "image/svg+xml" }, { url: "/icon-192.png", sizes: "192x192", type: "image/png" }], shortcut: "/icon.svg", apple: "/apple-touch-icon.png" },
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "FomoCloud — Smart meme copy trading" }
 };
 export const viewport: Viewport = {
