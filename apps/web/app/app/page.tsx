@@ -7,7 +7,7 @@ import {
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 
 type View="home"|"traders"|"community"|"activity"|"positions"|"profile";
-const nav:[View,string,any][]=[["home","Home",Home],["traders","Traders",Users],["community","Community",UserRound],["activity","Activity",Activity],["positions","Positions",WalletCards],["profile","Profile",Settings2]];
+const nav:[View,string,any][]=[["home","Home",Home],["traders","Traders",Users],["activity","Activity",Activity],["positions","Positions",WalletCards],["profile","Profile",Settings2]];
 const routeViews:Record<string,View>={
   traders:"traders",community:"community",activity:"activity",history:"activity",positions:"positions",
   wallet:"profile",notifications:"profile",profile:"profile",settings:"profile"
@@ -44,6 +44,7 @@ export default function AppPage(){
   const[settings,setSettings]=useState<any>(null);
   const[notifications,setNotifications]=useState<any[]>([]);
   const[customOpen,setCustomOpen]=useState(false);
+  const[greeting,setGreeting]=useState("Welcome back");
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",viewPaths[v])}
   async function load(){
@@ -59,7 +60,7 @@ export default function AppPage(){
       setError(plainError(e));
     }finally{setLoading(false)}
   }
-  useEffect(()=>{setViewState(initialView());void load()},[]);
+  useEffect(()=>{const hour=new Date().getHours();setGreeting(hour<12?"Good morning":hour<18?"Good afternoon":"Good evening");setViewState(initialView());void load()},[]);
   useEffect(()=>{
     let stopped=false;
     const refreshLive=async()=>{
@@ -92,7 +93,7 @@ export default function AppPage(){
   }
   async function signOut(){await logout();location.href="/login/"}
 
-  if(loading&&!me)return <main className="app-page"><div className="loading"><div><div className="spinner"/>Loading your account…</div></div></main>;
+  if(loading&&!me)return <main className="app-page"><div className="app-skeleton"><div className="skeleton-head"/><div className="skeleton-hero"/><div className="skeleton-grid"><i/><i/><i/><i/></div><div className="skeleton-list"><i/><i/><i/></div></div></main>;
 
   return <main className="app-page">
     <div className="app-layout">
@@ -107,16 +108,17 @@ export default function AppPage(){
 
       <section className="app-main">
         <div className="app-top">
-          <div><small>PRIVATE ACCOUNT</small><h1>{view==="home"?"Your dashboard":view[0].toUpperCase()+view.slice(1)}</h1></div>
+          <div className="app-title-block"><div className="app-mobile-brand"><span className="brandmark small">∞</span><span className="mode-dot"/></div><small>{view==="home"?"PRIVATE ACCOUNT":view.toUpperCase()}</small><h1>{view==="home"?<>{greeting}<span className="mobile-name">, {(me?.displayName||"there").split(" ")[0]}</span></>:view[0].toUpperCase()+view.slice(1)}</h1></div>
           <div className="app-top-actions">
-            <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Copy {autoOn?"On":"Off"}</button>
+            <button className={`auto-toggle desktop-auto ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Copy {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
+            <button className="header-avatar" onClick={()=>setView("profile")} aria-label="Open profile">{initials(me?.displayName||me?.email)}</button>
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {dashboard?.executionMode==="simulation"&&<div className="notice"><b>Simulation is active.</b> Market monitoring and account data can be real, but automatic orders shown as SIMULATION do not move live funds.</div>}
+        {dashboard?.executionMode==="simulation"&&<div className="simulation-banner"><span className="sim-badge">SIMULATION MODE</span><p>Trades are being tested without moving live funds.</p><button onClick={()=>setView("profile")}>Learn more</button></div>}
 
-        {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} setView={setView}/>}
+        {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} autoOn={autoOn} toggleAuto={toggleAuto} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
@@ -141,67 +143,83 @@ function PerformanceChart({snapshots}:{snapshots:any[]}){
 }
 function PnlSvg({vals}:{vals:number[]}){const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(1e-9,max-min);const pts=vals.map((v,i)=>`${(i/Math.max(1,vals.length-1))*100},${94-((v-min)/span)*78}`).join(" ");return <div className="pnl-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Account value history"><polyline points={pts}/></svg></div>}
 
-function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[];setView:(v:View)=>void}){
+function activityText(event:any){
+ const raw=String(event?.type||"").replaceAll("_"," ").toLowerCase();
+ const title=event?.title&&!String(event.title).includes("_")?event.title:raw?raw[0].toUpperCase()+raw.slice(1):"Account activity";
+ const body=event?.body||event?.explanation||"FomoCloud recorded this step for your account.";
+ return{title,body,status:event?.status||"Recorded"};
+}
+
+function HomeView({d,activity,follows,autoOn,toggleAuto,setView}:{d:any;activity:any;follows:any[];autoOn:boolean;toggleAuto:()=>Promise<void>;setView:(v:View)=>void}){
  const s=d?.summary||{};const sim=d?.simulation||{};
- return <>
-  <div className="app-grid-4">
-    <div className="stat-card"><span>Trading Cash</span><b>{money(s.tradingCashUsd)}</b><small>{s.tradingCashUsd?"Real synced USDC allocations":"No cash synced yet"}</small></div>
-    <div className="stat-card"><span>Net P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b><small>Realized + unrealized live positions</small></div>
-    <div className="stat-card"><span>Open positions</span><b>{s.openPositions??0}</b><small>{sim.openPositions?`${sim.openPositions} simulation position(s) separate`:"Live positions only"}</small></div>
-    <div className="stat-card"><span>Auto Copy traders</span><b>{s.copiedTraders??0}</b><small>{s.winRate==null?"Win rate appears after closed live trades":`${s.winRate.toFixed(1)}% live win rate`}</small></div>
-  </div>
-  {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-summary"><div className="card-title"><div><span>SIMULATION WORKSPACE</span><h2>Test decisions without moving live funds</h2></div><span className="sim-badge">SIMULATION</span></div><div className="simulation-stats"><div><span>Open simulated positions</span><b>{sim.openPositions??0}</b></div><div><span>Simulated realized P&amp;L</span><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b></div><div><span>Simulated unrealized P&amp;L</span><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b></div></div><p>Simulation uses the real source-signal and market-data pipeline where configured, but it never presents these numbers as live account money.</p></section>}
-  <PerformanceChart snapshots={d?.snapshots||[]} />
-  <section className="app-card cash-breakdown"><div className="card-title"><div><span>TRADING CASH BY CHAIN</span><h2>Where your USDC is actually available</h2></div></div>
-    {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect a supported wallet to sync genuine chain-specific USDC. One chain's USDC is never silently treated as spendable on another chain.</div>}
+ const accountValue=Number(s.accountValueUsd||0),todayPnl=Number(s.todayPnlUsd||0);
+ const todayPct=accountValue?todayPnl/Math.max(1,accountValue-todayPnl)*100:0;
+ return <div className="native-dashboard">
+  <section className="portfolio-card">
+    <div className="portfolio-head"><div><span>TOTAL ACCOUNT VALUE</span><b>{money(accountValue)}</b></div><div className={`today-chip ${todayPnl<0?"negative-chip":""}`}><small>Today</small><strong>{todayPnl>=0?"+":""}{money(todayPnl)} · {pct(todayPct)}</strong></div></div>
+    <div className="portfolio-breakdown">
+      <div><span>Trading Cash</span><b>{money(s.tradingCashUsd)}</b></div>
+      <div><span>In Trades</span><b>{money(s.inTradesUsd)}</b></div>
+      <div><span>Available</span><b>{money(s.availableUsd)}</b></div>
+    </div>
   </section>
-  <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>RECENT ACTIVITY</span><h2>What FomoCloud did for you</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
-      {activity?.events?.length?<div className="list">{activity.events.slice(0,6).map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.status||e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="No activity yet" body="Choose traders and enable Auto Copy or Watch mode. Your real account activity will appear here." action="Choose traders" onClick={()=>setView("traders")}/>}
+
+  <section className="autocopy-card">
+    <div><span>AUTO COPY</span><b>{autoOn?"Monitoring is on":"New automatic entries are off"}</b><small>{s.copiedTraders||0} trader(s) currently configured for Auto Copy</small></div>
+    <button className={`native-switch ${autoOn?"on":""}`} onClick={toggleAuto} aria-label={`Turn Auto Copy ${autoOn?"off":"on"}`}><i/></button>
+  </section>
+
+  <div className="dashboard-columns">
+    <section className="app-card compact-card positions-home"><div className="card-title"><div><span>OPEN POSITIONS</span><h2>Your positions</h2></div><button onClick={()=>setView("positions")}>See all <ChevronRight size={12}/></button></div>
+      {d?.positions?.length?<div className="positions-list">{d.positions.slice(0,4).map((p:any)=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title="No positions yet" body="Follow a trader and turn on Auto Copy to start monitoring opportunities." action="Explore traders" onClick={()=>setView("traders")}/>}
     </section>
-    <section className="app-card"><div className="card-title"><div><span>YOUR TRADERS</span><h2>Copy setup</h2></div></div>
-      {follows.length?<div className="list">{follows.slice(0,5).map((f:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={f.id}><div><b>{f.trader.displayName}</b><small>@{f.trader.handle}</small></div><span className={`status-badge ${f.mode==="WATCH_ONLY"?"watch":f.mode==="FOLLOW_ONLY"?"follow":""}`}>{f.mode.replaceAll("_"," ")}</span></div>)}</div>:<Empty icon={Users} title="Your list is empty" body="Follow platform traders or add a public wallet you already trust." action="Find traders" onClick={()=>setView("traders")}/>}
-    </section>
-  </div>
-  <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>OPEN POSITIONS</span><h2>Your positions</h2></div><button onClick={()=>setView("positions")}>Open positions <ChevronRight size={12}/></button></div>
-      {d?.positions?.length?<div className="list">{d.positions.slice(0,6).map((p:any)=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title="No positions yet" body="Your account starts clean. Positions appear only after a genuine decision and execution/simulation event."/>}
-    </section>
-    <section className="app-card"><div className="card-title"><div><span>ACCOUNT STATUS</span><h2>Ready check</h2></div></div>
-      <div className="list">
-        <StatusLine label="Backend" value="Connected" ok/>
-        <StatusLine label="Trading Cash" value={s.tradingCashUsd>0?"Synced":"Needs wallet/cash"} ok={s.tradingCashUsd>0}/>
-        <StatusLine label="Auto Copy" value={d?.settings?.autoCopyEnabled?"On":"Off"} ok={Boolean(d?.settings?.autoCopyEnabled)}/>
-        <StatusLine label="Execution" value={String(d?.executionMode||"simulation").toUpperCase()} ok={false}/>
-      </div>
+    <section className="app-card compact-card"><div className="card-title"><div><span>RECENT ACTIVITY</span><h2>What FomoCloud did for you</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
+      {activity?.events?.length?<div className="native-activity">{activity.events.slice(0,5).map((e:any)=>{const copy=activityText(e);return <div key={e.id}><i/><div><b>{copy.title}</b><small>{copy.body}</small></div><span>{timeAgo(e.createdAt)}</span></div>})}</div>:<Empty icon={Activity} title="No activity yet" body="When a followed wallet moves, your checks and decisions will appear here in plain English." action="Choose traders" onClick={()=>setView("traders")}/>}
     </section>
   </div>
- </>;
+
+  <section className="app-card compact-card followed-home"><div className="card-title"><div><span>FOLLOWED TRADERS</span><h2>Your people</h2></div><button onClick={()=>setView("traders")}>Manage <ChevronRight size={12}/></button></div>
+    {follows.length?<div className="followed-strip">{follows.slice(0,6).map((f:any)=><button key={f.id} onClick={()=>setView("traders")}><span className="avatar">{initials(f.trader.displayName)}</span><b>{f.trader.displayName}</b><small>{f.mode.replaceAll("_"," ")}{f.fixedAmountUsd?` · ${money(f.fixedAmountUsd)}/trade`:""}</small></button>)}</div>:<Empty icon={Users} title="Your trader list is empty" body="Follow platform traders or add a verified public wallet you already trust." action="Explore traders" onClick={()=>setView("traders")}/>}
+  </section>
+
+  <div className="desktop-depth">
+    <PerformanceChart snapshots={d?.snapshots||[]} />
+    <section className="app-card cash-breakdown"><div className="card-title"><div><span>TRADING CASH BY CHAIN</span><h2>Where your USDC is actually available</h2></div></div>
+      {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect a supported wallet to sync genuine chain-specific USDC. One chain’s USDC is never treated as spendable on another chain.</div>}
+    </section>
+    {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-detail"><div><span>SIMULATION DETAIL</span><h2>Test results remain separate from live money</h2></div><div><b>{sim.openPositions??0}</b><span>Open positions</span></div><div><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b><span>Realized P&amp;L</span></div><div><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b><span>Unrealized P&amp;L</span></div></section>}
+  </div>
+ </div>;
 }
 function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){return <div className="list-row" style={{gridTemplateColumns:"1fr auto"}}><div><b>{label}</b></div><span className={`status-badge ${ok?"":"watch"}`}>{value}</span></div>}
 
 function TradersView({platform,follows,followMap,setMode,customOpen,setCustomOpen,reload}:{platform:any[];follows:any[];followMap:Map<string,any>;setMode:(id:string,m:string)=>void;customOpen:boolean;setCustomOpen:(v:boolean)=>void;reload:()=>Promise<void>}){
- const [search,setSearch]=useState(""); const[detail,setDetail]=useState<string|null>(null); const filtered=platform.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
+ const [search,setSearch]=useState(""); const[detail,setDetail]=useState<string|null>(null);const[tab,setTab]=useState<"following"|"discover"|"mine">("following");
+ const matching=platform.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
+ const filtered=tab==="following"?matching.filter(t=>followMap.has(t.id)):matching;
  return <>
   {detail&&<TraderDetail traderId={detail} close={()=>setDetail(null)}/>}
-  <div style={{display:"flex",gap:8,marginBottom:12}}><label className="field" style={{flex:1}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search platform traders"/></label><button className="soft-action" onClick={()=>setCustomOpen(!customOpen)}><Plus size={14}/> Add my own trader</button></div>
+  <div className="traders-toolbar"><div className="native-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search traders…"/></div><a className="community-link" href="/app/community/"><UserRound size={15}/> Community</a><button className="add-trader-button" onClick={()=>setCustomOpen(!customOpen)}><Plus size={15}/> Add trader</button></div>
+  <div className="trader-tabs"><button className={tab==="following"?"active":""} onClick={()=>setTab("following")}>Following</button><button className={tab==="discover"?"active":""} onClick={()=>setTab("discover")}>Discover</button><button className={tab==="mine"?"active":""} onClick={()=>setTab("mine")}>My traders</button></div>
   {customOpen&&<CustomTrader reload={reload} close={()=>setCustomOpen(false)}/>}
-  <div className="card-title"><div><span>PLATFORM TRADERS</span><h2>Choose who you want to follow</h2></div></div>
+  {tab!=="mine"&&<><div className="card-title traders-heading"><div><span>{tab==="following"?"YOUR FOLLOWING LIST":"VERIFIED SOURCES"}</span><h2>{tab==="following"?"Traders you follow":"Discover traders"}</h2></div></div>
   <div className="trader-grid">
     {filtered.map((t:any)=>{const f=followMap.get(t.id);const trackable=t.wallets?.some((w:any)=>w.verified&&w.chain==="SOLANA");return <article className="trader-card" key={t.id}>
-      <div className="trader-head"><div className="avatar">{initials(t.displayName)}</div><div><b>{t.displayName}</b><small>@{t.handle} · {t.category||t.trackingStatus}</small></div></div>
-      <div className="trader-meta"><div><span>TRACKED WALLETS</span><b>{t.wallets?.length??0}</b></div><div><span>HISTORY</span><b>{t._count?.signals?`${t._count.signals} signals`:"Tracking"}</b></div></div>
-      <button className="trader-profile-link" onClick={()=>setDetail(t.id)}>View tracked profile</button>
+      <div className="trader-head"><div className="avatar">{initials(t.displayName)}</div><div><b>{t.displayName}</b><small>@{t.handle}</small></div>{t.wallets?.some((w:any)=>w.verified)&&<span className="verified-wallet"><ShieldCheck size={11}/> Verified source</span>}</div>
+      <div className="trader-chain-row">{(t.wallets||[]).map((w:any)=><span key={w.id}>{w.chain}</span>)}{!t.wallets?.length&&<span>Wallet needed</span>}</div>
+      <div className="trader-meta"><div><span>RECENT ACTIVITY</span><b>{t._count?.signals?`${t._count.signals} verified signals`:"Tracking started"}</b></div><div><span>PERFORMANCE</span><b>No calculated return yet</b></div></div>
+      <button className="trader-profile-link" onClick={()=>setDetail(t.id)}>View trader profile <ChevronRight size={12}/></button>
       <div className="trader-actions">
         <button className={f?.mode==="FOLLOW_ONLY"?"active":""} onClick={()=>setMode(t.id,"FOLLOW_ONLY")}>Follow</button>
         <button disabled={!trackable} title={trackable?"Track this trader":"Source listener for this trader's chain is not live yet"} className={f?.mode==="WATCH_ONLY"?"active":""} onClick={()=>setMode(t.id,"WATCH_ONLY")}>Watch</button>
-        <button disabled={!trackable} title={trackable?"Evaluate eligible buys automatically":"Source listener for this trader's chain is not live yet"} className={f?.mode==="AUTO_COPY"?"active":""} onClick={()=>setMode(t.id,"AUTO_COPY")}>Auto Copy</button>
+        <button disabled={!trackable} title={trackable?"Evaluate eligible buys automatically":"Source listener for this trader's chain is not live yet"} className={f?.mode==="AUTO_COPY"?"active":""} onClick={()=>setMode(t.id,"AUTO_COPY")}>Auto Copy{f?.mode==="AUTO_COPY"&&f.fixedAmountUsd?<small>{money(f.fixedAmountUsd)}/trade</small>:null}</button>
       </div>
     </article>})}
-    <div className="add-trader"><div><Plus size={22}/><h3>Add a public trader wallet</h3><p style={{fontSize:9}}>You can track your own favorite trader even if they are not in the platform list.</p><button onClick={()=>setCustomOpen(true)}>Add trader</button></div></div>
-  </div>
-  <div className="card-title" style={{marginTop:28}}><div><span>MY LIST</span><h2>Your independent copy settings</h2></div></div>
-  {follows.length?<div className="trader-settings-list">{follows.map((f:any)=><TraderSettingsRow key={f.id} f={f} reload={reload}/>)}</div>:<Empty icon={Users} title="No traders selected" body="Use Follow, Watch or Auto Copy above. Each user can keep a completely different list."/>}
+    {!filtered.length&&<div className="add-trader"><div><Users size={22}/><h3>{tab==="following"?"No matching followed traders":"No traders found"}</h3><p>Try another search or add a verified public wallet you trust.</p><button onClick={()=>tab==="following"?setTab("discover"):setCustomOpen(true)}>{tab==="following"?"Discover traders":"Add trader"}</button></div></div>}
+  </div></>}
+  {tab==="mine"&&<div className="card-title traders-heading"><div><span>PERSONAL SETTINGS</span><h2>Your independent copy setup</h2></div></div>}
+  {tab==="mine"&&(follows.length?<div className="trader-settings-list">{follows.map((f:any)=><TraderSettingsRow key={f.id} f={f} reload={reload}/>)}</div>:<Empty icon={Users} title="No traders selected" body="Follow a trader or add a public wallet. Every account keeps its own independent list." action="Discover traders" onClick={()=>setTab("discover")}/>) }
+  {tab!=="mine"&&<div className="traders-foot-action"><button onClick={()=>setCustomOpen(true)}><Plus size={15}/> Add a public trader wallet</button><span>Track someone you trust even if they are not in Discover.</span></div>}
  </>;
 }
 
@@ -262,8 +280,8 @@ function ActivityView({activity,trades}:{activity:any;trades:any[]}){
  const items=[...(activity?.events||[])]; const decisions=activity?.decisions||[];
  return <>
  <div className="app-two">
-  <section className="app-card"><div className="card-title"><div><span>YOUR ACCOUNT ONLY</span><h2>Activity history</h2></div></div>
-   {items.length?<div className="list">{items.map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="Nothing has happened yet" body="Source signals, copies, skips, pullback waits and profit events will appear here for this account only."/>}
+  <section className="app-card"><div className="card-title"><div><span>YOUR ACCOUNT ONLY</span><h2>What FomoCloud did — in plain English</h2></div></div>
+   {items.length?<div className="native-activity full">{items.map((e:any)=>{const copy=activityText(e);return <div key={e.id}><i/><div><b>{copy.title}</b><small>{copy.body}</small><button className="activity-detail">View technical details · {String(e.type||"record").replaceAll("_"," ").toLowerCase()}</button></div><span>{timeAgo(e.createdAt)}</span></div>})}</div>:<Empty icon={Activity} title="Nothing has happened yet" body="Source signals, copies, waits, profit events and closes will appear here in plain English for this account only." action="Explore traders"/>}
   </section>
   <section className="app-card"><div className="card-title"><div><span>DECISION HISTORY</span><h2>Why we copied or waited</h2></div></div>
    {decisions.length?<div className="list">{decisions.map((d:any)=><div className="decision-history" key={d.id}><div><b>{d.signal?.trader?.displayName||"Trader signal"} · {d.signal?.action}</b><small>{d.explanation||d.plainReason||d.reason||"Decision recorded"}</small></div><div className="decision-facts"><span>{d.action}</span>{d.walletChasePct!=null&&<span>Wallet chase {Number(d.walletChasePct).toFixed(1)}%</span>}<span>{timeAgo(d.createdAt)}</span></div></div>)}</div>:<Empty icon={ShieldCheck} title="No decisions yet" body="Every source signal creates a decision for your account only after your own settings are applied."/>}
@@ -325,7 +343,7 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <div className="switch-row"><div><b>X account</b><small>{me?.linkedSocialAccounts?.find((x:any)=>x.provider==="X")?.username?`@${me.linkedSocialAccounts.find((x:any)=>x.provider==="X").username}`:"Optional"}</small></div><button className="soft-action" onClick={linkX}>Link X</button></div>
     {me?.role==="ADMIN"&&<div className="switch-row"><div><b>Administration</b><small>Owner control center</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
    </section>
-   <section className="settings-block"><h3>Trading defaults</h3>
+   <section className="settings-block"><h3>Copy settings &amp; risk</h3>
     <label className="field"><span>Default amount per copy</span><input type="number" value={trading.defaultAmountUsd??100} onChange={e=>patchTrading({defaultAmountUsd:Number(e.target.value)})}/></label>
     <label className="field"><span>Maximum per trade</span><input type="number" value={trading.maxAmountPerTradeUsd??500} onChange={e=>patchTrading({maxAmountPerTradeUsd:Number(e.target.value)})}/></label>
     <label className="field"><span>Maximum total exposure</span><input type="number" value={trading.maxTotalExposureUsd??2500} onChange={e=>patchTrading({maxTotalExposureUsd:Number(e.target.value)})}/></label>
@@ -338,12 +356,17 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <div className="switch-row"><div><b>Unread notifications</b><small>Personal to this account</small></div><div style={{display:"flex",gap:6,alignItems:"center"}}><span className="status-badge">{notifications.filter(x=>!x.readAt).length}</span>{notifications.some(x=>!x.readAt)&&<button className="soft-action" onClick={markNotificationsRead}>Mark read</button>}</div></div>
     <div className="notification-inbox">{notifications.slice(0,8).map((n:any)=><div className={`notification-row ${n.readAt?"":"unread"}`} key={n.id}><i/><div><b>{n.title}</b><small>{n.body}</small></div><span>{timeAgo(n.createdAt)}</span></div>)}{!notifications.length&&<small>No notifications yet.</small>}</div>
    </section>
-   <section className="settings-block"><h3>Security &amp; permission</h3>
+   <section className="settings-block"><h3>Security</h3>
     <div className="notice green">Account login and wallet connection are separate from unattended trading authorization. Live automatic execution remains off until a reviewed delegated/session signer is configured.</div>
     <div className="switch-row"><div><b>Auto Copy</b><small>Controls new automatic entries</small></div><button className={`switch ${trading.autoCopyEnabled?"on":""}`} onClick={()=>patchTrading({autoCopyEnabled:!trading.autoCopyEnabled})}><i/></button></div>
     <div className="session-list"><b>Signed-in sessions</b>{sessions?.length?sessions.map((s:any)=><div className="wallet-line" key={s.id}><div><small>{s.userAgent?.slice(0,70)||"Unknown device"}</small><small>Last used {timeAgo(s.lastUsedAt)} · expires {new Date(s.expiresAt).toLocaleDateString()}</small></div><button className="soft-action" onClick={()=>revokeSession(s.id)}>Revoke</button></div>):<small>No active refresh sessions listed.</small>}</div>
     <button className="soft-action" style={{width:"100%",marginTop:12}} onClick={signOut}><LogOut size={13}/> Sign out</button>
     <div className="danger-zone"><b>Close account</b><small>This disables Auto Copy and revokes signed-in sessions. Trading/audit records are preserved for financial integrity.</small><input type={me?.hasPassword?"password":"text"} value={closeValue} onChange={e=>setCloseValue(e.target.value)} placeholder={me?.hasPassword?"Enter your password":"Type CLOSE MY ACCOUNT"}/><button className="danger-action" onClick={closeAccount}>Close my account</button></div>
+   </section>
+   <section className="settings-block profile-links"><h3>App &amp; support</h3>
+    <div className="profile-link-row"><div><b>Appearance</b><small>System dark · optimized for OLED displays</small></div><span>Default</span></div>
+    <div className="profile-link-row"><div><b>Help</b><small>Account and product support</small></div><span>Support</span></div>
+    <div className="profile-link-row"><div><b>Legal</b><small>Terms, privacy and execution disclosures</small></div><span>Review</span></div>
    </section>
   </div>
  </>;

@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import { PwaRegistrar } from "../components/PwaRegistrar";
+import { InstallAppPrompt } from "../components/InstallAppPrompt";
 
 export const metadata: Metadata = {
   title: "FomoCloud — Smart meme copy trading",
@@ -14,5 +15,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({children}:{children:React.ReactNode}) {
-  return <html lang="en"><body>{children}<PwaRegistrar /></body></html>;
+  return <html lang="en"><body>{children}<PwaRegistrar /><InstallAppPrompt /></body></html>;
 }
