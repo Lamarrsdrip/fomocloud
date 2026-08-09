@@ -195,8 +195,8 @@ function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){ret
 
 function TradersView({platform,follows,followMap,setMode,customOpen,setCustomOpen,reload}:{platform:any[];follows:any[];followMap:Map<string,any>;setMode:(id:string,m:string)=>void;customOpen:boolean;setCustomOpen:(v:boolean)=>void;reload:()=>Promise<void>}){
  const [search,setSearch]=useState(""); const[detail,setDetail]=useState<string|null>(null);const[tab,setTab]=useState<"following"|"discover"|"mine">("following");
- const matching=platform.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
- const filtered=tab==="following"?matching.filter(t=>followMap.has(t.id)):matching;
+ const source=tab==="following"?follows.map(f=>f.trader):platform;
+ const filtered=source.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
  return <>
   {detail&&<TraderDetail traderId={detail} close={()=>setDetail(null)}/>}
   <div className="traders-toolbar"><div className="native-search"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search traders…"/></div><a className="community-link" href="/app/community/"><UserRound size={15}/> Community</a><button className="add-trader-button" onClick={()=>setCustomOpen(!customOpen)}><Plus size={15}/> Add trader</button></div>
