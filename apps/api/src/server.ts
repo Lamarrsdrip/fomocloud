@@ -261,7 +261,7 @@ app.post("/auth/refresh", asyncRoute(async (req,res) => {
   // token fail instead of allowing two replaying clients to keep the same long-lived credential.
   const nextRefresh=randomToken(48);
   const rotated=await db.refreshSession.updateMany({
-    where:{id:session.id,tokenHash:oldHash,revokedAt:null,expiresAt:{gt:new Date()}},
+    where:{id:session.id,tokenHash:oldHash,expiresAt:{gt:new Date()},OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},
     data:{tokenHash:hashToken(nextRefresh),lastUsedAt:new Date()}
   });
   if(rotated.count!==1) return res.status(401).json({error:"REFRESH_REPLAYED"});
@@ -271,7 +271,7 @@ app.post("/auth/refresh", asyncRoute(async (req,res) => {
 
 app.post("/auth/logout", asyncRoute(async (req,res) => {
   const raw=parseCookies(req).fomo_refresh;
-  if(raw) await db.refreshSession.updateMany({where:{tokenHash:hashToken(raw),revokedAt:null},data:{revokedAt:new Date()}});
+  if(raw) await db.refreshSession.updateMany({where:{tokenHash:hashToken(raw),OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}});
   res.clearCookie("fomo_refresh",{...refreshCookieOptions(),maxAge:0});
   res.json({ok:true});
 }));
@@ -315,7 +315,7 @@ app.post("/auth/reset-password", asyncRoute(async (req,res) => {
   await db.$transaction([
     db.verificationToken.update({where:{id:row.id},data:{usedAt:new Date()}}),
     db.user.update({where:{id:row.userId},data:{passwordHash}}),
-    db.refreshSession.updateMany({where:{userId:row.userId,revokedAt:null},data:{revokedAt:new Date()}})
+    db.refreshSession.updateMany({where:{userId:row.userId,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}})
   ]);
   res.json({ok:true});
 }));
@@ -344,7 +344,7 @@ app.post("/auth/wallet/verify", asyncRoute(async (req,res) => {
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   const ok=nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address));
   if(!ok) return res.status(401).json({error:"INVALID_SIGNATURE"});
-  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
+  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,expiresAt:{gt:new Date()},OR:[{consumedAt:null},{consumedAt:{isSet:false}}]},data:{consumedAt:new Date()}});
   if(consumed.count!==1) return res.status(401).json({error:"CHALLENGE_ALREADY_USED"});
   let wallet=await db.wallet.findUnique({where:{chain_address:{chain:"SOLANA",address:row.address}}});
   let user;
@@ -380,7 +380,7 @@ app.post("/v1/me/wallets/verify", auth, asyncRoute(async (req:AuthedRequest,res)
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   if(!nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address)))
     return res.status(401).json({error:"INVALID_SIGNATURE"});
-  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
+  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,expiresAt:{gt:new Date()},OR:[{consumedAt:null},{consumedAt:{isSet:false}}]},data:{consumedAt:new Date()}});
   if(consumed.count!==1) return res.status(401).json({error:"CHALLENGE_ALREADY_USED"});
   const count=await db.wallet.count({where:{userId:req.user.sub}});
   const wallet=await db.wallet.upsert({
@@ -427,14 +427,14 @@ app.patch("/v1/me/profile", auth, asyncRoute(async (req:AuthedRequest,res) => {
 
 app.get("/v1/me/sessions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const sessions=await db.refreshSession.findMany({
-    where:{userId:req.user.sub,revokedAt:null,expiresAt:{gt:new Date()}},
+    where:{userId:req.user.sub,expiresAt:{gt:new Date()},OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},
     select:{id:true,userAgent:true,ipAddress:true,createdAt:true,lastUsedAt:true,expiresAt:true},
     orderBy:{lastUsedAt:"desc"},take:50
   });
   res.json({sessions});
 }));
 app.delete("/v1/me/sessions/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  await db.refreshSession.updateMany({where:{id:req.params.id,userId:req.user.sub,revokedAt:null},data:{revokedAt:new Date()}});
+  await db.refreshSession.updateMany({where:{id:req.params.id,userId:req.user.sub,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}});
   await audit(req.user.sub,"USER","REVOKE_SESSION",req.params.id);
   res.json({ok:true});
 }));
@@ -463,7 +463,7 @@ app.post("/v1/me/account/close", auth, asyncRoute(async (req:AuthedRequest,res) 
   await db.$transaction([
     db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}}),
     db.userFollow.updateMany({where:{userId:user.id,mode:"AUTO_COPY"},data:{mode:"PAUSED"}}),
-    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:null},data:{revokedAt:new Date()}}),
+    db.refreshSession.updateMany({where:{userId:user.id,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}}),
     db.user.update({where:{id:user.id},data:{status:"CLOSED"}})
   ]);
   await audit(user.id,"USER","CLOSE_ACCOUNT");
@@ -984,7 +984,7 @@ app.patch("/v1/admin/users/:id", adminOnly, asyncRoute(async (req:AuthedRequest,
   const user=await db.user.update({where:{id:req.params.id},data:{status:status as any}});
   if(status!=="ACTIVE") await Promise.all([
     db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}}),
-    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:null},data:{revokedAt:new Date()}})
+    db.refreshSession.updateMany({where:{userId:user.id,OR:[{revokedAt:null},{revokedAt:{isSet:false}}]},data:{revokedAt:new Date()}})
   ]);
   await audit(req.user.sub,"ADMIN","USER_STATUS_CHANGE",user.id,{status});
   res.json({user:safeUser(user)});
