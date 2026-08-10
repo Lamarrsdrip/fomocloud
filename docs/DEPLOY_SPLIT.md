@@ -2,7 +2,7 @@
 
 ## Frontend
 
-Build `apps/web` as a Next static export with `NEXT_PUBLIC_API_URL` set to the public HTTPS VPS API. Upload `apps/web/out/*` directly to Hostinger `public_html`.
+Hostinger Web App Git integration checks out GitHub `main`, runs `pnpm hostinger:build`, and publishes `apps/web/out` as a static Next export. Future releases must use Git auto-deployment rather than File Manager or ZIP uploads.
 
 Required routes are emitted as directory `index.html` files because `trailingSlash: true` is enabled:
 

@@ -1,6 +1,6 @@
-# MemeCloud multi-chain + USDC trading cash
+# KAIRO multi-chain + USDC trading cash
 
-MemeCloud is chain-agnostic. The consumer app presents a unified **Trading Cash** amount, denominated
+KAIRO is chain-agnostic. The consumer app presents a unified **Trading Cash** amount, denominated
 in USD and funded primarily with USDC.
 
 A watched trader may buy on Solana, Base, Ethereum, BNB Chain, Arbitrum, Avalanche, Sui or another
@@ -20,5 +20,5 @@ Execution routes should be provider-neutral:
 - 0x / 1inch / Uniswap-compatible routing on EVM chains;
 - chain-native routing adapters elsewhere.
 
-The router compares real executable quotes and chooses the best allowed route. MemeCloud must not
+The router compares real executable quotes and chooses the best allowed route. KAIRO must not
 scrape or automate a third-party consumer app when an official integration is unavailable.

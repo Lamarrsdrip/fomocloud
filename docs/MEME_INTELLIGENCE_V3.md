@@ -1,9 +1,9 @@
-# MemeCloud Meme Intelligence v3
+# KAIRO Meme Intelligence v3
 
 ## Design goal
 
 Memecoins can move hundreds or thousands of percent before a slow bot finishes "confirming"
-traditional indicators. MemeCloud therefore uses **fast evidence + adaptive confidence**, not a
+traditional indicators. KAIRO therefore uses **fast evidence + adaptive confidence**, not a
 large stack of rigid gates.
 
 ### Principle 1 — Only catastrophic facts hard-block
@@ -27,7 +27,7 @@ For fresh memes:
 
 For older coins the window naturally tightens.
 
-If a good coin is beyond the current chase window, MemeCloud normally changes state to
+If a good coin is beyond the current chase window, KAIRO normally changes state to
 `WAIT_PULLBACK` and keeps watching. It does not permanently throw the opportunity away.
 
 ### Principle 3 — Measure velocity, not only levels
@@ -140,7 +140,7 @@ Every accepted AND rejected signal should be forward-tracked.
 For each decision record what happened after:
 30s, 1m, 5m, 15m, 1h, 6h, 24h.
 
-This lets MemeCloud answer:
+This lets KAIRO answer:
 - Did the 40% chase window improve outcomes?
 - Which skipped trades became winners?
 - Which allowed warnings predict rugs?

@@ -1,5 +1,5 @@
 {
-  "name": "memecloud",
+  "name": "kairo",
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "scripts": {
@@ -8,6 +8,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
+    "hostinger:build": "pnpm --filter @memecloud/web build",
     "db:generate": "pnpm --filter @memecloud/db prisma generate",
     "db:push": "pnpm --filter @memecloud/db prisma db push",
     "db:seed": "pnpm --filter @memecloud/db seed",

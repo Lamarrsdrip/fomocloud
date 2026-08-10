@@ -205,7 +205,7 @@ app.get("/health", asyncRoute(async (_req,res) => {
 app.get("/v1/public/config", asyncRoute(async (_req,res) => {
   const [socialCfg,chainCfg]=await Promise.all([getConfig<any>("social"),getConfig<any>("chains")]);
   res.json({
-    appName:"MemeCloud",
+    appName:"KAIRO",
     executionMode:process.env.EXECUTION_MODE??"simulation",
     liveExecutionEnabled:process.env.LIVE_EXECUTION_ENABLED==="true",
     pushPublicKey:await publicPushKey(),
@@ -230,7 +230,7 @@ app.post("/auth/signup", asyncRoute(async (req,res) => {
   const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
   let emailDelivery:"SENT"|"NOT_CONFIGURED"|"FAILED"="NOT_CONFIGURED";
   try {
-    await sendEmail(email,"Verify your MemeCloud email",
+    await sendEmail(email,"Verify your KAIRO email",
       `<h2>Verify your email</h2><p>Open this link to verify your account:</p><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(verifyToken)}">Verify email</a></p>`,
       user.id);
     emailDelivery="SENT";
@@ -248,7 +248,7 @@ app.post("/auth/resend-verification", auth, asyncRoute(async (req:AuthedRequest,
   if(user.emailVerifiedAt) return res.json({ok:true,alreadyVerified:true});
   const token=await createEmailToken(user.id,"VERIFY_EMAIL",60*24);
   const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
-  await sendEmail(user.email,"Verify your MemeCloud email",`<h2>Verify your email</h2><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(token)}">Verify email</a></p>`,user.id);
+  await sendEmail(user.email,"Verify your KAIRO email",`<h2>Verify your email</h2><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(token)}">Verify email</a></p>`,user.id);
   res.json({ok:true});
 }));
 
@@ -312,7 +312,7 @@ app.post("/auth/forgot-password", asyncRoute(async (req,res) => {
     const token=await createEmailToken(user.id,"RESET_PASSWORD",30);
     const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
     try {
-      await sendEmail(user.email,"Reset your MemeCloud password",
+      await sendEmail(user.email,"Reset your KAIRO password",
         `<h2>Reset your password</h2><p><a href="${appUrl}/reset-password/?token=${encodeURIComponent(token)}">Reset password</a></p>`,
         user.id);
     } catch {}
@@ -343,7 +343,7 @@ app.post("/auth/wallet/challenge", asyncRoute(async (req,res) => {
   if(chain!=="SOLANA") return res.status(400).json({error:"WALLET_LOGIN_CHAIN_NOT_IMPLEMENTED"});
   if(!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
   const nonce=randomToken(24);
-  const message=`MemeCloud sign-in\nWallet: ${address}\nNonce: ${nonce}\nExpires: ${new Date(Date.now()+5*60_000).toISOString()}`;
+  const message=`KAIRO sign-in\nWallet: ${address}\nNonce: ${nonce}\nExpires: ${new Date(Date.now()+5*60_000).toISOString()}`;
   const challenge=await db.walletChallenge.create({
     data:{chain:"SOLANA",address,message,expiresAt:new Date(Date.now()+5*60_000),purpose:"LOGIN"}
   });
@@ -382,7 +382,7 @@ app.post("/v1/me/wallets/challenge", auth, asyncRoute(async (req:AuthedRequest,r
   if(!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
   const existing=await db.wallet.findUnique({where:{chain_address:{chain,address}}});
   if(existing && existing.userId!==req.user.sub) return res.status(409).json({error:"WALLET_ALREADY_LINKED"});
-  const message=`MemeCloud link wallet\nAccount: ${req.user.sub}\nWallet: ${address}\nNonce: ${randomToken(24)}\nExpires: ${new Date(Date.now()+5*60_000).toISOString()}`;
+  const message=`KAIRO link wallet\nAccount: ${req.user.sub}\nWallet: ${address}\nNonce: ${randomToken(24)}\nExpires: ${new Date(Date.now()+5*60_000).toISOString()}`;
   const challenge=await db.walletChallenge.create({data:{chain,address,message,purpose:"LINK",userId:req.user.sub,expiresAt:new Date(Date.now()+5*60_000)}});
   res.json({challengeId:challenge.id,message});
 }));
@@ -1180,13 +1180,13 @@ app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedReque
 }));
 app.post("/v1/admin/test-push", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const target=String(req.body?.userId??req.user.sub);
-  const result=await sendPush(target,{title:"MemeCloud push test",body:"Push notifications are working.",url:"/app/"});
+  const result=await sendPush(target,{title:"KAIRO push test",body:"Push notifications are working.",url:"/app/"});
   res.json({ok:true,result});
 }));
 app.post("/v1/admin/test-email", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const to=String(req.body?.to??"");
   if(!to) return res.status(400).json({error:"EMAIL_REQUIRED"});
-  const info=await sendEmail(to,"MemeCloud email test","<h2>Email is working.</h2>");
+  const info=await sendEmail(to,"KAIRO email test","<h2>Email is working.</h2>");
   res.json({ok:true,messageId:info.messageId});
 }));
 app.post("/v1/admin/broadcast", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {

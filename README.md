@@ -1,6 +1,10 @@
-# MemeCloud v0.5 — Multi-user social copy-trading platform
+# KAIRO — Autonomous Crypto Intelligence
 
-MemeCloud is now structured as a **real multi-user application**, not a shared trading dashboard.
+KAIRO is a multi-user crypto discovery, market-intelligence, wallet-analysis, scoring, execution and position-management system. Strong traders and public wallets are evidence sources inside the system—not the product's only strategy.
+
+```text
+DISCOVERY → INTELLIGENCE → SCORING → DECISION → EXECUTION → POSITION MANAGEMENT → LEARNING
+```
 
 - `apps/web` — public landing page, signup/login, onboarding, private user app, integrated role-protected admin
 - `apps/api` — account/auth APIs, private user data, trader registry, settings, admin, push/email/broadcast APIs
@@ -141,13 +145,15 @@ pnpm dev
 
 The development Mongo Compose service initializes a single-node replica set, which Prisma Mongo transactions require.
 
-## Hostinger frontend build
+## Hostinger frontend deployment
+
+The frontend deploys from GitHub `main` through Hostinger Web App Git integration. Hostinger builds the monorepo root with:
 
 ```bash
-NEXT_PUBLIC_API_URL=https://your-api.example pnpm --filter @memecloud/web build
+pnpm hostinger:build
 ```
 
-Upload the contents of `apps/web/out/` to Hostinger `public_html`.
+Set output directory to `apps/web/out` and `NEXT_PUBLIC_API_URL` to the public HTTPS VPS API. Do not upload ZIP files or replace `public_html` manually. See `docs/HOSTINGER_DEPLOYMENT.md`.
 
 ## Backend workers
 

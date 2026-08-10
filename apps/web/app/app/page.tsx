@@ -90,7 +90,7 @@ export default function AppPage(){
   return <main className="app-page">
     <div className="app-layout">
       <aside className="app-sidebar">
-        <a className="brand" href="/"><span className="brandmark small">∞</span><b>MemeCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark small">K</span><b>KAIRO</b></a>
         <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
         <div className="sidebar-bottom">
           <div className="mode-pill"><span>Execution</span><b>{String(dashboard?.executionMode||"simulation").toUpperCase()}</b></div>
@@ -149,7 +149,7 @@ function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[]
     {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect a supported wallet to sync genuine chain-specific USDC. One chain's USDC is never silently treated as spendable on another chain.</div>}
   </section>
   <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>RECENT ACTIVITY</span><h2>What MemeCloud did for you</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
+    <section className="app-card"><div className="card-title"><div><span>RECENT ACTIVITY</span><h2>What KAIRO did for you</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
       {activity?.events?.length?<div className="list">{activity.events.slice(0,6).map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.status||e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="No activity yet" body="Choose traders and enable Auto Copy or Watch mode. Your real account activity will appear here." action="Choose traders" onClick={()=>setView("traders")}/>}
     </section>
     <section className="app-card"><div className="card-title"><div><span>YOUR TRADERS</span><h2>Copy setup</h2></div></div>

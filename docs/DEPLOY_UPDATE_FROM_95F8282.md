@@ -31,9 +31,9 @@ NEXT_PUBLIC_API_URL=https://memecloud-api.173-212-249-202.sslip.io \
   pnpm --filter @memecloud/web build
 ```
 
-Upload the *contents* of `apps/web/out/` to Hostinger `public_html`.
+Hostinger now builds and publishes `apps/web/out` automatically from GitHub `main`; do not upload this directory manually.
 
-For VPS deployment, update code first, install dependencies, generate Prisma client, apply the reviewed schema with `db push`, build/typecheck, then restart only the MemeCloud services. Do not overwrite shared Caddy configuration or disturb unrelated MT5/ClipForge services.
+For VPS deployment, update code first, install dependencies, generate Prisma client, apply the reviewed schema with `db push`, build/typecheck, then restart only the KAIRO services. Do not overwrite shared Caddy configuration or disturb unrelated MT5/ClipForge services.
 
 New persistent workers included by this version:
 

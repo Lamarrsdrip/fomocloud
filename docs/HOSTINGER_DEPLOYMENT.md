@@ -1,17 +1,28 @@
-# Hostinger deployment target
+# KAIRO Hostinger deployment
 
-The production split is **Hostinger static frontend + Windows VPS backend**. Hostinger does not run the trading workers. The VPS runs the API, MongoDB, Redis and persistent workers.
-The trading/listener workers must not be deployed as short-lived request-only functions.
+The production split is **Hostinger static frontend + Windows VPS backend**. Hostinger builds and serves only `apps/web`; the VPS continues to run the API, MongoDB, Redis and persistent workers.
 
-Recommended:
-- web: Node process behind Nginx
-- admin: separate Node process/path or subdomain
-- API: persistent Node process
-- listener/executor/exits: systemd or PM2 managed workers
-- MongoDB: local hardened replica set on the VPS (or an explicitly chosen managed Mongo deployment)
-- Redis: managed/external or local hardened instance
-- TLS: Hostinger/Nginx/Let's Encrypt
-- temporary domain: use Hostinger-provided temporary domain for testing, then switch production DNS
+## Git-connected Web App
 
-Do not enable LIVE execution during the first deployment. Verify the full simulation path, notifications,
-email, admin config, database, queues and worker health first.
+- Repository: `Lamarrsdrip/fomocloud`
+- Branch: `main`
+- Project/root directory: repository root (`.`)
+- Node.js: `22.x`
+- Package manager: `pnpm@10.14.0`
+- Install: `corepack enable && pnpm install --frozen-lockfile`
+- Build: `pnpm hostinger:build`
+- Output directory: `apps/web/out`
+- Start command / entry file: none; this is a static Next export
+- Auto deployment: enabled for every push to `main`
+
+## Environment
+
+```env
+NEXT_PUBLIC_API_URL=https://fomocloud-api.173-212-249-202.sslip.io
+```
+
+The API hostname remains a legacy infrastructure identifier until a first-party KAIRO domain is available. Do not point the production frontend at localhost.
+
+Do not use File Manager or ZIP uploads for future releases. Verify the Hostinger deployment history shows the pushed commit SHA before declaring a release live.
+
+Do not enable live execution during frontend deployment. `EXECUTION_MODE=simulation` and `LIVE_EXECUTION_ENABLED=false` remain enforced on the VPS.

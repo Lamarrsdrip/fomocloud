@@ -26,7 +26,7 @@ export default function Admin(){
  useEffect(()=>{void load("overview")},[]);
  function change(t:string){setTab(t);void load(t)}
  return <main className="admin-layout">
-  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">∞</span><b>MemeCloud Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav></aside>
+  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">K</span><b>KAIRO Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav></aside>
   <section className="admin-main"><div className="admin-head"><div><small>OWNER CONTROL CENTER</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1></div><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div>
    {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
     {tab==="overview"&&<Overview d={data}/>}
@@ -93,7 +93,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
   chains:{enabled:["SOLANA"]},
   fees:{platformFeeBps:0},
   risk:{emergencyNewEntriesPaused:false,freshMemeBaseChasePct:40,hyperMaxChasePct:55,maxExecutablePriceImpactPct:35},
-  branding:{appName:"MemeCloud",supportEmail:"",publicUrl:""}
+  branding:{appName:"KAIRO",supportEmail:"",publicUrl:""}
  };
  useEffect(()=>{
   const visible=!current?.isSecret&&current?.value&&typeof current.value==="object"?current.value:{};
@@ -115,7 +115,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
   </section>
   <section className="app-card"><div className="card-title"><div><span>OWNER SETTINGS</span><h2>{key}</h2></div><span className="status-badge">{current?"Configured":"New"}</span></div>
    <div className="admin-form">
-    {key==="email"&&<><Cfg label="SMTP host" value={form.host} on={v=>field("host",v)}/><div className="form-grid"><Cfg label="Port" type="number" value={form.port} on={v=>field("port",Number(v))}/><label className="field"><span>TLS / secure</span><select value={String(Boolean(form.secure))} onChange={e=>field("secure",e.target.value==="true")}><option value="false">STARTTLS / port 587</option><option value="true">TLS / port 465</option></select></label></div><Cfg label="SMTP username" value={form.user} on={v=>field("user",v)}/><Cfg label="SMTP password" type="password" placeholder="Leave blank to keep saved password" value={form.pass} on={v=>field("pass",v)}/><Cfg label="From" placeholder="MemeCloud <hello@example.com>" value={form.from} on={v=>field("from",v)}/></>}
+    {key==="email"&&<><Cfg label="SMTP host" value={form.host} on={v=>field("host",v)}/><div className="form-grid"><Cfg label="Port" type="number" value={form.port} on={v=>field("port",Number(v))}/><label className="field"><span>TLS / secure</span><select value={String(Boolean(form.secure))} onChange={e=>field("secure",e.target.value==="true")}><option value="false">STARTTLS / port 587</option><option value="true">TLS / port 465</option></select></label></div><Cfg label="SMTP username" value={form.user} on={v=>field("user",v)}/><Cfg label="SMTP password" type="password" placeholder="Leave blank to keep saved password" value={form.pass} on={v=>field("pass",v)}/><Cfg label="From" placeholder="KAIRO <hello@example.com>" value={form.from} on={v=>field("from",v)}/></>}
     {key==="push"&&<><Cfg label="VAPID subject" value={form.subject} placeholder="mailto:admin@example.com" on={v=>field("subject",v)}/><div className="notice">Use Generate VAPID below. The private key stays encrypted server-side; users receive only the public key.</div></>}
     {key==="marketData"&&<><Cfg label="Solana RPC" value={form.solanaRpc} placeholder="HTTPS RPC endpoint" on={v=>field("solanaRpc",v)}/><Cfg label="Helius RPC (optional fallback)" value={form.heliusRpc} on={v=>field("heliusRpc",v)}/><Cfg label="Helius API key" type="password" value={form.heliusApiKey} placeholder="Leave blank to keep saved key" on={v=>field("heliusApiKey",v)}/><Cfg label="Birdeye API key" type="password" value={form.birdeyeApiKey} placeholder="Leave blank to keep saved key" on={v=>field("birdeyeApiKey",v)}/><Cfg label="Fallback RPC" value={form.fallbackRpc} on={v=>field("fallbackRpc",v)}/></>}
     {key==="execution"&&<><Cfg label="Jupiter base URL" value={form.jupiterBaseUrl} on={v=>field("jupiterBaseUrl",v)}/><Cfg label="Jupiter API key" type="password" value={form.jupiterApiKey} placeholder="Leave blank to keep saved key" on={v=>field("jupiterApiKey",v)}/><Cfg label="0x API key" type="password" value={form.zeroXApiKey} placeholder="Leave blank to keep saved key" on={v=>field("zeroXApiKey",v)}/><label className="field"><span>Signer provider</span><select value={form.signerProvider||"disabled"} onChange={e=>field("signerProvider",e.target.value)}><option value="disabled">Disabled — simulation only</option><option value="delegated">Delegated signer adapter (only after implemented)</option></select></label></>}

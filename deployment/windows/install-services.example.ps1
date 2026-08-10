@@ -1,6 +1,6 @@
 # Run as Administrator AFTER pnpm install, prisma generate/db push and pnpm build.
 # Existing XAU/MT5 and ClipForge services/Caddy routes are intentionally not touched.
-$Root = "C:\MemeCloud"
+$Root = "C:\KAIRO"
 $Node = (Get-Command node).Source
 $Nssm = (Get-Command nssm).Source
 
