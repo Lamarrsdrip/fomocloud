@@ -1238,6 +1238,22 @@ app.post("/v1/admin/broadcast", adminOnly, asyncRoute(async (req:AuthedRequest,r
 app.get("/v1/admin/broadcasts", requireAdmin, asyncRoute(async (_req,res) => {
   res.json({broadcasts:await db.broadcast.findMany({orderBy:{createdAt:"desc"},take:100})});
 }));
+app.get("/v1/admin/audit", requireAdmin, asyncRoute(async (_req,res) => {
+  const logs=await db.auditLog.findMany({
+    include:{user:{select:{email:true,displayName:true}}},
+    orderBy:{createdAt:"desc"},
+    take:250
+  });
+  res.json({logs:logs.map(log=>({
+    id:log.id,
+    actor:log.actor,
+    action:log.action,
+    target:log.target,
+    createdAt:log.createdAt,
+    user:log.user,
+    hasMetadata:log.metadata!==null
+  }))});
+}));
 app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
   const [heartbeats,queueCounts]=await Promise.all([
     db.workerHeartbeat.findMany({orderBy:{name:"asc"}}),

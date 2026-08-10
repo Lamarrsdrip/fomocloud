@@ -5,7 +5,7 @@ import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,Ba
 
 const sections=[
  ["overview","Overview",BarChart3],["users","Users",Users],["traders","Traders",Radio],["signals","Signals",Activity],
- ["trades","Trades",WalletCards],["config","Configuration",Settings2],["broadcasts","Broadcasts",Send],["health","System Health",ShieldCheck]
+ ["trades","Trades",WalletCards],["config","Configuration",Settings2],["broadcasts","Broadcasts",Send],["audit","Audit Log",ShieldCheck],["health","System Health",ShieldCheck]
 ] as const;
 
 export default function Admin(){
@@ -20,6 +20,7 @@ export default function Admin(){
   if(which==="trades")r=await apiFetch("/v1/admin/trades");
   if(which==="config")r=await apiFetch("/v1/admin/config");
   if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
+  if(which==="audit")r=await apiFetch("/v1/admin/audit");
   if(which==="health")r=await apiFetch("/v1/admin/health");
   setData(r);
  }catch(e:any){if(e?.status===401){window.location.replace("/login/");return}if(e?.status===403){window.location.replace("/app/");return}setErr(plainError(e))}finally{setLoading(false)}}
@@ -36,6 +37,7 @@ export default function Admin(){
     {tab==="trades"&&<Trades d={data}/>}
     {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="OWNER"}/>}
     {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="OWNER"}/>}
+    {tab==="audit"&&<Audit d={data}/>}
     {tab==="health"&&<Health d={data}/>}
    </>}
   </section>
@@ -141,4 +143,5 @@ function Broadcasts({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){cons
  async function send(){try{await apiFetch("/v1/admin/broadcast",{method:"POST",body:JSON.stringify({title,body,channel,audience})});setTitle("");setBody("");setMsg("Broadcast queued.");reload()}catch(e){setMsg(plainError(e))}}
  return <div className="admin-section-grid"><section className="app-card"><div className="card-title"><div><span>NEW BROADCAST</span><h2>Message users</h2></div></div><div className="admin-form"><label className="field"><span>Title</span><input value={title} onChange={e=>setTitle(e.target.value)}/></label><label className="field"><span>Message</span><textarea value={body} onChange={e=>setBody(e.target.value)}/></label><label className="field"><span>Channel</span><select value={channel} onChange={e=>setChannel(e.target.value)}><option>PUSH</option><option>EMAIL</option><option>BOTH</option></select></label><label className="field"><span>Audience</span><select value={audience} onChange={e=>setAudience(e.target.value)}><option>ALL</option><option>AUTO_COPY</option></select></label>{msg&&<div className="notice">{msg}</div>}<button className="action-primary" disabled={!admin||!title||!body} onClick={send} style={{height:42,borderRadius:12}}>Queue broadcast</button></div></section>
  <section className="app-card"><div className="card-title"><div><span>HISTORY</span><h2>Delivery progress</h2></div></div><div className="list">{(d.broadcasts||[]).map((b:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={b.id}><div><b>{b.title}</b><small>{b.channel} · {b.audience} · {b.sentCount}/{b.targetCount||"?"} sent · {b.failedCount} failed · {b.skippedCount||0} skipped</small></div><span className={`status-badge ${b.status==="FAILED"?"watch":""}`}>{b.status}</span></div>)}</div></section></div>}
+function Audit({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>IMMUTABLE EVENT HISTORY</span><h2>Administrative audit log</h2></div></div><table className="admin-table"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Context</th></tr></thead><tbody>{(d.logs||[]).map((log:any)=><tr key={log.id}><td>{new Date(log.createdAt).toLocaleString()}</td><td>{log.user?.displayName||log.user?.email||log.actor}</td><td><b>{log.action}</b></td><td>{log.target||"—"}</td><td>{log.hasMetadata?"Recorded":"—"}</td></tr>)}{!(d.logs||[]).length&&<tr><td colSpan={5}>No audit events recorded.</td></tr>}</tbody></table></section>}
 function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Execution</span><b>{String(d.executionMode||"—").toUpperCase()}</b><small>Current backend mode</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section></>}
