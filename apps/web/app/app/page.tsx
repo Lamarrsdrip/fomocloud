@@ -316,7 +316,7 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <div className="switch-row"><div><b>Linked wallets</b><small>{me?.wallets?.length||0} wallet(s)</small></div><button className="soft-action" onClick={linkWallet}><Link2 size={12}/> Add wallet</button></div>
     {me?.wallets?.map((w:any)=><div className="wallet-line" key={w.id}><div><b>{w.chain} · {w.address.slice(0,7)}…{w.address.slice(-5)}</b><small>{w.isPrimary?"Primary · ":""}{w.tradingEnabled?"Trading permission active":"No unattended trading permission"}</small></div><button className="soft-action" disabled={w.tradingEnabled||Boolean(w.permissionRef)} onClick={()=>unlinkWallet(w.id)}>Unlink</button></div>)}
     <div className="switch-row"><div><b>X account</b><small>{me?.linkedSocialAccounts?.find((x:any)=>x.provider==="X")?.username?`@${me.linkedSocialAccounts.find((x:any)=>x.provider==="X").username}`:"Optional"}</small></div><button className="soft-action" onClick={linkX}>Link X</button></div>
-    {me?.role==="ADMIN"&&<div className="switch-row"><div><b>Administration</b><small>Owner control center</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
+    {me?.role==="OWNER"&&<div className="switch-row"><div><b>Admin Command Center</b><small>Owner platform controls</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
    </section>
    <section className="settings-block"><h3>Trading defaults</h3>
     <label className="field"><span>Default amount per copy</span><input type="number" value={trading.defaultAmountUsd??100} onChange={e=>patchTrading({defaultAmountUsd:Number(e.target.value)})}/></label>

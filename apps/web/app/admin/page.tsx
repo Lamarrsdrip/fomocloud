@@ -11,7 +11,7 @@ const sections=[
 export default function Admin(){
  const[tab,setTab]=useState("overview");const[me,setMe]=useState<any>(null);const[data,setData]=useState<any>({});const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
  async function load(which=tab){setLoading(true);setErr("");try{
-  const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="ADMIN"&&m.role!=="SUPPORT")throw Object.assign(new Error("ADMIN_FORBIDDEN"),{status:403});
+  const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="OWNER"&&m.role!=="ADMIN"&&m.role!=="SUPPORT")throw Object.assign(new Error("ADMIN_FORBIDDEN"),{status:403});
   let r:any={};
   if(which==="overview")r=await apiFetch("/v1/admin/overview");
   if(which==="users")r=await apiFetch("/v1/admin/users");
@@ -22,20 +22,20 @@ export default function Admin(){
   if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
   if(which==="health")r=await apiFetch("/v1/admin/health");
   setData(r);
- }catch(e:any){setErr(e?.status===403?"This account is not an administrator.":plainError(e))}finally{setLoading(false)}}
+ }catch(e:any){if(e?.status===401){window.location.replace("/login/");return}if(e?.status===403){window.location.replace("/app/");return}setErr(plainError(e))}finally{setLoading(false)}}
  useEffect(()=>{void load("overview")},[]);
  function change(t:string){setTab(t);void load(t)}
  return <main className="admin-layout">
-  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">K</span><b>KAIRO Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav></aside>
+  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">K</span><b>KAIRO Admin</b></a><nav>{sections.map(([id,label])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}>{label}</button>)}</nav><a className="soft-action" href="/app/">Switch to User</a></aside>
   <section className="admin-main"><div className="admin-head"><div><small>OWNER CONTROL CENTER</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1></div><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div>
    {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
     {tab==="overview"&&<Overview d={data}/>}
     {tab==="users"&&<UsersView d={data} reload={()=>load("users")}/>}
-    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="ADMIN"}/>}
+    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="OWNER"}/>}
     {tab==="signals"&&<Signals d={data}/>}
     {tab==="trades"&&<Trades d={data}/>}
-    {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="ADMIN"}/>}
-    {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="ADMIN"}/>}
+    {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="OWNER"}/>}
+    {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="OWNER"}/>}
     {tab==="health"&&<Health d={data}/>}
    </>}
   </section>

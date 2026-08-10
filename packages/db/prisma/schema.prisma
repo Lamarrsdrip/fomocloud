@@ -20,6 +20,7 @@ enum Chain {
 
 enum UserRole {
   USER
+  OWNER
   ADMIN
   SUPPORT
 }

@@ -47,7 +47,7 @@ app.use(express.json({ limit: "512kb" }));
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 60, standardHeaders: "draft-7", legacyHeaders: false });
 app.use("/auth", authLimiter);
 
-type TokenPayload = { sub:string; role:"USER"|"ADMIN"|"SUPPORT"; email?:string };
+type TokenPayload = { sub:string; role:"USER"|"OWNER"|"ADMIN"|"SUPPORT"; email?:string };
 type AuthedRequest = Request & { user: TokenPayload };
 
 const asyncRoute = (fn:(req:any,res:Response,next:NextFunction)=>Promise<any>) =>
@@ -143,13 +143,13 @@ function auth(req:Request,res:Response,next:NextFunction) {
 function requireAdmin(req:Request,res:Response,next:NextFunction) {
   auth(req,res,()=>{
     const role=(req as AuthedRequest).user.role;
-    if(role!=="ADMIN" && role!=="SUPPORT") return res.status(403).json({error:"ADMIN_FORBIDDEN"});
+    if(role!=="OWNER" && role!=="ADMIN" && role!=="SUPPORT") return res.status(403).json({error:"ADMIN_FORBIDDEN"});
     next();
   });
 }
 function adminOnly(req:Request,res:Response,next:NextFunction) {
   requireAdmin(req,res,()=>{
-    if((req as AuthedRequest).user.role!=="ADMIN") return res.status(403).json({error:"ADMIN_REQUIRED"});
+    if((req as AuthedRequest).user.role!=="OWNER") return res.status(403).json({error:"OWNER_REQUIRED"});
     next();
   });
 }
@@ -963,16 +963,16 @@ app.get("/auth/x/callback", asyncRoute(async (req,res) => {
 app.post("/v1/admin/bootstrap", asyncRoute(async (req,res) => {
   const expected=process.env.ADMIN_BOOTSTRAP_SECRET??"";
   if(!expected||String(req.headers["x-bootstrap-secret"]??"")!==expected) return res.status(403).json({error:"BOOTSTRAP_FORBIDDEN"});
-  if(await db.user.count({where:{role:"ADMIN"}})>0) return res.status(409).json({error:"ADMIN_ALREADY_EXISTS"});
+  if(await db.user.count({where:{role:{in:["OWNER","ADMIN"]}}})>0) return res.status(409).json({error:"ADMIN_ALREADY_EXISTS"});
   const email=normalizeEmail(String(req.body?.email??""));
   const password=String(req.body?.password??"");
   if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({error:"INVALID_EMAIL"});
   if(await db.emailIdentity.findUnique({where:{emailNormalized:email}})) return res.status(409).json({error:"EMAIL_ALREADY_REGISTERED"});
   if(password.length<12) return res.status(400).json({error:"ADMIN_PASSWORD_TOO_SHORT"});
   const passwordHash=await bcrypt.hash(password,12);
-  const user=await db.user.create({data:{email,passwordHash,displayName:"Administrator",role:"ADMIN",emailVerifiedAt:new Date(),emailIdentity:{create:{emailNormalized:email}}}});
+  const user=await db.user.create({data:{email,passwordHash,displayName:"Administrator",role:"OWNER",emailVerifiedAt:new Date(),emailIdentity:{create:{emailNormalized:email}}}});
   await ensureUserDefaults(user.id);
-  await audit(user.id,"SYSTEM","BOOTSTRAP_ADMIN");
+  await audit(user.id,"SYSTEM","BOOTSTRAP_OWNER");
   res.status(201).json({ok:true,admin:safeUser(user)});
 }));
 
