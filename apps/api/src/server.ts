@@ -980,15 +980,48 @@ app.post("/v1/admin/bootstrap", asyncRoute(async (req,res) => {
 }));
 
 app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest,res) => {
-  const [users,traders,signals,orders,positions,broadcasts,heartbeats]=await Promise.all([
-    db.user.count({where:{role:"USER"}}),db.trader.count({where:{kind:"PLATFORM"}}),db.signal.count(),
-    db.order.count(),db.position.count({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
+  const nowDate=new Date(), today=new Date(Date.UTC(nowDate.getUTCFullYear(),nowDate.getUTCMonth(),nowDate.getUTCDate())), week=new Date(today.getTime()-6*24*60*60_000);
+  const [registeredUsers,activeUsers,newToday,newWeek,verifiedUsers,walletUsers,autoCopyUsers,platformTraders,openPositions,ordersToday,buyOrders,sellOrders,liveOrders,simulationOrders,livePnl,cash,candidates,paperCandidates,provenCandidates,rejectedCandidates,averageCopyability,discoveryTokens,newTokensToday,signals,signalsToday,buyDecisions,waitDecisions,skipDecisions,broadcasts,heartbeats]=await Promise.all([
+    db.user.count(),
+    db.user.count({where:{role:"USER",status:"ACTIVE"}}),
+    db.user.count({where:{createdAt:{gte:today}}}),
+    db.user.count({where:{createdAt:{gte:week}}}),
+    db.user.count({where:{emailVerifiedAt:{not:null}}}),
+    db.user.count({where:{wallets:{some:{}}}}),
+    db.user.count({where:{tradingSettings:{is:{autoCopyEnabled:true}}}}),
+    db.trader.count({where:{kind:"PLATFORM"}}),
+    db.position.count({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
+    db.order.count({where:{createdAt:{gte:today}}}),
+    db.order.count({where:{createdAt:{gte:today},side:"BUY"}}),
+    db.order.count({where:{createdAt:{gte:today},side:"SELL"}}),
+    db.order.count({where:{mode:"LIVE"}}),
+    db.order.count({where:{mode:"SIMULATION"}}),
+    db.position.aggregate({where:{mode:"LIVE"},_sum:{realizedPnlUsd:true,unrealizedPnlUsd:true}}),
+    db.tradingCashAllocation.aggregate({_sum:{availableUsd:true,inTradesUsd:true}}),
+    db.smartWalletCandidate.count(),
+    db.smartWalletCandidate.count({where:{stage:"PAPER_TRACKING"}}),
+    db.smartWalletCandidate.count({where:{stage:"PROVEN"}}),
+    db.smartWalletCandidate.count({where:{stage:"REJECTED"}}),
+    db.smartWalletCandidate.aggregate({_avg:{copyabilityScore:true}}),
+    db.discoveryToken.count(),
+    db.discoveryToken.count({where:{discoveredAt:{gte:today}}}),
+    db.signal.count(),
+    db.signal.count({where:{observedAt:{gte:today}}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:"BUY"}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:"WAIT"}}),
+    db.copyDecision.count({where:{createdAt:{gte:today},action:"SKIP"}}),
     db.broadcast.findMany({orderBy:{createdAt:"desc"},take:10}),
     db.workerHeartbeat.findMany({orderBy:{name:"asc"}})
   ]);
   const now=Date.now();
   res.json({
-    counts:{users,traders,signals,orders,openPositions:positions},
+    metrics:{
+      users:{registered:registeredUsers,active:activeUsers,newToday,newWeek,verified:verifiedUsers,walletConnected:walletUsers,autoCopyEnabled:autoCopyUsers},
+      trading:{openPositions,ordersToday,buysToday:buyOrders,sellsToday:sellOrders,liveOrders,simulationOrders,realizedPnlUsd:livePnl._sum.realizedPnlUsd,unrealizedPnlUsd:livePnl._sum.unrealizedPnlUsd,allocatedCashUsd:(cash._sum.availableUsd??0)+(cash._sum.inTradesUsd??0)},
+      smartTraders:{platform:platformTraders,candidates,paperTracked:paperCandidates,proven:provenCandidates,rejected:rejectedCandidates,averageCopyability:averageCopyability._avg.copyabilityScore},
+      discovery:{watchedTokens:discoveryTokens,opportunitiesToday:newTokensToday},
+      engine:{signals,signalsToday,buyDecisions,waitDecisions,skipDecisions}
+    },
     executionMode:process.env.EXECUTION_MODE??"simulation",
     liveExecutionEnabled:process.env.LIVE_EXECUTION_ENABLED==="true",
     broadcasts,
