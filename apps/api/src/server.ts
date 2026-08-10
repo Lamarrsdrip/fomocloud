@@ -134,8 +134,11 @@ function auth(req:Request,res:Response,next:NextFunction) {
   const token=String(req.headers.authorization??"").replace(/^Bearer\s+/i,"");
   try {
     const payload=jwt.verify(token,jwtSecret,{issuer:"memecloud-api",audience:"memecloud-web"}) as TokenPayload;
-    (req as AuthedRequest).user=payload;
-    next();
+    void db.user.findUnique({where:{id:payload.sub},select:{email:true,role:true,status:true}}).then(user=>{
+      if(!user||user.status!=="ACTIVE") return res.status(401).json({error:"UNAUTHORIZED"});
+      (req as AuthedRequest).user={...payload,role:user.role as TokenPayload["role"],email:user.email??payload.email};
+      next();
+    }).catch(next);
   } catch {
     res.status(401).json({error:"UNAUTHORIZED"});
   }
