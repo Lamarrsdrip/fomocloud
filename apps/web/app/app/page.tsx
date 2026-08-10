@@ -7,7 +7,7 @@ import {
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 
 type View="home"|"traders"|"community"|"activity"|"positions"|"profile";
-const nav:[View,string,any][]=[["home","Home",Home],["traders","Traders",Users],["community","Community",UserRound],["activity","Activity",Activity],["positions","Positions",WalletCards],["profile","Profile",Settings2]];
+const nav:[View,string,any][]=[["home","Home",Home],["traders","Discover",Users],["community","People",UserRound],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
 
 function initialView():View{
   if(typeof window==="undefined") return "home";
@@ -93,22 +93,19 @@ export default function AppPage(){
         <a className="brand" href="/"><span className="brandmark small">K</span><b>KAIRO</b></a>
         <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
         <div className="sidebar-bottom">
-          <div className="mode-pill"><span>Execution</span><b>{String(dashboard?.executionMode||"simulation").toUpperCase()}</b></div>
           <div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||me?.wallets?.[0]?.address?.slice(0,10)||"Wallet account"}</small></div></div>
         </div>
       </aside>
 
       <section className="app-main">
         <div className="app-top">
-          <div><small>PRIVATE ACCOUNT</small><h1>{view==="home"?"Your dashboard":view[0].toUpperCase()+view.slice(1)}</h1></div>
+          <div><small>YOUR KAIRO</small><h1>{view==="home"?"Home":view==="traders"?"Discover":view==="positions"?"Portfolio":view==="profile"?"Account":view[0].toUpperCase()+view.slice(1)}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Copy {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {dashboard?.executionMode==="simulation"&&<div className="notice"><b>Simulation is active.</b> Market monitoring and account data can be real, but automatic orders shown as SIMULATION do not move live funds.</div>}
-
         {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CommunityView/>}
@@ -137,22 +134,23 @@ function PnlSvg({vals}:{vals:number[]}){const min=Math.min(...vals),max=Math.max
 function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[];setView:(v:View)=>void}){
  const s=d?.summary||{};const sim=d?.simulation||{};
  return <>
+  <section className="user-welcome"><div><span>YOUR MONEY</span><h2>{money(s.tradingCashUsd)}</h2><p>{s.tradingCashUsd?"Ready to use across your connected wallet.":"Connect a wallet to get started."}</p></div><div className="user-quick-actions"><button onClick={()=>setView("profile")}><WalletCards size={16}/><span>Connect wallet</span></button><button onClick={()=>setView("traders")}><Users size={16}/><span>Find traders</span></button><button onClick={()=>setView("positions")}><Activity size={16}/><span>Portfolio</span></button></div></section>
   <div className="app-grid-4">
-    <div className="stat-card"><span>Trading Cash</span><b>{money(s.tradingCashUsd)}</b><small>{s.tradingCashUsd?"Real synced USDC allocations":"No cash synced yet"}</small></div>
-    <div className="stat-card"><span>Net P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b><small>Realized + unrealized live positions</small></div>
+    <div className="stat-card"><span>Available</span><b>{money(s.tradingCashUsd)}</b><small>{s.tradingCashUsd?"Connected balance":"No wallet balance yet"}</small></div>
+    <div className="stat-card"><span>Profit &amp; loss</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b><small>Realized + unrealized live positions</small></div>
     <div className="stat-card"><span>Open positions</span><b>{s.openPositions??0}</b><small>{sim.openPositions?`${sim.openPositions} simulation position(s) separate`:"Live positions only"}</small></div>
-    <div className="stat-card"><span>Auto Copy traders</span><b>{s.copiedTraders??0}</b><small>{s.winRate==null?"Win rate appears after closed live trades":`${s.winRate.toFixed(1)}% live win rate`}</small></div>
+    <div className="stat-card"><span>Copied traders</span><b>{s.copiedTraders??0}</b><small>{s.winRate==null?"Win rate appears after closed live trades":`${s.winRate.toFixed(1)}% live win rate`}</small></div>
   </div>
   {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-summary"><div className="card-title"><div><span>SIMULATION WORKSPACE</span><h2>Test decisions without moving live funds</h2></div><span className="sim-badge">SIMULATION</span></div><div className="simulation-stats"><div><span>Open simulated positions</span><b>{sim.openPositions??0}</b></div><div><span>Simulated realized P&amp;L</span><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b></div><div><span>Simulated unrealized P&amp;L</span><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b></div></div><p>Simulation uses the real source-signal and market-data pipeline where configured, but it never presents these numbers as live account money.</p></section>}
   <PerformanceChart snapshots={d?.snapshots||[]} />
-  <section className="app-card cash-breakdown"><div className="card-title"><div><span>TRADING CASH BY CHAIN</span><h2>Where your USDC is actually available</h2></div></div>
-    {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect a supported wallet to sync genuine chain-specific USDC. One chain's USDC is never silently treated as spendable on another chain.</div>}
+  <section className="app-card cash-breakdown"><div className="card-title"><div><span>YOUR WALLET</span><h2>Available funds</h2></div></div>
+    {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect your wallet to see available USDC here.</div>}
   </section>
   <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>RECENT ACTIVITY</span><h2>What KAIRO did for you</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
+    <section className="app-card"><div className="card-title"><div><span>RECENT</span><h2>Your activity</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
       {activity?.events?.length?<div className="list">{activity.events.slice(0,6).map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.status||e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="No activity yet" body="Choose traders and enable Auto Copy or Watch mode. Your real account activity will appear here." action="Choose traders" onClick={()=>setView("traders")}/>}
     </section>
-    <section className="app-card"><div className="card-title"><div><span>YOUR TRADERS</span><h2>Copy setup</h2></div></div>
+    <section className="app-card"><div className="card-title"><div><span>COPY</span><h2>Your traders</h2></div></div>
       {follows.length?<div className="list">{follows.slice(0,5).map((f:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={f.id}><div><b>{f.trader.displayName}</b><small>@{f.trader.handle}</small></div><span className={`status-badge ${f.mode==="WATCH_ONLY"?"watch":f.mode==="FOLLOW_ONLY"?"follow":""}`}>{f.mode.replaceAll("_"," ")}</span></div>)}</div>:<Empty icon={Users} title="Your list is empty" body="Follow platform traders or add a public wallet you already trust." action="Find traders" onClick={()=>setView("traders")}/>}
     </section>
   </div>
@@ -160,12 +158,10 @@ function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[]
     <section className="app-card"><div className="card-title"><div><span>OPEN POSITIONS</span><h2>Your positions</h2></div><button onClick={()=>setView("positions")}>Open positions <ChevronRight size={12}/></button></div>
       {d?.positions?.length?<div className="list">{d.positions.slice(0,6).map((p:any)=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title="No positions yet" body="Your account starts clean. Positions appear only after a genuine decision and execution/simulation event."/>}
     </section>
-    <section className="app-card"><div className="card-title"><div><span>ACCOUNT STATUS</span><h2>Ready check</h2></div></div>
+    <section className="app-card"><div className="card-title"><div><span>GET STARTED</span><h2>Quick check</h2></div></div>
       <div className="list">
-        <StatusLine label="Backend" value="Connected" ok/>
-        <StatusLine label="Trading Cash" value={s.tradingCashUsd>0?"Synced":"Needs wallet/cash"} ok={s.tradingCashUsd>0}/>
+        <StatusLine label="Wallet funds" value={s.tradingCashUsd>0?"Ready":"Connect wallet"} ok={s.tradingCashUsd>0}/>
         <StatusLine label="Auto Copy" value={d?.settings?.autoCopyEnabled?"On":"Off"} ok={Boolean(d?.settings?.autoCopyEnabled)}/>
-        <StatusLine label="Execution" value={String(d?.executionMode||"simulation").toUpperCase()} ok={false}/>
       </div>
     </section>
   </div>
@@ -177,9 +173,9 @@ function TradersView({platform,follows,followMap,setMode,customOpen,setCustomOpe
  const [search,setSearch]=useState(""); const[detail,setDetail]=useState<string|null>(null); const filtered=platform.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
  return <>
   {detail&&<TraderDetail traderId={detail} close={()=>setDetail(null)}/>}
-  <div style={{display:"flex",gap:8,marginBottom:12}}><label className="field" style={{flex:1}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search platform traders"/></label><button className="soft-action" onClick={()=>setCustomOpen(!customOpen)}><Plus size={14}/> Add my own trader</button></div>
+  <div style={{display:"flex",gap:8,marginBottom:12}}><label className="field" style={{flex:1}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search traders"/></label><button className="soft-action" onClick={()=>setCustomOpen(!customOpen)}><Plus size={14}/> Add trader</button></div>
   {customOpen&&<CustomTrader reload={reload} close={()=>setCustomOpen(false)}/>}
-  <div className="card-title"><div><span>PLATFORM TRADERS</span><h2>Choose who you want to follow</h2></div></div>
+  <div className="card-title"><div><span>DISCOVER</span><h2>Traders worth watching</h2></div></div>
   <div className="trader-grid">
     {filtered.map((t:any)=>{const f=followMap.get(t.id);const trackable=t.wallets?.some((w:any)=>w.verified&&w.chain==="SOLANA");return <article className="trader-card" key={t.id}>
       <div className="trader-head"><div className="avatar">{initials(t.displayName)}</div><div><b>{t.displayName}</b><small>@{t.handle} · {t.category||t.trackingStatus}</small></div></div>
