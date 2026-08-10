@@ -7,7 +7,8 @@ import {
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 
 type View="home"|"traders"|"community"|"activity"|"positions"|"profile";
-const nav:[View,string,any][]=[["home","Home",Home],["traders","Discover",Users],["community","People",UserRound],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+const nav:[View,string,any][]=[["home","Home",Home],["traders","Discover",Users],["community","Copy",Copy],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+const mobileNav=nav.filter(([id])=>id!=="activity");
 
 function initialView():View{
   if(typeof window==="undefined") return "home";
@@ -108,13 +109,13 @@ export default function AppPage(){
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
         {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
-        {view==="community"&&<CommunityView/>}
+        {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
         {view==="positions"&&<PositionsView positions={positions}/>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut}/>}
       </section>
     </div>
-    <nav className="mobile-app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
+    <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
   </main>
 }
 
@@ -230,6 +231,19 @@ function CustomTrader({reload,close}:{reload:()=>Promise<void>;close:()=>void}){
  </form><div className="notice" style={{marginTop:12,marginBottom:0}}>You can save an X favorite without a wallet. It stays FOLLOW ONLY / NEEDS WALLET until you add the genuine public trading wallet. The platform never invents wallet mappings.</div></section>
 }
 
+
+function CopyView({follows,setMode,setView}:{follows:any[];setMode:(id:string,m:string)=>void;setView:(v:View)=>void}){
+ const auto=follows.filter((f:any)=>f.mode==="AUTO_COPY");
+ const watching=follows.filter((f:any)=>f.mode!=="AUTO_COPY");
+ return <>
+  <section className="copy-hero"><div><span>AUTO COPY</span><h2>Choose who KAIRO can follow for you.</h2><p>Pick a trader, set them to Auto Copy, and your own account rules still decide whether each trade is safe to take.</p></div><button className="action-primary" onClick={()=>setView("traders")}><Users size={15}/> Find traders</button></section>
+  <div className="app-two">
+   <section className="app-card"><div className="card-title"><div><span>ACTIVE</span><h2>Auto Copy</h2></div><span className="status-badge">{auto.length} active</span></div>{auto.length?<div className="list">{auto.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>@{f.trader?.handle||"tracked"}</small></div><span className="status-badge">Auto Copy</span><button className="soft-action" onClick={()=>setMode(f.traderId,"WATCH_ONLY")}>Pause</button></div>)}</div>:<Empty icon={Copy} title="No Auto Copy traders yet" body="Discover a trader you trust and tap Auto Copy. KAIRO still applies your personal limits before acting." action="Discover traders" onClick={()=>setView("traders")}/>}</section>
+   <section className="app-card"><div className="card-title"><div><span>WATCHLIST</span><h2>Following & watching</h2></div></div>{watching.length?<div className="list">{watching.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>{String(f.mode||"FOLLOW_ONLY").replaceAll("_"," ")}</small></div><button className="soft-action" onClick={()=>setMode(f.traderId,"AUTO_COPY")}>Auto Copy</button></div>)}</div>:<Empty icon={Eye} title="Nothing on your watchlist" body="Follow traders first, then decide who should be watched or copied." action="Discover" onClick={()=>setView("traders")}/>}</section>
+  </div>
+  <section className="app-card copy-explainer"><div className="card-title"><div><span>HOW IT WORKS</span><h2>Simple on the surface. Careful underneath.</h2></div></div><div className="simple-steps"><div><b>1</b><span>Trader buys</span><small>KAIRO sees the tracked wallet action.</small></div><div><b>2</b><span>Your rules check it</span><small>Price, liquidity, exposure and your settings are checked.</small></div><div><b>3</b><span>Only then act</span><small>Eligible trades can execute; bad entries are skipped or waited on.</small></div></div></section>
+ </>;
+}
 
 function CommunityView(){
  const[q,setQ]=useState("");const[users,setUsers]=useState<any[]>([]);const[following,setFollowing]=useState<any[]>([]);const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
