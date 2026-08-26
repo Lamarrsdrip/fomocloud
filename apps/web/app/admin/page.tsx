@@ -106,7 +106,23 @@ function Signals({d}:{d:any}){return <section className="app-card"><table classN
 function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
 function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  const sections=["brain","marketData","execution","signer","discovery","risk","fees","email","push","social","chains","branding"];
- const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState("");
+ const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState(""),[testing,setTesting]=useState(false);
+ const providerInfo:Record<string,{purpose:string;links:{label:string;url:string}[]}>={
+  marketData:{purpose:"Watches Solana transactions and prices in real time.",links:[{label:"Get a Solana RPC",url:"https://solana.com/rpc"},{label:"Get Helius RPC",url:"https://www.helius.dev/"},{label:"Get Birdeye key",url:"https://docs.birdeye.so/docs/authentication-api-keys"}]},
+  execution:{purpose:"Gets executable Solana swap quotes and routes for real buys/sells.",links:[{label:"Jupiter docs",url:"https://dev.jup.ag/"},{label:"0x API key",url:"https://dashboard.0x.org/"}]},
+  signer:{purpose:"Allows authorized unattended (delegated) live trading. Keep live mode off until this is verified.",links:[{label:"Get Privy credentials",url:"https://docs.privy.io/"}]},
+  social:{purpose:"Tracks meme hype and mention velocity on X.",links:[{label:"Get X API access",url:"https://developer.x.com/en/portal/dashboard"}]},
+  brain:{purpose:"BNB/Ethereum WebSocket RPCs let the Global Brain watch meme trades on those chains.",links:[{label:"BNB RPC providers",url:"https://www.bnbchain.org/en/developers"},{label:"Ethereum RPC providers",url:"https://ethereum.org/en/developers/docs/nodes-and-clients/nodes-as-a-service/"}]},
+  email:{purpose:"Sends account emails: verification, password reset, alerts.",links:[]},
+  push:{purpose:"Sends browser push notifications to users.",links:[]},
+  discovery:{purpose:"Tunes which tokens the discovery/scoring workers pay attention to.",links:[]},
+  risk:{purpose:"Platform-wide safety defaults. 0 disables a cap.",links:[]},
+  fees:{purpose:"Platform trading fee, disclosed to users.",links:[]},
+  chains:{purpose:"Which chains are enabled for Auto Copy.",links:[]},
+  branding:{purpose:"Public app name and support contact shown to users.",links:[]}
+ };
+ const testableKeys=["marketData","execution","signer","social"];
+ async function testConnection(){setTesting(true);setMsg("");try{const r=await apiFetch<any>(`/v1/admin/config/${key}/test`,{method:"POST"});setMsg(r.ok?`✓ ${r.message}`:`✗ ${r.message}`)}catch(e){setMsg(plainError(e))}finally{setTesting(false)}}
  const current=(d.config||[]).find((c:any)=>c.key===key);
  const templates:any={
   brain:{autoEntryScore:76,notifyScore:65,snapshotMaxAgeMs:45000,solanaChainWideEnabled:true,solanaFlowConcurrency:12,profileTradeUsd:5000,bnbWs:"",ethWs:"",bnbUsd:0,ethUsd:0},
@@ -141,6 +157,13 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
    <div className="notice" style={{marginTop:12}}>Secret values are encrypted on the VPS. Blank password/API-key fields mean <b>keep the existing secret</b>; they are never read back into this browser.</div>
   </section>
   <section className="app-card"><div className="card-title"><div><span>OWNER SETTINGS</span><h2>{key}</h2></div><span className="status-badge">{current?"Configured":"New"}</span></div>
+   {providerInfo[key]&&<div className="notice" style={{display:"flex",flexWrap:"wrap",gap:10,alignItems:"center",justifyContent:"space-between"}}>
+    <span>{providerInfo[key].purpose}</span>
+    <span style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+     {testableKeys.includes(key)&&<button type="button" className="soft-action" disabled={testing} onClick={testConnection}>{testing?"Testing…":"Test connection"}</button>}
+     {providerInfo[key].links.map(l=><a key={l.url} className="soft-action" href={l.url} target="_blank" rel="noopener noreferrer">{l.label}</a>)}
+    </span>
+   </div>}
    <div className="admin-form">
     {key==="brain"&&<><div className="form-grid"><Cfg label="Auto-entry score (1-100)" type="number" value={form.autoEntryScore} on={v=>field("autoEntryScore",Math.max(1,Math.min(100,Number(v))))}/><Cfg label="Notify score (1-100)" type="number" value={form.notifyScore} on={v=>field("notifyScore",Math.max(1,Math.min(100,Number(v))))}/><Cfg label="Max market snapshot age ms" type="number" value={form.snapshotMaxAgeMs} on={v=>field("snapshotMaxAgeMs",Math.max(5000,Number(v)))}/><Cfg label="Large-wallet profiling starts at trade USD" type="number" value={form.profileTradeUsd} on={v=>field("profileTradeUsd",Math.max(0,Number(v)))}/><Cfg label="Solana scan concurrency" type="number" value={form.solanaFlowConcurrency} on={v=>field("solanaFlowConcurrency",Math.max(2,Number(v)))}/><Cfg label="BNB WebSocket RPC" value={form.bnbWs} placeholder="wss://..." on={v=>field("bnbWs",v)}/><Cfg label="Ethereum WebSocket RPC" value={form.ethWs} placeholder="wss://..." on={v=>field("ethWs",v)}/><Cfg label="BNB USD reference (optional)" type="number" value={form.bnbUsd} on={v=>field("bnbUsd",Number(v))}/><Cfg label="ETH USD reference (optional)" type="number" value={form.ethUsd} on={v=>field("ethUsd",Number(v))}/></div><label className="check-line"><input type="checkbox" checked={Boolean(form.solanaChainWideEnabled)} onChange={e=>field("solanaChainWideEnabled",e.target.checked)}/><span>Scan chain-wide Solana swap flow</span></label><div className="notice">0 caps in user trading settings mean unlimited by MemeCloud. The brain scores what money is doing now; it does not reject a meme simply because it already pumped hard or survived a deep dip.</div></>}
     {key==="email"&&<><Cfg label="SMTP host" value={form.host} on={v=>field("host",v)}/><div className="form-grid"><Cfg label="Port" type="number" value={form.port} on={v=>field("port",Number(v))}/><label className="field"><span>TLS / secure</span><select value={String(Boolean(form.secure))} onChange={e=>field("secure",e.target.value==="true")}><option value="false">STARTTLS / port 587</option><option value="true">TLS / port 465</option></select></label></div><Cfg label="SMTP username" value={form.user} on={v=>field("user",v)}/><Cfg label="SMTP password" type="password" placeholder="Leave blank to keep saved password" value={form.pass} on={v=>field("pass",v)}/><Cfg label="From" placeholder="MemeCloud <hello@example.com>" value={form.from} on={v=>field("from",v)}/></>}

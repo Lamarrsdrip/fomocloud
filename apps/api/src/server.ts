@@ -1250,6 +1250,48 @@ app.post("/v1/admin/test-email", adminOnly, asyncRoute(async (req:AuthedRequest,
   const info=await sendEmail(to,"MemeCloud email test","<h2>Email is working.</h2>");
   res.json({ok:true,messageId:info.messageId});
 }));
+app.post("/v1/admin/config/:key/test", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const key=routeParam(req.params.key);
+  const withTimeout=(p:Promise<any>,ms=8000)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error("Timed out")),ms))]);
+  try{
+    if(key==="marketData"){
+      const cfg=await getConfig<any>("marketData");
+      const rpc=cfg?.solanaRpc||cfg?.heliusRpc;
+      if(!rpc) return res.json({ok:false,message:"No Solana RPC URL is saved yet."});
+      const r=await withTimeout(fetch(rpc,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"getHealth"})})) as any;
+      const body=await r.json().catch(()=>null);
+      if(r.ok&&body?.result==="ok") return res.json({ok:true,message:"Solana RPC responded healthy."});
+      return res.json({ok:false,message:`RPC responded with ${r.status}${body?.error?.message?`: ${body.error.message}`:""}`});
+    }
+    if(key==="execution"){
+      const cfg=await getConfig<any>("execution");
+      const base=cfg?.jupiterBaseUrl||"https://api.jup.ag";
+      const usdc="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",wsol="So11111111111111111111111111111111111111112";
+      const url=`${base.replace(/\/$/,"")}/v6/quote?inputMint=${wsol}&outputMint=${usdc}&amount=10000000&slippageBps=100`;
+      const r=await withTimeout(fetch(url,{headers:cfg?.jupiterApiKey?{"x-api-key":cfg.jupiterApiKey}:{}})) as any;
+      if(r.ok) return res.json({ok:true,message:"Jupiter returned a real executable quote."});
+      return res.json({ok:false,message:`Jupiter responded with ${r.status}.`});
+    }
+    if(key==="social"){
+      const cfg=await getConfig<any>("social");
+      if(!cfg?.xBearerToken) return res.json({ok:false,message:"No X bearer token is saved yet."});
+      const r=await withTimeout(fetch("https://api.x.com/2/tweets/search/recent?query=test&max_results=10",{headers:{authorization:`Bearer ${cfg.xBearerToken}`}})) as any;
+      if(r.ok) return res.json({ok:true,message:"X API accepted the bearer token."});
+      return res.json({ok:false,message:`X API responded with ${r.status}. Check the bearer token.`});
+    }
+    if(key==="signer"){
+      const cfg=await getConfig<any>("signer");
+      if(!cfg?.privyAppId||!cfg?.privyAppSecret) return res.json({ok:false,message:"Privy App ID and App Secret are both required."});
+      const auth=Buffer.from(`${cfg.privyAppId}:${cfg.privyAppSecret}`).toString("base64");
+      const r=await withTimeout(fetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`}})) as any;
+      if(r.ok) return res.json({ok:true,message:"Privy accepted the App ID and Secret."});
+      return res.json({ok:false,message:`Privy responded with ${r.status}. Check the App ID/Secret.`});
+    }
+    return res.json({ok:false,message:"No live test is available for this provider yet."});
+  }catch(e:any){
+    return res.json({ok:false,message:e?.message||"The test request failed."});
+  }
+}));
 app.post("/v1/admin/broadcast", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const title=String(req.body?.title??"").trim(), body=String(req.body?.body??"").trim();
   const channel=String(req.body?.channel??"PUSH").toUpperCase(), audience=String(req.body?.audience??"ALL").toUpperCase();
