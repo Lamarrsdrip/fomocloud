@@ -19,7 +19,7 @@ export default function Landing(){
     <div className="landing-glow one"/><div className="landing-glow two"/>
     <div className="public-shell">
       <header className="public-header">
-        <a className="brand" href="/"><span className="brandmark">K</span><b>MemeCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark">M</span><b>MemeCloud</b></a>
         <nav className="public-links">
           <a href="#how">How it works</a><a href="#features">Features</a><a href="#security">Security</a>
         </nav>
@@ -35,7 +35,7 @@ export default function Landing(){
 
         <div className="product-preview">
           <div className="preview-side">
-            <span className="brandmark small">K</span>
+            <span className="brandmark small">M</span>
             <i/><i/><i/><i/><i/>
           </div>
           <div className="preview-body">
@@ -89,7 +89,7 @@ export default function Landing(){
         <LineChart size={32}/><h2>Build your trader list.</h2><p>Your dashboard starts empty and becomes yours — no fake balance, fake P&amp;L or shared public account.</p><a className="hero-primary" href="/signup/">Start trading <ArrowRight size={18}/></a>
       </section>
 
-      <footer className="public-footer"><div className="brand"><span className="brandmark small">K</span><b>MemeCloud</b></div><span>Autonomous intelligence · Personal dashboards · Simulation until live authorization</span><span><Smartphone size={14}/> PWA ready</span></footer>
+      <footer className="public-footer"><div className="brand"><span className="brandmark small">M</span><b>MemeCloud</b></div><span>Autonomous intelligence · Personal dashboards · Simulation until live authorization</span><span><Smartphone size={14}/> PWA ready</span></footer>
     </div>
     <InstallAppPrompt/>
   </main>

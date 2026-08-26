@@ -93,7 +93,7 @@ export default function AppPage(){
   return <main className="app-page">
     <div className="app-layout">
       <aside className="app-sidebar">
-        <a className="brand" href="/"><span className="brandmark small">K</span><b>MemeCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark small">M</span><b>MemeCloud</b></a>
         <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
         <div className="sidebar-bottom">
           <div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||me?.wallets?.[0]?.address?.slice(0,10)||"Wallet account"}</small></div></div>
