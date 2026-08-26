@@ -1,4 +1,4 @@
-# KAIRO forensic trading-engine and go-live audit
+# MemeCloud forensic trading-engine and go-live audit
 
 Audit date: 2026-08-09  
 Decision: **NO-GO for real-money unattended execution**  
@@ -183,11 +183,11 @@ Recommended evaluation path:
 2. Solana policy must allow only reviewed Jupiter program instructions and required token/system instructions, with explicit spend ceilings, allowed quote assets, expiry, pause and revocation.
 3. EVM should use a reviewed smart account/session-key model with contract/function allowlists, token/value limits, rate limits, timestamps and paymaster controls.
 4. Store only provider permission/signer references; protect backend authorization keys in a KMS/HSM or provider-supported enclave/quorum arrangement.
-5. Enforce each limit twice: KAIRO decision layer and wallet/provider policy layer.
+5. Enforce each limit twice: MemeCloud decision layer and wallet/provider policy layer.
 6. Prevent arbitrary transfers/withdrawals, arbitrary contract/program calls, policy mutation and private-key export by the automation signer.
 7. Add an immutable authorization audit trail and reconciliation alarm.
 
-Minimum policy fields still required in KAIRO’s schema/API:
+Minimum policy fields still required in MemeCloud’s schema/API:
 
 - Per-trade maximum.
 - Per-day and total exposure maximum.
@@ -201,7 +201,7 @@ Minimum policy fields still required in KAIRO’s schema/API:
 
 Official fomo.family surfaces expose social feeds, profiles, following and leaderboards to users. This audit found no published official developer/partner API, webhook, SDK or documented endpoint for exporting trader profiles, following graphs, public wallets or trade streams. That is an inference from the current official website, blog and terms—not proof that a private partner API can never exist.
 
-`docs.fomo.com` documents an unrelated website social-proof/marketing-notification product (Events, Templates and marketing KPIs). It must not be connected to KAIRO trader discovery.
+`docs.fomo.com` documents an unrelated website social-proof/marketing-notification product (Events, Templates and marketing KPIs). It must not be connected to MemeCloud trader discovery.
 
 Safe architecture now implemented:
 
@@ -248,7 +248,7 @@ Safe architecture now implemented:
 ### Controlled owner test only after all P0 signer/execution items pass
 
 1. Create a dedicated tiny-value owner test wallet/sub-wallet.
-2. Set strict provider policy and KAIRO policy limits.
+2. Set strict provider policy and MemeCloud policy limits.
 3. Execute one tiny BUY; verify quote, signature, tx, confirmation, actual fill, fees and position.
 4. Execute one partial SELL; verify remaining raw balance and cost basis.
 5. Execute one full SELL; verify close and final realized P&L.
@@ -257,4 +257,4 @@ Safe architecture now implemented:
 
 ## Final verdict
 
-KAIRO’s simulation path and Solana source-decoding foundation are materially improved and testable. The system is **not ready for unattended real-money auto-trading** because delegated signing, production submission/confirmation wiring, live exits, idempotent failed-exit recovery and chain-derived reconciliation are missing. Keep execution in simulation mode.
+MemeCloud’s simulation path and Solana source-decoding foundation are materially improved and testable. The system is **not ready for unattended real-money auto-trading** because delegated signing, production submission/confirmation wiring, live exits, idempotent failed-exit recovery and chain-derived reconciliation are missing. Keep execution in simulation mode.

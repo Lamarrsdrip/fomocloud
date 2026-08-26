@@ -138,7 +138,7 @@ async function handleSourceSell(signal:any){
     if(existing) continue;
     const soldPct=Number(signal.sourceSoldPct??NaN);
     if(!Number.isFinite(soldPct)||soldPct<=0){
-      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SOURCE_EXIT_CONTEXT",reason:"SOURCE_SELL_PERCENT_UNKNOWN",explanation:"The trader sold, but KAIRO could not verify what percentage of the source position was sold. It will not invent an exit size."}});
+      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SOURCE_EXIT_CONTEXT",reason:"SOURCE_SELL_PERCENT_UNKNOWN",explanation:"The trader sold, but MemeCloud could not verify what percentage of the source position was sold. It will not invent an exit size."}});
       await userEvent(userId,"SOURCE_SELL",`${signal.trader.displayName} sold`,"The source sale was detected, but the sold percentage could not be verified, so no automatic mirror exit was invented.",{signalId:signal.id});
       continue;
     }
@@ -296,7 +296,7 @@ const worker=new Worker("signals",async job=>{
       });
       await userEvent(follow.userId,reason==="WAIT_PULLBACK"?"WAIT_PULLBACK":"TRADE_SKIPPED",
         reason==="WAIT_PULLBACK"?`${signal.trader.displayName}: waiting for a better entry`:`${signal.trader.displayName}: trade skipped`,
-        reason==="WAIT_PULLBACK"?"The price moved quickly after the trader bought it. KAIRO is watching for a cleaner pullback.":base.reason,
+        reason==="WAIT_PULLBACK"?"The price moved quickly after the trader bought it. MemeCloud is watching for a cleaner pullback.":base.reason,
         {signalId:signal.id,traderId:signal.traderId,walletChasePct:chase});
       skippedCount++; continue;
     }
@@ -312,7 +312,7 @@ const worker=new Worker("signals",async job=>{
       skippedCount++; continue;
     }
     if(!sourceExecutionPriceUsd){
-      await saveDecision({allowed:false,action:"WAIT_DATA",reason:"SOURCE_EXECUTION_PRICE_MISSING",explanation:"The source wallet transaction was detected, but its genuine execution price is not available yet. KAIRO will not invent a chase value."});
+      await saveDecision({allowed:false,action:"WAIT_DATA",reason:"SOURCE_EXECUTION_PRICE_MISSING",explanation:"The source wallet transaction was detected, but its genuine execution price is not available yet. MemeCloud will not invent a chase value."});
       skippedCount++; continue;
     }
 
@@ -337,7 +337,7 @@ const worker=new Worker("signals",async job=>{
         reverseImpactPct=Math.abs(Number(reverse.priceImpactPct??0));
       }catch{}
       if(!sellRouteAvailable){
-        await saveDecision({allowed:false,action:"SKIP",reason:"NO_EXECUTABLE_SELL_ROUTE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The buy quote exists, but KAIRO could not verify an executable route back to USDC for the expected position. No trade was created."});
+        await saveDecision({allowed:false,action:"SKIP",reason:"NO_EXECUTABLE_SELL_ROUTE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The buy quote exists, but MemeCloud could not verify an executable route back to USDC for the expected position. No trade was created."});
         skippedCount++;continue;
       }
 
@@ -346,7 +346,7 @@ const worker=new Worker("signals",async job=>{
       const rich=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:signal.outputMint},orderBy:{observedAt:"desc"}});
       const richFresh=rich&&Date.now()-rich.observedAt.getTime()<=Number(riskCfg?.maxIntelligenceAgeMs??30_000);
       if(!richFresh){
-        await saveDecision({allowed:false,action:"WAIT_DATA",reason:"RICH_INTELLIGENCE_UNAVAILABLE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The executable quote is real, but the liquidity/flow/holder intelligence snapshot is missing or stale. KAIRO will not invent those inputs."});
+        await saveDecision({allowed:false,action:"WAIT_DATA",reason:"RICH_INTELLIGENCE_UNAVAILABLE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The executable quote is real, but the liquidity/flow/holder intelligence snapshot is missing or stale. MemeCloud will not invent those inputs."});
         skippedCount++;continue;
       }
       const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:signal.sourceWallet}}}).catch(()=>null);
@@ -401,13 +401,13 @@ const worker=new Worker("signals",async job=>{
       }
 
       if(actualChase>effectiveChase){
-        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your real $${amountUsd.toFixed(2)} executable quote is ${actualChase.toFixed(1)}% above the followed wallet's buy. The token's 24h move is irrelevant; KAIRO is waiting for a cleaner entry.`});
+        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your real $${amountUsd.toFixed(2)} executable quote is ${actualChase.toFixed(1)}% above the followed wallet's buy. The token's 24h move is irrelevant; MemeCloud is waiting for a cleaner entry.`});
         await userEvent(follow.userId,"WAIT_PULLBACK",`${signal.trader.displayName}: waiting for a better entry`,`Your actual-size executable quote moved ${actualChase.toFixed(1)}% from the source wallet's buy, beyond your ${maxChase.toFixed(1)}% chase window.`,{signalId:signal.id,walletChasePct:actualChase,amountUsd});
         skippedCount++; continue;
       }
       if(Number.isFinite(priceImpactPct)&&priceImpactPct>hardImpactLimit){
         await saveDecision({allowed:false,action:"SKIP",reason:"EXECUTION_PRICE_IMPACT_TOO_HIGH",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`The real executable quote has ${priceImpactPct.toFixed(2)}% price impact, above the platform hard limit of ${hardImpactLimit.toFixed(2)}%.`});
-        await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: execution quality too poor`,`The route's real price impact was ${priceImpactPct.toFixed(2)}%, so KAIRO did not create a fill.`,{signalId:signal.id,priceImpactPct});
+        await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: execution quality too poor`,`The route's real price impact was ${priceImpactPct.toFixed(2)}%, so MemeCloud did not create a fill.`,{signalId:signal.id,priceImpactPct});
         skippedCount++; continue;
       }
 
@@ -447,7 +447,7 @@ const worker=new Worker("signals",async job=>{
           }
           // A SIGNING request without a recoverable provider transaction is ambiguous. Never
           // re-submit automatically; that could duplicate a real buy after a network/process crash.
-          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_RECONCILIATION",reason:"AMBIGUOUS_PRIOR_BUY_ATTEMPT",explanation:"A previous live buy attempt has no locally stored hash and cannot yet be reconciled through the provider reference ID. KAIRO will not submit a duplicate."}});
+          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_RECONCILIATION",reason:"AMBIGUOUS_PRIOR_BUY_ATTEMPT",explanation:"A previous live buy attempt has no locally stored hash and cannot yet be reconciled through the provider reference ID. MemeCloud will not submit a duplicate."}});
           skippedCount++;continue;
         }
         const built=await jupiter.buildSwap(quote,permitted.address);
@@ -505,7 +505,7 @@ const worker=new Worker("signals",async job=>{
       const orderKey=decisionKey(signal.id,follow.userId);
       const committed=await db.order.findUnique({where:{idempotencyKey:orderKey},select:{id:true}}).catch(()=>null);
       if(committed)continue;
-      await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:e?.code==="SOLANA_RPC_REQUIRED"?"MARKET_DATA_INCOMPLETE":"QUOTE_UNAVAILABLE",amountUsd,explanation:"A genuine executable quote and token precision could not be verified, so KAIRO did not fabricate a fill."});
+      await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:e?.code==="SOLANA_RPC_REQUIRED"?"MARKET_DATA_INCOMPLETE":"QUOTE_UNAVAILABLE",amountUsd,explanation:"A genuine executable quote and token precision could not be verified, so MemeCloud did not fabricate a fill."});
       await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: no reliable quote`,
         "A genuine executable quote could not be fully verified, so no simulation or live fill was invented.",{signalId:signal.id});
       skippedCount++;

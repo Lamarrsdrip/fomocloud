@@ -352,7 +352,7 @@ export function evaluateExit(m:MarketSnapshot, p:PositionState):ExitInstruction 
 
   // Risk rising but not catastrophic: de-risk rather than binary panic sell.
   if (risk.state === "HIGH_RISK" && profit > 0 && trend !== "HYPER")
-    return {action:"REDUCE", sellPct:25, reason:"Risk increased, so KAIRO locks some profit without killing the whole runner"};
+    return {action:"REDUCE", sellPct:25, reason:"Risk increased, so MemeCloud locks some profit without killing the whole runner"};
 
   const trail = adaptiveTrailPct(m);
   // Use actual drawdown from the peak PRICE, not percentage-point distance between

@@ -1,12 +1,12 @@
 # NOTE: Superseded/extended by MEME_INTELLIGENCE_V3.md
 
-# KAIRO trading policy
+# MemeCloud trading policy
 
 ## Plain-English goal
 
-KAIRO should behave like a disciplined meme-coin trader, not a blind copy button.
+MemeCloud should behave like a disciplined meme-coin trader, not a blind copy button.
 
-It watches verified source wallets. When they buy, KAIRO asks:
+It watches verified source wallets. When they buy, MemeCloud asks:
 
 1. Is this really a buy?
 2. Can we actually sell this token again?
@@ -31,7 +31,7 @@ Default:
 The runner has no fixed maximum profit target.
 
 If the token keeps strong volume, healthy buy flow, real social attention and sufficient
-liquidity, KAIRO can hold the runner through +200%, +500%, +1000%, +5000% and beyond.
+liquidity, MemeCloud can hold the runner through +200%, +500%, +1000%, +5000% and beyond.
 
 ### New tokens
 
@@ -63,7 +63,7 @@ swaps before public launch.
 
 ## Stop-loss logic
 
-A meme token can wick violently, so KAIRO should not use an unnecessarily tight static stop.
+A meme token can wick violently, so MemeCloud should not use an unnecessarily tight static stop.
 
 Default initial protection:
 - Established: around -22%.
@@ -75,7 +75,7 @@ Hard emergency limits:
 
 More important than the static number is **why** price is falling.
 
-KAIRO tightens/forces exit when several things deteriorate together:
+MemeCloud tightens/forces exit when several things deteriorate together:
 - sell flow overwhelms buys
 - volume collapses
 - liquidity is removed
@@ -88,7 +88,7 @@ The engine should avoid treating every normal meme pullback as a dead token.
 
 ## "Dip ending" logic
 
-KAIRO must never claim it knows the exact bottom.
+MemeCloud must never claim it knows the exact bottom.
 
 Instead, a dip-recovery state can require evidence such as:
 - selling intensity falls for multiple windows
@@ -151,7 +151,7 @@ of independent real accounts.
 
 ## Fees
 
-KAIRO is designed for transaction/execution fees instead of subscription fees.
+MemeCloud is designed for transaction/execution fees instead of subscription fees.
 
 The production fee model must be:
 - disclosed before authorization
@@ -163,7 +163,7 @@ The production fee model must be:
 A reasonable implementation is a small percentage of executed volume or realized trade value,
 subject to legal review and unit-economics testing.
 
-## What KAIRO cannot truthfully promise
+## What MemeCloud cannot truthfully promise
 
 It cannot guarantee:
 - profit

@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { Download, PlusSquare, Share, X } from "lucide-react";
 
-const DISMISSED_KEY = "kairo_install_dismissed_at";
-const INSTALLED_KEY = "kairo_install_completed_at";
+const DISMISSED_KEY = "memecloud_install_dismissed_at";
+const INSTALLED_KEY = "memecloud_install_completed_at";
 const DISMISS_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 const INSTALLED_COOLDOWN_MS = 180 * 24 * 60 * 60 * 1000;
 
@@ -94,14 +94,14 @@ export function InstallAppPrompt() {
       <div className="install-ios-handle" />
       <div className="install-ios-head">
         <div className="install-brand-icon" aria-hidden="true">K</div>
-        <div><span>INSTALL KAIRO</span><b id="install-ios-title">Use KAIRO like a native app.</b></div>
+        <div><span>INSTALL MemeCloud</span><b id="install-ios-title">Use MemeCloud like a native app.</b></div>
         <button onClick={dismiss} aria-label="Dismiss install guide"><X size={18}/></button>
       </div>
       {!platform.isSafari && <p className="install-ios-browser-note">For the standard Home Screen experience, open this page in Safari first.</p>}
       <ol className="install-ios-steps">
         <li><i>1</i><div><b>Tap the Share button</b><span><Share size={15}/> Find Share in the Safari toolbar.</span></div></li>
         <li><i>2</i><div><b>Choose “Add to Home Screen”</b><span><PlusSquare size={15}/> Scroll down if it is not immediately visible.</span></div></li>
-        <li><i>3</i><div><b>Tap Add</b><span>KAIRO will open full-screen at secure sign-in from your Home Screen.</span></div></li>
+        <li><i>3</i><div><b>Tap Add</b><span>MemeCloud will open full-screen at secure sign-in from your Home Screen.</span></div></li>
       </ol>
       <button className="install-done" onClick={dismiss}>Got it</button>
     </section>
@@ -112,7 +112,7 @@ export function InstallAppPrompt() {
   return <div className="install-prompt-wrap" data-testid="install-app-banner" data-platform={platform.isAndroid ? "android" : "desktop"}>
     <section className="install-prompt">
         <div className="install-brand-icon" aria-hidden="true">K</div>
-        <div className="install-copy"><b>Install KAIRO</b><span>Open KAIRO like a native app.</span></div>
+        <div className="install-copy"><b>Install MemeCloud</b><span>Open MemeCloud like a native app.</span></div>
         <button className="install-action" onClick={install} data-testid="install-app-btn"><Download size={14}/> Install</button>
         <button className="install-close" onClick={dismiss} aria-label="Dismiss install prompt"><X size={17}/></button>
     </section>

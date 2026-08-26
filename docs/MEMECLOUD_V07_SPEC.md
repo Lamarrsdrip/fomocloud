@@ -1,7 +1,7 @@
-# KAIRO v0.7 — Product + Trading Intelligence Specification
+# MemeCloud v0.7 — Product + Trading Intelligence Specification
 
 ## Product identity
-KAIRO is an independent on-chain meme trading platform. It does not depend on Fomo.
+MemeCloud is an independent on-chain meme trading platform. It does not depend on Fomo.
 Users may:
 1. run Bot Trading / Auto Copy,
 2. follow platform-ranked smart traders and copy them,
@@ -15,7 +15,7 @@ Unavailable inputs must be UNKNOWN/UNAVAILABLE and must not silently become neut
 
 ## Momentum philosophy
 A token's 24h percentage gain is context only. +1,000%, +100,000%, or +1,000,000% must never be an automatic blocker.
-CHASE = movement from the tracked source wallet's actual execution price to KAIRO's current executable quote.
+CHASE = movement from the tracked source wallet's actual execution price to MemeCloud's current executable quote.
 Decisioning must emphasize current evidence: executable liquidity, reverse sell route, price impact, volume acceleration, buy/sell flow,
 unique buyers/sellers, net flow, proven smart-wallet clustering, creator/deployer behavior, holder concentration, token mechanics,
 market structure, source-wallet quality/copyability and social momentum when genuine data is available.

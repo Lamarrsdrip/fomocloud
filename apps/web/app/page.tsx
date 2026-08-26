@@ -19,7 +19,7 @@ export default function Landing(){
     <div className="landing-glow one"/><div className="landing-glow two"/>
     <div className="public-shell">
       <header className="public-header">
-        <a className="brand" href="/"><span className="brandmark">K</span><b>KAIRO</b></a>
+        <a className="brand" href="/"><span className="brandmark">K</span><b>MemeCloud</b></a>
         <nav className="public-links">
           <a href="#how">How it works</a><a href="#features">Features</a><a href="#security">Security</a>
         </nav>
@@ -29,7 +29,7 @@ export default function Landing(){
       <section className="hero">
         <div className="eyebrow"><Sparkles size={14}/> AUTONOMOUS CRYPTO INTELLIGENCE</div>
         <h1>Discover the signal.<br/><em>Act on intelligence.</em></h1>
-        <p>KAIRO discovers opportunities, analyzes markets and wallets, scores evidence, makes account-specific decisions, and manages positions through one explainable 24/7 system.</p>
+        <p>MemeCloud discovers opportunities, analyzes markets and wallets, scores evidence, makes account-specific decisions, and manages positions through one explainable 24/7 system.</p>
         <div className="hero-actions"><a className="hero-primary" href="/signup/">Create my account <ArrowRight size={18}/></a><a className="hero-secondary" href="#how">See how it works</a></div>
         <div className="hero-trust"><span><CheckCircle2 size={15}/> Separate account for every user</span><span><CheckCircle2 size={15}/> Real backend activity</span><span><CheckCircle2 size={15}/> Live funds remain off until authorized</span></div>
 
@@ -56,7 +56,7 @@ export default function Landing(){
       </section>
 
       <section id="how" className="how">
-        <div className="section-title"><span>HOW KAIRO WORKS</span><h2>From discovery to learning.</h2><p>Every stage remains explainable, account-aware and simulation-gated until live execution is explicitly authorized.</p></div>
+        <div className="section-title"><span>HOW MemeCloud WORKS</span><h2>From discovery to learning.</h2><p>Every stage remains explainable, account-aware and simulation-gated until live execution is explicitly authorized.</p></div>
         <div className="steps">
           <div><b>01</b><h3>Discover</h3><p>Monitor market structure, token activity and verified wallet behavior for emerging candidates.</p></div>
           <div><b>02</b><h3>Score</h3><p>Rank evidence for liquidity, momentum, execution quality and risk without inventing missing data.</p></div>
@@ -71,25 +71,25 @@ export default function Landing(){
       </section>
 
       <section className="chase-band">
-        <div><span>INTELLIGENT ENTRY</span><h2>Headline movement is not execution quality.</h2><p>KAIRO compares a verified evidence anchor with the current executable route, liquidity and risk—not a token's headline 24-hour percentage.</p></div>
+        <div><span>INTELLIGENT ENTRY</span><h2>Headline movement is not execution quality.</h2><p>MemeCloud compares a verified evidence anchor with the current executable route, liquidity and risk—not a token's headline 24-hour percentage.</p></div>
         <div className="chase-example"><small>SOURCE WALLET BUY</small><b>$1.00</b><i/><small>CURRENT EXECUTABLE ENTRY</small><b>$1.35</b><strong>Wallet chase = +35%</strong></div>
       </section>
 
       <section id="security" className="security-band">
         <div className="security-icon"><ShieldCheck size={32}/></div>
-        <div><span>ACCOUNT &amp; TRADING SECURITY</span><h2>Login is not trading permission.</h2><p>Email/password creates your KAIRO account. A wallet connection proves ownership. Unattended live trading still requires a reviewed delegated/session authorization with explicit limits and revocation. This deployment stays in simulation until that live-money path is ready.</p></div>
+        <div><span>ACCOUNT &amp; TRADING SECURITY</span><h2>Login is not trading permission.</h2><p>Email/password creates your MemeCloud account. A wallet connection proves ownership. Unattended live trading still requires a reviewed delegated/session authorization with explicit limits and revocation. This deployment stays in simulation until that live-money path is ready.</p></div>
       </section>
 
       <section className="security-band">
         <div className="security-icon"><Smartphone size={32}/></div>
-        <div><span>MOBILE APP EXPERIENCE</span><h2>Install KAIRO today.</h2><p>Add the PWA to your Home Screen for a full-screen trading workspace. Native iOS and Android releases are coming soon; installed launches go directly to secure sign-in.</p></div>
+        <div><span>MOBILE APP EXPERIENCE</span><h2>Install MemeCloud today.</h2><p>Add the PWA to your Home Screen for a full-screen trading workspace. Native iOS and Android releases are coming soon; installed launches go directly to secure sign-in.</p></div>
       </section>
 
       <section className="cta">
         <LineChart size={32}/><h2>Build your trader list.</h2><p>Your dashboard starts empty and becomes yours — no fake balance, fake P&amp;L or shared public account.</p><a className="hero-primary" href="/signup/">Start trading <ArrowRight size={18}/></a>
       </section>
 
-      <footer className="public-footer"><div className="brand"><span className="brandmark small">K</span><b>KAIRO</b></div><span>Autonomous intelligence · Personal dashboards · Simulation until live authorization</span><span><Smartphone size={14}/> PWA ready</span></footer>
+      <footer className="public-footer"><div className="brand"><span className="brandmark small">K</span><b>MemeCloud</b></div><span>Autonomous intelligence · Personal dashboards · Simulation until live authorization</span><span><Smartphone size={14}/> PWA ready</span></footer>
     </div>
     <InstallAppPrompt/>
   </main>

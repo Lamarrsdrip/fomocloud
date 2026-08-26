@@ -1,6 +1,6 @@
-# KAIRO — Autonomous Crypto Intelligence
+# MemeCloud — Autonomous Crypto Intelligence
 
-KAIRO is a multi-user crypto discovery, market-intelligence, wallet-analysis, scoring, execution and position-management system. Strong traders and public wallets are evidence sources inside the system—not the product's only strategy.
+MemeCloud is a multi-user crypto discovery, market-intelligence, wallet-analysis, scoring, execution and position-management system. Strong traders and public wallets are evidence sources inside the system—not the product's only strategy.
 
 ```text
 DISCOVERY → INTELLIGENCE → SCORING → DECISION → EXECUTION → POSITION MANAGEMENT → LEARNING
