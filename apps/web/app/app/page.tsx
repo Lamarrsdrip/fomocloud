@@ -2,12 +2,13 @@
 import {useEffect,useMemo,useState} from "react";
 import {
   Home,Users,Activity,WalletCards,UserRound,Bell,Power,Plus,Search,Settings2,
-  ShieldCheck,LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw
+  ShieldCheck,LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
+  TrendingUp,Flame,Sparkles,CheckCheck
 } from "lucide-react";
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 
-type View="home"|"traders"|"community"|"activity"|"positions"|"profile";
-const nav:[View,string,any][]=[["home","Home",Home],["traders","Discover",Users],["community","Copy",Copy],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+type View="home"|"discover"|"traders"|"community"|"activity"|"positions"|"profile";
+const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["community","Copy",Copy],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
 const mobileNav=nav.filter(([id])=>id!=="activity");
 
 function initialView():View{
@@ -102,7 +103,7 @@ export default function AppPage(){
 
       <section className="app-main">
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="traders"?"Discover":view==="community"?"Copy":view==="positions"?"Portfolio":view==="profile"?"Account":view[0].toUpperCase()+view.slice(1)}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="traders"?"Traders":view==="community"?"Copy":view==="positions"?"Portfolio":view==="profile"?"Account":view[0].toUpperCase()+view.slice(1)}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Copy {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -110,6 +111,7 @@ export default function AppPage(){
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
         {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} brain={brain} setView={setView}/>}
+        {view==="discover"&&<DiscoverView brain={brain} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
@@ -172,6 +174,37 @@ function HomeView({d,activity,follows,brain,setView}:{d:any;activity:any;follows
  </>;
 }
 function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){return <div className="list-row" style={{gridTemplateColumns:"1fr auto"}}><div><b>{label}</b></div><span className={`status-badge ${ok?"":"watch"}`}>{value}</span></div>}
+
+const discoverFilters=[["trending","Trending now",TrendingUp],["whales","Whales buying",Users],["new","New",Sparkles],["momentum","Momentum",Flame]] as const;
+function qualityLabel(score:number){return score>=76?"Strong setup":score>=56?"Building evidence":score>=40?"Early — thin evidence":"Just watching"}
+function whaleCount(o:any){return (o.whaleBuyers60s||0)+(o.knownWhaleBuyers60s||0)}
+function copyText(t:string){try{navigator.clipboard.writeText(t)}catch{}}
+function DiscoverView({brain,setView}:{brain:any[];setView:(v:View)=>void}){
+ const[filter,setFilter]=useState<typeof discoverFilters[number][0]>("trending");
+ const rows=useMemo(()=>{
+  const list=[...brain];
+  if(filter==="trending")return list.sort((a,b)=>b.score-a.score);
+  if(filter==="whales")return list.filter(o=>whaleCount(o)>0).sort((a,b)=>whaleCount(b)-whaleCount(a));
+  if(filter==="new")return list.sort((a,b)=>new Date(b.firstSeenAt).getTime()-new Date(a.firstSeenAt).getTime());
+  return list.sort((a,b)=>(b.volumeAcceleration1m||0)-(a.volumeAcceleration1m||0));
+ },[brain,filter]);
+ return <>
+  <section className="app-card"><div className="card-title"><div><span>GLOBAL BRAIN</span><h2>What MemeCloud is watching</h2></div></div>
+   <div className="config-tabs">{discoverFilters.map(([id,label,Icon])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}><Icon size={13} style={{verticalAlign:"middle",marginRight:5}}/>{label}</button>)}</div>
+  </section>
+  {rows.length?<div className="discover-grid">{rows.map(o=><div className="app-card discover-card" key={o.id}>
+    <div className="card-title"><div><span>{o.chain}</span><h2>{o.symbol||o.name||"New token"}</h2></div><span className={`status-badge ${o.action==="BUY_NOW"?"":"watch"}`}>{qualityLabel(o.score)}</span></div>
+    <div className="review-grid">
+     <div><span>Market cap</span><b>{o.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
+     <div><span>Money in last 60s</span><b>{money(o.inflow60sUsd||0)}</b></div>
+     <div><span>Whales buying</span><b>{whaleCount(o)}</b></div>
+     <div><span>Momentum</span><b>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"—"}</b></div>
+    </div>
+    {!!(o.reasons&&o.reasons.length)&&<div className="notice"><b>Why MemeCloud likes it: </b>{o.reasons.join(" · ")}</div>}
+    <div className="list-row" style={{gridTemplateColumns:"1fr auto",marginTop:8}}><div><small className="contract-line">{o.mint}</small></div><button className="soft-action" onClick={()=>copyText(o.mint)}><Copy size={12}/> Copy</button></div>
+   </div>)}</div>:<Empty icon={TrendingUp} title="Nothing here yet" body="The Global Brain is scanning chain flow. Real opportunities appear here as on-chain evidence arrives — nothing is invented while it's quiet." action="Find traders instead" onClick={()=>setView("traders")}/>}
+ </>
+}
 
 function TradersView({platform,follows,followMap,setMode,customOpen,setCustomOpen,reload}:{platform:any[];follows:any[];followMap:Map<string,any>;setMode:(id:string,m:string)=>void;customOpen:boolean;setCustomOpen:(v:boolean)=>void;reload:()=>Promise<void>}){
  const [search,setSearch]=useState(""); const[detail,setDetail]=useState<string|null>(null); const filtered=platform.filter(t=>`${t.displayName} ${t.handle} ${t.category||""}`.toLowerCase().includes(search.toLowerCase()));
