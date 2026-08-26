@@ -1,6 +1,6 @@
 # Run as Administrator AFTER pnpm install, prisma generate/db push and pnpm build.
 # Existing XAU/MT5 and ClipForge services/Caddy routes are intentionally not touched.
-$Root = "C:\KAIRO"
+$Root = "C:\memecloud"
 $Node = (Get-Command node).Source
 $Nssm = (Get-Command nssm).Source
 
@@ -16,7 +16,11 @@ $services = @(
   @{Name="memecloud-discovery-worker"; Script="services\discovery-worker\dist\index.js"},
   @{Name="memecloud-scoring-worker"; Script="services\scoring-worker\dist\index.js"},
   @{Name="memecloud-forward-worker"; Script="services\forward-worker\dist\index.js"},
-  @{Name="memecloud-paper-worker"; Script="services\paper-worker\dist\index.js"}
+  @{Name="memecloud-paper-worker"; Script="services\paper-worker\dist\index.js"},
+  @{Name="memecloud-global-brain"; Script="services\brain-worker\dist\index.js"},
+  @{Name="memecloud-flow-worker"; Script="services\flow-worker\dist\index.js"},
+  @{Name="memecloud-evm-flow-worker"; Script="services\evm-flow-worker\dist\index.js"},
+  @{Name="memecloud-social-worker"; Script="services\social-worker\dist\index.js"}
 )
 
 New-Item -ItemType Directory -Force -Path "$Root\logs" | Out-Null

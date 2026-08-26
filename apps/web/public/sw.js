@@ -1,14 +1,14 @@
 self.addEventListener("install", event => {
-  event.waitUntil(caches.open("kairo-ui-1").then(cache => cache.addAll(["/", "/app/", "/login/", "/signup/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"])).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open("memecloud-ui-1").then(cache => cache.addAll(["/", "/app/", "/login/", "/signup/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"])).then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== "kairo-ui-1").map(key => caches.delete(key)))).then(() => clients.claim()));
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== "memecloud-ui-1").map(key => caches.delete(key)))).then(() => clients.claim()));
 });
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(fetch(event.request).then(response => {
     const copy=response.clone();
-    void caches.open("kairo-ui-1").then(cache => cache.put(event.request, copy));
+    void caches.open("memecloud-ui-1").then(cache => cache.put(event.request, copy));
     return response;
   }).catch(() => caches.match(event.request).then(response => {
     if(response) return response;
@@ -20,13 +20,13 @@ self.addEventListener("fetch", event => {
   })));
 });
 self.addEventListener("push", event => {
-  let data={title:"KAIRO",body:"You have a new intelligence update",url:"/app/"};
+  let data={title:"MemeCloud",body:"You have a new intelligence update",url:"/app/"};
   try { data={...data,...event.data.json()}; } catch {}
   event.waitUntil(self.registration.showNotification(data.title,{
     body:data.body,
     icon:"/icon.svg",
     badge:"/icon.svg",
-    tag:data.type?`kairo-${data.type}`:undefined,
+    tag:data.type?`memecloud-${data.type}`:undefined,
     data:{url:data.url||"/app/"}
   }));
 });

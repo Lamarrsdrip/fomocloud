@@ -38,6 +38,7 @@ export default function AppPage(){
   const[settings,setSettings]=useState<any>(null);
   const[notifications,setNotifications]=useState<any[]>([]);
   const[customOpen,setCustomOpen]=useState(false);
+  const[brain,setBrain]=useState<any[]>([]);
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
   async function load(){
@@ -48,6 +49,7 @@ export default function AppPage(){
         apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/settings"),apiFetch("/v1/me/notifications"),apiFetch("/v1/me/sessions")
       ]);
       setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
+      apiFetch<any>("/v1/brain/feed").then(x=>setBrain(x.opportunities||[])).catch(()=>{});
     }catch(e:any){
       if(e?.status===401){location.href="/login/";return}
       setError(plainError(e));
@@ -59,8 +61,8 @@ export default function AppPage(){
     const refreshLive=async()=>{
       if(stopped||document.visibilityState!=="visible")return;
       try{
-        const[d,a,pos,t,n]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications")]);
-        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setNotifications(n.notifications||[])}
+        const[d,a,pos,t,n,b]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications"),apiFetch<any>("/v1/brain/feed")]);
+        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[])}
       }catch(e:any){if(e?.status===401&&!stopped)location.href="/login/"}
     };
     const timer=setInterval(()=>void refreshLive(),8000);
@@ -107,7 +109,7 @@ export default function AppPage(){
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} setView={setView}/>}
+        {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} brain={brain} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
@@ -132,7 +134,7 @@ function PerformanceChart({snapshots}:{snapshots:any[]}){
 }
 function PnlSvg({vals}:{vals:number[]}){const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(1e-9,max-min);const pts=vals.map((v,i)=>`${(i/Math.max(1,vals.length-1))*100},${94-((v-min)/span)*78}`).join(" ");return <div className="pnl-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Account value history"><polyline points={pts}/></svg></div>}
 
-function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[];setView:(v:View)=>void}){
+function HomeView({d,activity,follows,brain,setView}:{d:any;activity:any;follows:any[];brain:any[];setView:(v:View)=>void}){
  const s=d?.summary||{};const sim=d?.simulation||{};
  return <>
   <section className="user-welcome"><div><span>YOUR MONEY</span><h2>{money(s.tradingCashUsd)}</h2><p>{s.tradingCashUsd?"Ready to use across your connected wallet.":"Connect a wallet to get started."}</p></div><div className="user-quick-actions"><button onClick={()=>setView("profile")}><WalletCards size={16}/><span>Connect wallet</span></button><button onClick={()=>setView("traders")}><Users size={16}/><span>Find traders</span></button><button onClick={()=>setView("positions")}><Activity size={16}/><span>Portfolio</span></button></div></section>
@@ -143,6 +145,7 @@ function HomeView({d,activity,follows,setView}:{d:any;activity:any;follows:any[]
     <div className="stat-card"><span>Copied traders</span><b>{s.copiedTraders??0}</b><small>{s.winRate==null?"Win rate appears after closed live trades":`${s.winRate.toFixed(1)}% live win rate`}</small></div>
   </div>
   {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-summary"><div className="card-title"><div><span>SIMULATION WORKSPACE</span><h2>Test decisions without moving live funds</h2></div><span className="sim-badge">SIMULATION</span></div><div className="simulation-stats"><div><span>Open simulated positions</span><b>{sim.openPositions??0}</b></div><div><span>Simulated realized P&amp;L</span><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b></div><div><span>Simulated unrealized P&amp;L</span><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b></div></div><p>Simulation uses the real source-signal and market-data pipeline where configured, but it never presents these numbers as live account money.</p></section>}
+  <section className="app-card brain-live"><div className="card-title"><div><span>GLOBAL BRAIN · LIVE</span><h2>MemeCloud is watching money move</h2></div><span className="status-badge">Scanning</span></div>{brain.length?<div className="list">{brain.slice(0,7).map((x:any)=><div className="list-row brain-row" key={x.id}><div><b>{x.symbol||x.name||"New token"} · {x.chain}</b><small>{x.buyers10s||0} buyers / ~10s · {(x.whaleBuyers60s||0)+(x.knownWhaleBuyers60s||0)} whale signals · {money(x.inflow60sUsd||0)} / 60s</small><small className="contract-line">{x.mint}</small></div><span className={`status-badge ${x.action==="BUY_NOW"?"":"watch"}`}>{Math.round(x.score)} · {String(x.action).replaceAll("_"," ")}</span></div>)}</div>:<div className="pnl-empty">The Global Brain is scanning chain flow. New opportunities appear here as real on-chain evidence arrives.</div>}</section>
   <PerformanceChart snapshots={d?.snapshots||[]} />
   <section className="app-card cash-breakdown"><div className="card-title"><div><span>YOUR WALLET</span><h2>Available funds</h2></div></div>
     {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect your wallet to see available USDC here.</div>}
@@ -328,12 +331,16 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <div className="switch-row"><div><b>X account</b><small>{me?.linkedSocialAccounts?.find((x:any)=>x.provider==="X")?.username?`@${me.linkedSocialAccounts.find((x:any)=>x.provider==="X").username}`:"Optional"}</small></div><button className="soft-action" onClick={linkX}>Link X</button></div>
     {me?.role==="OWNER"&&<div className="switch-row"><div><b>Admin Command Center</b><small>Owner platform controls</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
    </section>
-   <section className="settings-block"><h3>Trading defaults</h3>
-    <label className="field"><span>Default amount per copy</span><input type="number" value={trading.defaultAmountUsd??100} onChange={e=>patchTrading({defaultAmountUsd:Number(e.target.value)})}/></label>
-    <label className="field"><span>Maximum per trade</span><input type="number" value={trading.maxAmountPerTradeUsd??500} onChange={e=>patchTrading({maxAmountPerTradeUsd:Number(e.target.value)})}/></label>
-    <label className="field"><span>Maximum total exposure</span><input type="number" value={trading.maxTotalExposureUsd??2500} onChange={e=>patchTrading({maxTotalExposureUsd:Number(e.target.value)})}/></label>
-    <div className="switch-row"><div><b>Adaptive chase</b><small>Uses source-wallet entry, never the 24h move</small></div><button className={`switch ${trading.adaptiveChase?"on":""}`} onClick={()=>patchTrading({adaptiveChase:!trading.adaptiveChase})}><i/></button></div>
-    <div className="switch-row"><div><b>Runner mode</b><small>Do not cap exceptional winners just because profit is large</small></div><button className={`switch ${trading.runnerMode?"on":""}`} onClick={()=>patchTrading({runnerMode:!trading.runnerMode})}><i/></button></div>
+   <section className="settings-block"><h3>Trading money</h3>
+    <label className="field"><span>Use this % of my available trading cash per entry</span><input type="number" min="0.01" max="100" step="0.1" value={trading.percentBalance??2} onChange={e=>patchTrading({sizingMode:"PERCENT",percentBalance:Number(e.target.value)})}/></label>
+    <div className="notice">MemeCloud uses the percentage you choose. It does not silently reduce your risk. Set optional limits below only if you personally want them.</div>
+    <label className="field"><span>Optional maximum per trade (0 = no cap)</span><input type="number" min="0" value={trading.maxAmountPerTradeUsd??0} onChange={e=>patchTrading({maxAmountPerTradeUsd:Number(e.target.value)})}/></label>
+    <label className="field"><span>Optional maximum total exposure (0 = no cap)</span><input type="number" min="0" value={trading.maxTotalExposureUsd??0} onChange={e=>patchTrading({maxTotalExposureUsd:Number(e.target.value)})}/></label>
+    <label className="field"><span>Optional open-position limit (0 = no limit)</span><input type="number" min="0" value={trading.maxConcurrentPositions??0} onChange={e=>patchTrading({maxConcurrentPositions:Number(e.target.value)})}/></label>
+    <div className="switch-row"><div><b>Global Brain entries</b><small>Let chain-wide money-flow opportunities trade even when no saved wallet started the move.</small></div><button className={`switch ${trading.globalBrainEnabled!==false?"on":""}`} onClick={()=>patchTrading({globalBrainEnabled:trading.globalBrainEnabled===false})}><i/></button></div>
+    <div className="switch-row"><div><b>Recover original capital</b><small>Default: when the position reaches 3×, sell only enough to recover the original money and leave the rest running.</small></div><button className={`switch ${trading.capitalRecoveryEnabled!==false?"on":""}`} onClick={()=>patchTrading({capitalRecoveryEnabled:trading.capitalRecoveryEnabled===false})}><i/></button></div>
+    {trading.capitalRecoveryEnabled!==false&&<label className="field"><span>Recover capital at</span><input type="number" min="1.01" step="0.1" value={trading.capitalRecoveryMultiple??3} onChange={e=>patchTrading({capitalRecoveryMultiple:Number(e.target.value)})}/></label>}
+    <div className="switch-row"><div><b>Runner mode</b><small>Let exceptional memes keep running while money, volume and holder evidence remain alive.</small></div><button className={`switch ${trading.runnerMode?"on":""}`} onClick={()=>patchTrading({runnerMode:!trading.runnerMode})}><i/></button></div>
    </section>
    <section className="settings-block"><h3>Notifications</h3>
     <div className="switch-row"><div><b>Web Push</b><small>Register this browser/device</small></div><button className="soft-action" onClick={enablePush}>Enable Push</button></div>

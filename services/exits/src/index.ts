@@ -232,7 +232,21 @@ async function tick(){
         await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:value-remainingCost}});stale++;continue;
       }
       const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
-      const instruction=evaluateExit(market,state);
+      const userSettings=await db.globalTradingSettings.findUnique({where:{userId:p.userId}});
+      const recoveryEnabled=userSettings?.capitalRecoveryEnabled??true;
+      const recoveryMultiple=Math.max(1.01,Number(userSettings?.capitalRecoveryMultiple??3));
+      const currentMultiple=current/entry;
+      let instruction:any;
+      if(recoveryEnabled && state.principalRecoveredPct<100 && currentMultiple>=recoveryMultiple){
+        const alreadyRecovered=p.costUsd*(state.principalRecoveredPct/100);
+        const principalStillNeeded=Math.max(0,p.costUsd-alreadyRecovered);
+        const remainingCost=p.costUsd*frac(remaining,original);
+        const currentValue=remainingCost*currentMultiple;
+        const sellPct=currentValue>0?Math.min(100,(principalStillNeeded/currentValue)*100):0;
+        instruction=sellPct>0.0001
+          ? {action:"PARTIAL_TP",sellPct,reason:`Recover original capital at ${recoveryMultiple.toFixed(2)}x; keep the rest as the evidence-managed runner`}
+          : evaluateExit(market,state);
+      }else instruction=evaluateExit(market,state);
       if(p.mode==="SIMULATION")await applySimulationExit(p,current,instruction);
       else if(instruction.action!=="HOLD")await executeLiveExit(p,instruction);
       const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)continue;

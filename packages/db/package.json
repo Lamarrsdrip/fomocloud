@@ -16,7 +16,8 @@
     "test": "echo db tests",
     "prisma": "prisma",
     "seed": "tsx prisma/seed.ts",
-    "migrate:v05": "tsx prisma/migrate-v05.ts"
+    "migrate:v05": "tsx prisma/migrate-v05.ts",
+    "owner:promote": "tsx prisma/promote-owner.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.14.0"

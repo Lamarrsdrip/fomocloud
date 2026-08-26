@@ -7,15 +7,15 @@ export type ExecutionMode = "simulation" | "live";
 export const CopySettingsSchema = z.object({
   enabled: z.boolean().default(false),
   sizingMode: z.enum(["FIXED", "PERCENT"]).default("FIXED"),
-  fixedAmountUsd: z.number().positive().max(100_000).default(100),
+  fixedAmountUsd: z.number().positive().max(100_000_000).default(100),
   percentBalance: z.number().positive().max(100).default(2),
-  takeProfitPct: z.number().positive().max(10_000).default(30),
-  stopLossPct: z.number().min(0).max(100).nullable().default(15),
-  maxChasePct: z.number().min(0).max(55).default(40),
-  maxSlippageBps: z.number().int().min(1).max(5000).default(500),
-  maxPositionUsd: z.number().positive().max(1_000_000).default(500),
-  maxTotalExposureUsd: z.number().positive().max(10_000_000).default(2500),
-  minLiquidityUsd: z.number().min(0).default(50_000),
+  takeProfitPct: z.number().positive().max(1_000_000).default(200),
+  stopLossPct: z.number().min(0).max(100).nullable().default(null),
+  maxChasePct: z.number().min(0).max(1_000_000).default(0), // 0 = no user chase ceiling
+  maxSlippageBps: z.number().int().min(1).max(10000).default(1500),
+  maxPositionUsd: z.number().min(0).max(100_000_000).default(0), // 0 = unlimited
+  maxTotalExposureUsd: z.number().min(0).max(100_000_000).default(0), // 0 = unlimited
+  minLiquidityUsd: z.number().min(0).default(0),
   exitMode: z.enum(["TP", "MIRROR", "HYBRID"]).default("HYBRID")
 });
 export type CopySettings = z.infer<typeof CopySettingsSchema>;
@@ -58,9 +58,9 @@ export function decideCopy(params: {
   const { settings } = params;
   if (!settings.enabled) return { allowed: false, reason: "AUTO_COPY_DISABLED" };
   if (params.availableUsd <= 0) return { allowed: false, reason: "INSUFFICIENT_BALANCE" };
-  if (params.currentExposureUsd >= settings.maxTotalExposureUsd)
+  if (settings.maxTotalExposureUsd > 0 && params.currentExposureUsd >= settings.maxTotalExposureUsd)
     return { allowed: false, reason: "MAX_TOTAL_EXPOSURE_REACHED" };
-  if (params.tokenExposureUsd >= settings.maxPositionUsd)
+  if (settings.maxPositionUsd > 0 && params.tokenExposureUsd >= settings.maxPositionUsd)
     return { allowed: false, reason: "MAX_POSITION_REACHED" };
   if (params.liquidityUsd !== undefined && params.liquidityUsd < settings.minLiquidityUsd)
     return { allowed: false, reason: "LIQUIDITY_TOO_LOW" };
@@ -77,7 +77,7 @@ export function decideCopy(params: {
       Math.max(1, Math.abs(chase), Math.abs(settings.maxChasePct)) *
       16;
 
-    if (chase > settings.maxChasePct + 1e-9)
+    if (settings.maxChasePct > 0 && chase > settings.maxChasePct + 1e-9)
       return { allowed: false, reason: "PRICE_MOVED_TOO_FAR" };
   }
 
@@ -85,8 +85,8 @@ export function decideCopy(params: {
     ? settings.fixedAmountUsd
     : params.availableUsd * (settings.percentBalance / 100);
 
-  const remainingTotal = Math.max(0, settings.maxTotalExposureUsd - params.currentExposureUsd);
-  const remainingToken = Math.max(0, settings.maxPositionUsd - params.tokenExposureUsd);
+  const remainingTotal = settings.maxTotalExposureUsd > 0 ? Math.max(0, settings.maxTotalExposureUsd - params.currentExposureUsd) : Number.POSITIVE_INFINITY;
+  const remainingToken = settings.maxPositionUsd > 0 ? Math.max(0, settings.maxPositionUsd - params.tokenExposureUsd) : Number.POSITIVE_INFINITY;
   const amount = Math.min(wanted, params.availableUsd, remainingTotal, remainingToken);
 
   if (amount <= 0) return { allowed: false, reason: "ALLOCATION_EXHAUSTED" };

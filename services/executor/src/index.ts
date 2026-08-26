@@ -197,7 +197,7 @@ const worker=new Worker("signals",async job=>{
     }catch(e){console.warn("[executor] source price normalization unavailable",signal.id,e)}
   }
   const riskCfg=await getConfig<any>("risk");
-  const globalChaseCap=Math.max(0,Math.min(55,Number(riskCfg?.hyperMaxChasePct??55)));
+  const globalChaseCap=Math.max(0,Number(riskCfg?.hyperMaxChasePct??0)); // 0 = no platform chase ceiling
 
   const follows=await db.userFollow.findMany({
     where:{traderId:signal.traderId,mode:{in:["AUTO_COPY","WATCH_ONLY"]}},
@@ -243,8 +243,8 @@ const worker=new Worker("signals",async job=>{
 
     const mode=(process.env.EXECUTION_MODE??"simulation").toUpperCase() as "SIMULATION"|"LIVE";
     const open=await db.position.findMany({where:{userId:follow.userId,mode,status:{in:["OPEN","PARTIALLY_CLOSED"]}}});
-    if(open.length>=global.maxConcurrentPositions){
-      await saveDecision({allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_POSITIONS",explanation:"Your open-position limit is currently reached."});
+    if(global.maxConcurrentPositions>0 && open.length>=global.maxConcurrentPositions){
+      await saveDecision({allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_POSITIONS",explanation:"Your own open-position limit is currently reached."});
       skippedCount++; continue;
     }
 
@@ -270,14 +270,17 @@ const worker=new Worker("signals",async job=>{
     const chase=(sourceExecutionPriceUsd&&currentPriceUsd)?walletChasePct(sourceExecutionPriceUsd,currentPriceUsd):undefined;
 
     // Daily move is intentionally not used here. Chase = source wallet execution -> our executable entry.
-    const maxChase=Math.min(follow.maxChasePct,globalChaseCap);
+    const positiveMin=(...xs:number[])=>{const on=xs.filter(x=>Number.isFinite(x)&&x>0);return on.length?Math.min(...on):0};
+    const maxChase=positiveMin(Number(follow.maxChasePct??0),globalChaseCap);
+    const globalTradeCap=Number(global.maxAmountPerTradeUsd??0);
+    const fixedAmount=globalTradeCap>0?Math.min(follow.fixedAmountUsd,globalTradeCap):follow.fixedAmountUsd;
     const base=decideCopy({
       settings:{
-        enabled:true,sizingMode:"FIXED",
-        fixedAmountUsd:Math.min(follow.fixedAmountUsd,global.maxAmountPerTradeUsd),
-        percentBalance:2,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
-        maxChasePct:maxChase,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:follow.maxPositionUsd,
-        maxTotalExposureUsd:Math.min(follow.maxTotalExposureUsd,global.maxTotalExposureUsd),
+        enabled:true,sizingMode:(global.sizingMode==="FIXED"?"FIXED":"PERCENT") as any,
+        fixedAmountUsd:fixedAmount,
+        percentBalance:Number(global.percentBalance??2),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
+        maxChasePct:maxChase,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:positiveMin(Number(follow.maxPositionUsd??0),Number(global.maxAmountPerTradeUsd??0)),
+        maxTotalExposureUsd:positiveMin(Number(follow.maxTotalExposureUsd??0),Number(global.maxTotalExposureUsd??0)),
         minLiquidityUsd:follow.minLiquidityUsd,exitMode:(follow.exitMode==="ADAPTIVE"?"HYBRID":follow.exitMode) as any
       },
       // Sizing/risk checks happen here, but chase is deliberately evaluated separately.
@@ -368,7 +371,7 @@ const worker=new Worker("signals",async job=>{
         socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,influencerQualityScore:rich.influencerQualityScore??undefined,narrativeScore:rich.narrativeScore??undefined,
         sourceTraderStillHolding:true,sourceTraderSoldPct:0
       },sourceQuality);
-      const effectiveChase=Math.min(maxChase,intelligence.chaseCapPct);
+      const effectiveChase=maxChase; // 0 means no user/platform chase ceiling; strategy chase is evidence, not authority
       if(intelligence.action==="SKIP"){
         await saveDecision({allowed:false,action:"SKIP",reason:"MEME_INTELLIGENCE_REJECTED",sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:[...intelligence.reasons,...intelligence.warnings].join(" · ")||"The current market evidence is not strong enough."});
         skippedCount++;continue;
@@ -400,9 +403,9 @@ const worker=new Worker("signals",async job=>{
         }
       }
 
-      if(actualChase>effectiveChase){
-        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your real $${amountUsd.toFixed(2)} executable quote is ${actualChase.toFixed(1)}% above the followed wallet's buy. The token's 24h move is irrelevant; MemeCloud is waiting for a cleaner entry.`});
-        await userEvent(follow.userId,"WAIT_PULLBACK",`${signal.trader.displayName}: waiting for a better entry`,`Your actual-size executable quote moved ${actualChase.toFixed(1)}% from the source wallet's buy, beyond your ${maxChase.toFixed(1)}% chase window.`,{signalId:signal.id,walletChasePct:actualChase,amountUsd});
+      if(effectiveChase>0 && actualChase>effectiveChase){
+        await saveDecision({allowed:false,action:"WAIT_PULLBACK",reason:"PRICE_MOVED_TOO_FAR",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:`Your own chase ceiling is ${effectiveChase.toFixed(1)}%; the executable quote is ${actualChase.toFixed(1)}% above the source buy.`});
+        await userEvent(follow.userId,"WAIT_PULLBACK",`${signal.trader.displayName}: your chase ceiling was reached`,`The real executable quote moved ${actualChase.toFixed(1)}% from the source wallet's buy, beyond your own ${effectiveChase.toFixed(1)}% setting.`,{signalId:signal.id,walletChasePct:actualChase,amountUsd});
         skippedCount++; continue;
       }
       if(Number.isFinite(priceImpactPct)&&priceImpactPct>hardImpactLimit){

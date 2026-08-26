@@ -202,11 +202,16 @@ model GlobalTradingSettings {
   id                     String   @id @default(auto()) @map("_id") @db.ObjectId
   userId                 String   @unique @db.ObjectId
   autoCopyEnabled        Boolean  @default(false)
+  globalBrainEnabled     Boolean  @default(true)
+  sizingMode             String   @default("PERCENT")
+  percentBalance         Float    @default(2)
   defaultAmountUsd       Float    @default(100)
-  maxAmountPerTradeUsd   Float    @default(500)
-  maxTotalExposureUsd    Float    @default(2500)
-  maxConcurrentPositions Int      @default(10)
-  adaptiveChase          Boolean  @default(true)
+  maxAmountPerTradeUsd   Float    @default(0) // 0 = user chose no platform cap
+  maxTotalExposureUsd    Float    @default(0) // 0 = user chose no platform cap
+  maxConcurrentPositions Int      @default(0) // 0 = unlimited by platform
+  adaptiveChase          Boolean  @default(false) // evidence only unless user sets a chase ceiling
+  capitalRecoveryEnabled Boolean  @default(true)
+  capitalRecoveryMultiple Float   @default(3)
   freshMemeMode          Boolean  @default(true)
   runnerMode             Boolean  @default(true)
   allowedChains          Chain[]  @default([SOLANA])
@@ -300,13 +305,13 @@ model UserFollow {
   traderId            String     @db.ObjectId
   mode                FollowMode @default(FOLLOW_ONLY)
   fixedAmountUsd      Float      @default(100)
-  takeProfitPct       Float      @default(100)
+  takeProfitPct       Float      @default(200)
   stopLossPct         Float?
-  maxChasePct         Float      @default(40)
-  maxSlippageBps      Int        @default(500)
-  maxPositionUsd      Float      @default(500)
-  maxTotalExposureUsd Float      @default(2500)
-  minLiquidityUsd     Float      @default(5000)
+  maxChasePct         Float      @default(0) // 0 = no user chase ceiling
+  maxSlippageBps      Int        @default(1500)
+  maxPositionUsd      Float      @default(0) // 0 = unlimited
+  maxTotalExposureUsd Float      @default(0) // 0 = unlimited
+  minLiquidityUsd     Float      @default(0)
   exitMode            String     @default("ADAPTIVE")
   copyAdditionalBuys  Boolean    @default(true)
   copyReentries       Boolean    @default(true)
@@ -884,4 +889,94 @@ model PaperCopyTrade {
   @@index([sourceWallet, status, createdAt])
   @@index([traderId, status, createdAt])
   @@index([status, lastMarkedAt])
+}
+
+
+model ChainFlowObservation {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain           Chain
+  mint            String
+  walletAddress   String
+  txHash          String
+  side            SignalAction
+  amountUsd       Float?
+  walletBalanceUsd Float?
+  walletTier      String?
+  knownWallet     Boolean  @default(false)
+  source          String
+  observedAt      DateTime
+  createdAt       DateTime @default(now())
+
+  @@unique([chain, txHash, walletAddress, mint])
+  @@index([chain, mint, observedAt])
+  @@index([chain, walletAddress, observedAt])
+}
+
+model GlobalBrainOpportunity {
+  id                    String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain                 Chain
+  mint                  String
+  symbol                String?
+  name                  String?
+  state                 String   @default("WATCHING")
+  score                 Float    @default(0)
+  action                String   @default("WATCH")
+  marketCapUsd          Float?
+  liquidityUsd          Float?
+  inflow10sUsd          Float    @default(0)
+  inflow60sUsd          Float    @default(0)
+  buyers10s             Int      @default(0)
+  buyers60s             Int      @default(0)
+  whaleBuyers60s        Int      @default(0)
+  knownWhaleBuyers60s   Int      @default(0)
+  smartMoneyNetFlow5mUsd Float?
+  volumeAcceleration1m  Float?
+  holderGrowth5mPct     Float?
+  socialVelocity        Float?
+  drawdownFromRecentPeakPct Float?
+  survivorScore         Float?
+  reasons               Json?
+  evidence              Json?
+  firstSeenAt           DateTime @default(now())
+  lastEvaluatedAt       DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([chain, mint])
+  @@index([action, score, lastEvaluatedAt])
+  @@index([chain, lastEvaluatedAt])
+}
+
+model BrainOutcomeSample {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  opportunityId  String   @db.ObjectId
+  chain          Chain
+  mint           String
+  horizonSeconds Int
+  entryPriceUsd  Float?
+  observedPriceUsd Float?
+  returnPct      Float?
+  maxRunPct      Float?
+  maxDrawdownPct Float?
+  evidence       Json?
+  observedAt     DateTime
+  createdAt      DateTime @default(now())
+
+  @@unique([opportunityId, horizonSeconds])
+  @@index([chain, mint, observedAt])
+}
+
+model CatalystEvent {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain       Chain
+  mint        String
+  type        String
+  source      String
+  title       String?
+  announcedAt DateTime
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([chain, mint, announcedAt])
+  @@index([type, announcedAt])
 }

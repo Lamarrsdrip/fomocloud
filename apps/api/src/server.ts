@@ -505,16 +505,23 @@ app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,r
   const allowedChains=(Array.isArray(req.body?.allowedChains)?req.body.allowedChains:current.allowedChains).filter((x:string)=>["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(x));
   const data={
     autoCopyEnabled:Boolean(req.body?.autoCopyEnabled??current.autoCopyEnabled),
+    globalBrainEnabled:Boolean(req.body?.globalBrainEnabled??current.globalBrainEnabled??true),
+    sizingMode:String(req.body?.sizingMode??current.sizingMode??"PERCENT")==="FIXED"?"FIXED":"PERCENT",
+    percentBalance:Math.max(.01,Math.min(100,Number(req.body?.percentBalance??current.percentBalance??2))),
     defaultAmountUsd:Math.max(1,Number(req.body?.defaultAmountUsd??current.defaultAmountUsd)),
-    maxAmountPerTradeUsd:Math.max(1,Number(req.body?.maxAmountPerTradeUsd??current.maxAmountPerTradeUsd)),
-    maxTotalExposureUsd:Math.max(1,Number(req.body?.maxTotalExposureUsd??current.maxTotalExposureUsd)),
-    maxConcurrentPositions:Math.max(1,Math.min(100,Number(req.body?.maxConcurrentPositions??current.maxConcurrentPositions))),
+    // Zero means the USER deliberately chose no extra platform cap. MemeCloud does not silently
+    // replace the user's risk choice with a smaller hidden limit.
+    maxAmountPerTradeUsd:Math.max(0,Number(req.body?.maxAmountPerTradeUsd??current.maxAmountPerTradeUsd??0)),
+    maxTotalExposureUsd:Math.max(0,Number(req.body?.maxTotalExposureUsd??current.maxTotalExposureUsd??0)),
+    maxConcurrentPositions:Math.max(0,Math.min(10000,Number(req.body?.maxConcurrentPositions??current.maxConcurrentPositions??0))),
     adaptiveChase:Boolean(req.body?.adaptiveChase??current.adaptiveChase),
+    capitalRecoveryEnabled:Boolean(req.body?.capitalRecoveryEnabled??current.capitalRecoveryEnabled??true),
+    capitalRecoveryMultiple:Math.max(1.01,Math.min(100000,Number(req.body?.capitalRecoveryMultiple??current.capitalRecoveryMultiple??3))),
     freshMemeMode:Boolean(req.body?.freshMemeMode??current.freshMemeMode),
     runnerMode:Boolean(req.body?.runnerMode??current.runnerMode),
     allowedChains:allowedChains as Chain[]
   };
-  if(data.defaultAmountUsd>data.maxAmountPerTradeUsd) return res.status(400).json({error:"DEFAULT_EXCEEDS_MAX_TRADE"});
+  if(data.maxAmountPerTradeUsd>0 && data.defaultAmountUsd>data.maxAmountPerTradeUsd) return res.status(400).json({error:"DEFAULT_EXCEEDS_MAX_TRADE"});
   const row=await db.globalTradingSettings.update({where:{userId:req.user.sub},data});
   await audit(req.user.sub,"USER","UPDATE_TRADING_SETTINGS",undefined,{autoCopyEnabled:row.autoCopyEnabled});
   res.json({trading:row});
@@ -541,17 +548,18 @@ app.post("/v1/me/onboarding", auth, asyncRoute(async (req:AuthedRequest,res) => 
   const autoCopyEnabled=Boolean(req.body?.autoCopyEnabled);
   if(autoCopyEnabled && !(await canEnableAutoCopy(req.user.sub,res))) return;
   const defaultAmountUsd=Math.max(1,Math.min(100_000,Number(req.body?.defaultAmountUsd??100)));
+  const percentBalance=Math.max(.01,Math.min(100,Number(req.body?.percentBalance??2)));
   const selected=Array.isArray(req.body?.traderIds)?req.body.traderIds.map(String).slice(0,50):[];
   const traders=selected.length?await db.trader.findMany({where:{id:{in:selected},kind:"PLATFORM",enabled:true,wallets:{some:{verified:true,chain:"SOLANA"}}},select:{id:true}}):[];
   const settings=await db.globalTradingSettings.upsert({
     where:{userId:req.user.sub},
-    create:{userId:req.user.sub,autoCopyEnabled,defaultAmountUsd,maxAmountPerTradeUsd:Math.max(500,defaultAmountUsd)},
-    update:{autoCopyEnabled,defaultAmountUsd,maxAmountPerTradeUsd:{set:Math.max(500,defaultAmountUsd)}}
+    create:{userId:req.user.sub,autoCopyEnabled,globalBrainEnabled:true,sizingMode:"PERCENT",percentBalance,defaultAmountUsd,maxAmountPerTradeUsd:0,maxTotalExposureUsd:0,maxConcurrentPositions:0},
+    update:{autoCopyEnabled,globalBrainEnabled:true,sizingMode:"PERCENT",percentBalance,defaultAmountUsd}
   });
   for(const t of traders){
     await db.userFollow.upsert({
       where:{userId_traderId:{userId:req.user.sub,traderId:t.id}},
-      create:{userId:req.user.sub,traderId:t.id,mode:autoCopyEnabled?"AUTO_COPY":"WATCH_ONLY",fixedAmountUsd:defaultAmountUsd,maxPositionUsd:settings.maxAmountPerTradeUsd,maxTotalExposureUsd:settings.maxTotalExposureUsd},
+      create:{userId:req.user.sub,traderId:t.id,mode:autoCopyEnabled?"AUTO_COPY":"WATCH_ONLY",fixedAmountUsd:defaultAmountUsd,maxPositionUsd:0,maxTotalExposureUsd:0,maxChasePct:0,minLiquidityUsd:0,stopLossPct:null},
       update:{mode:autoCopyEnabled?"AUTO_COPY":"WATCH_ONLY",fixedAmountUsd:defaultAmountUsd}
     });
   }
@@ -767,17 +775,18 @@ app.put("/v1/me/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => 
     return res.status(409).json({error:"CHAIN_LISTENER_NOT_IMPLEMENTED"});
   }
   const defaults=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
-  const fixedAmountUsd=Math.max(1,Math.min(defaults.maxAmountPerTradeUsd,Number(req.body?.fixedAmountUsd??existing?.fixedAmountUsd??defaults.defaultAmountUsd)));
+  const requestedFixed=Math.max(1,Number(req.body?.fixedAmountUsd??existing?.fixedAmountUsd??defaults.defaultAmountUsd));
+  const fixedAmountUsd=defaults.maxAmountPerTradeUsd>0?Math.min(defaults.maxAmountPerTradeUsd,requestedFixed):requestedFixed;
   const data={
     mode,
     fixedAmountUsd,
     takeProfitPct:Number(req.body?.takeProfitPct??existing?.takeProfitPct??100),
-    stopLossPct:req.body?.stopLossPct===null?null:Number(req.body?.stopLossPct??existing?.stopLossPct??55),
-    maxChasePct:Math.max(0,Math.min(55,Number(req.body?.maxChasePct??existing?.maxChasePct??40))),
-    maxSlippageBps:Math.max(1,Math.min(5000,Number(req.body?.maxSlippageBps??existing?.maxSlippageBps??500))),
-    maxPositionUsd:Math.max(1,Number(req.body?.maxPositionUsd??existing?.maxPositionUsd??defaults.maxAmountPerTradeUsd)),
-    maxTotalExposureUsd:Math.max(1,Number(req.body?.maxTotalExposureUsd??existing?.maxTotalExposureUsd??defaults.maxTotalExposureUsd)),
-    minLiquidityUsd:Math.max(0,Number(req.body?.minLiquidityUsd??existing?.minLiquidityUsd??5000)),
+    stopLossPct:req.body?.stopLossPct===null?null:(req.body?.stopLossPct===undefined?(existing?.stopLossPct??null):Number(req.body.stopLossPct)),
+    maxChasePct:Math.max(0,Number(req.body?.maxChasePct??existing?.maxChasePct??0)),
+    maxSlippageBps:Math.max(1,Math.min(10000,Number(req.body?.maxSlippageBps??existing?.maxSlippageBps??1500))),
+    maxPositionUsd:Math.max(0,Number(req.body?.maxPositionUsd??existing?.maxPositionUsd??0)),
+    maxTotalExposureUsd:Math.max(0,Number(req.body?.maxTotalExposureUsd??existing?.maxTotalExposureUsd??0)),
+    minLiquidityUsd:Math.max(0,Number(req.body?.minLiquidityUsd??existing?.minLiquidityUsd??0)),
     exitMode:String(req.body?.exitMode??existing?.exitMode??"ADAPTIVE"),
     copyAdditionalBuys:Boolean(req.body?.copyAdditionalBuys??existing?.copyAdditionalBuys??true),
     copyReentries:Boolean(req.body?.copyReentries??existing?.copyReentries??true)
@@ -1136,6 +1145,22 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 }));
 
 
+app.get("/v1/brain/feed", auth, asyncRoute(async (_req,res) => {
+  const opportunities=await db.globalBrainOpportunity.findMany({
+    where:{lastEvaluatedAt:{gte:new Date(Date.now()-6*60*60_000)}},
+    orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:120
+  });
+  res.json({watching:true,opportunities});
+}));
+app.get("/v1/admin/brain", requireAdmin, asyncRoute(async (_req,res) => {
+  const [opportunities,flows,outcomes]=await Promise.all([
+    db.globalBrainOpportunity.findMany({orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:300}),
+    db.chainFlowObservation.findMany({orderBy:{observedAt:"desc"},take:500}),
+    db.brainOutcomeSample.findMany({orderBy:{observedAt:"desc"},take:500})
+  ]);
+  res.json({opportunities,flows,outcomes});
+}));
+
 app.get("/v1/admin/discovery/candidates", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const stage=String(req.query.stage??"").toUpperCase();
   const where:any={}; if(stage)where.stage=stage;
@@ -1182,7 +1207,7 @@ app.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) => {
   res.json({orders});
 }));
 
-const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","discovery"]);
+const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","discovery","brain"]);
 const secretConfigKeys=new Set(["push","email","execution","marketData","social","signer"]);
 app.get("/v1/admin/config", requireAdmin, asyncRoute(async (_req,res) => {
   const rows=await db.appConfig.findMany({orderBy:{key:"asc"}});
@@ -1206,7 +1231,7 @@ app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,
   }
   const row=await setConfig(key,value,{secret,updatedBy:req.user.sub});
   await audit(req.user.sub,"ADMIN","CONFIG_UPDATE",key,secret?{secret:true,fields:Object.keys(req.body)}:{value:req.body});
-  res.json({ok:true,config:redactedConfig(row as any),restartRequired:["marketData","execution","chains","signer","discovery","risk"].includes(key)});
+  res.json({ok:true,config:redactedConfig(row as any),restartRequired:["marketData","execution","chains","signer","discovery","risk","brain"].includes(key)});
 }));
 
 app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {

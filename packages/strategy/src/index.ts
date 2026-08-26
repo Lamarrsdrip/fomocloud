@@ -92,21 +92,18 @@ export const MEME_POLICY = {
     newBasePct: 35,
     earlyBasePct: 30,
     establishedBasePct: 22,
-    hyperMaxPct: 55,
-    pullbackWaitFromPct: 55,
-    absoluteLatePct: 120
+    hyperMaxPct: 250,
+    pullbackWaitFromPct: 0
   },
   established: {
     tp1: 50, tp2: 100,
     tp1SellNormalPct: 30, tp2SellNormalPct: 25,
-    runnerPct: 45,
-    catastrophicLossPct: 45
+    runnerPct: 45
   },
   newToken: {
     tp1: 100, tp2: 150, tp3: 200,
     tp1SellNormalPct: 30, tp2SellNormalPct: 20, tp3SellNormalPct: 15,
-    runnerPct: 35,
-    catastrophicLossPct: 55
+    runnerPct: 35
   }
 } as const;
 
@@ -126,13 +123,11 @@ export function classifyAge(ageMinutes:number):TokenAgeClass {
  */
 export function hardBlockers(m:MarketSnapshot):string[] {
   const reasons:string[] = [];
+  // Professional-degen rule: unusual token structure, concentration, drawdown and prior pump are
+  // evidence, not automatic rejection. Only execution-impossible conditions are hard blockers.
   if (!m.sellRouteAvailable) reasons.push("NO_EXECUTABLE_SELL_ROUTE");
-  if (m.token2022DangerousExtension) reasons.push("DANGEROUS_TOKEN_EXTENSION");
-  if (m.freezeAuthorityActive && (m.creatorHoldingPct ?? 0) > 5) reasons.push("FREEZE_CONTROL_PLUS_CREATOR_EXPOSURE");
-  if (m.liquidityUsd < 5_000) reasons.push("EXTREME_LOW_LIQUIDITY");
-  if (m.executablePriceImpactPct > 35) reasons.push("UNUSABLE_PRICE_IMPACT");
-  if ((m.liquidityChange5mPct ?? 0) < -65) reasons.push("LIQUIDITY_COLLAPSE");
-  if ((m.creatorNetSell5mPct ?? 0) > 70) reasons.push("CREATOR_DUMPING");
+  if (!Number.isFinite(m.executablePriceImpactPct) || m.executablePriceImpactPct >= 75) reasons.push("UNUSABLE_EXECUTION_ROUTE");
+  if (!Number.isFinite(m.liquidityUsd) || m.liquidityUsd <= 0) reasons.push("NO_EXECUTABLE_LIQUIDITY");
   return reasons;
 }
 
@@ -270,14 +265,9 @@ export function evaluateEntry(m:MarketSnapshot, sourceQualityScore=70):EntryDeci
   if ((m.holderGrowth5mPct ?? 0) > 3) reasons.push("Holder count is expanding");
   if (trend === "HYPER") reasons.push("Hyper-momentum setup detected");
 
-  if (moved > MEME_POLICY.chase.absoluteLatePct && trend !== "HYPER")
-    return {action:"SKIP", confidence, sizeMultiplier:0, chaseCapPct:chaseCap, reasons, warnings:[...warnings,"Move is already extremely extended"]};
-
-  if (moved > chaseCap) {
-    if (trend === "HYPER" && moved <= MEME_POLICY.chase.absoluteLatePct)
-      return {action:"BUY_SMALLER", confidence, sizeMultiplier:.55, chaseCapPct:chaseCap, reasons:[...reasons,"Exceptional momentum justifies a smaller catch-up entry"], warnings};
-    return {action:"WAIT_PULLBACK", confidence, sizeMultiplier:0, chaseCapPct:chaseCap, reasons, warnings:[...warnings,"Price is above the current chase window; watching for a re-entry"]};
-  }
+  // A meme can already be up thousands of percent and still be entering a new expansion. Chase is
+  // evidence for confidence/size, never a hidden platform ceiling. A user may set their own ceiling.
+  if (moved > chaseCap) warnings.push(`Fast catch-up entry: ${moved.toFixed(1)}% from source execution`);
 
   if (confidence >= 72) return {action:"BUY_NOW", confidence, sizeMultiplier:1, chaseCapPct:chaseCap, reasons, warnings};
   if (confidence >= 58) return {action:"BUY_SMALLER", confidence, sizeMultiplier:.65, chaseCapPct:chaseCap, reasons, warnings};
@@ -321,34 +311,15 @@ export function evaluateExit(m:MarketSnapshot, p:PositionState):ExitInstruction 
   const profit = m.priceFromEntryPct;
   const trend = trendState(m);
 
-  if (profit <= -cfg.catastrophicLossPct)
-    return {action:"EXIT", sellPct:100, reason:"Catastrophic loss protection reached"};
-
   // Source trader exits do not automatically kill a strong runner.
   if ((m.sourceTraderSoldPct ?? 0) >= 90 && (trend === "COOLING" || trend === "BROKEN"))
     return {action:"EXIT", sellPct:100, reason:"Source trader exited and momentum also broke"};
 
-  if (!p.tp1Taken && profit >= cfg.tp1)
-    return {
-      action:"PARTIAL_TP",
-      sellPct:dynamicPartial(cfg.tp1SellNormalPct, trend),
-      reason:`First profit harvest at +${cfg.tp1}% while ${trend.toLowerCase()} momentum continues`,
-      nextTargetPct:cfg.tp2
-    };
-
-  if (!p.tp2Taken && profit >= cfg.tp2)
-    return {
-      action:"PARTIAL_TP",
-      sellPct:dynamicPartial(cfg.tp2SellNormalPct, trend),
-      reason:`Second profit harvest at +${cfg.tp2}%`,
-      nextTargetPct:isFresh ? (cfg as typeof MEME_POLICY.newToken).tp3 : undefined
-    };
-
-  if (isFresh) {
-    const n = cfg as typeof MEME_POLICY.newToken;
-    if (!p.tp3Taken && profit >= n.tp3)
-      return {action:"PARTIAL_TP", sellPct:dynamicPartial(n.tp3SellNormalPct, trend), reason:`Third profit harvest at +${n.tp3}% — runner stays open`};
-  }
+  // Principal recovery is handled by the position worker using the USER'S configured multiple
+  // (3x by default). Until that happens, MemeCloud does not secretly front-run the user's plan with
+  // fixed +100/+150/+200 harvests. Evidence can still close/reduce a genuinely broken position.
+  if (p.principalRecoveredPct < 100 && trend !== "BROKEN")
+    return {action:"HOLD", reason:`Waiting for configured capital recovery while ${trend.toLowerCase()} evidence remains viable`, trailPct:adaptiveTrailPct(m), trend};
 
   // Risk rising but not catastrophic: de-risk rather than binary panic sell.
   if (risk.state === "HIGH_RISK" && profit > 0 && trend !== "HYPER")
