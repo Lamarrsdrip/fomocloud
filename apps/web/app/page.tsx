@@ -1,13 +1,14 @@
 "use client";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 import { InstallAppPrompt } from "../components/InstallAppPrompt";
+import {BrandGlyph} from "../components/BrandGlyph";
 
 export default function Landing(){
   return <main className="landing">
     <div className="landing-glow one"/><div className="landing-glow two"/>
     <div className="public-shell">
       <header className="public-header">
-        <a className="brand" href="/"><span className="brandmark">M</span><b>MemeCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark"><BrandGlyph size={24}/></span><b>MemeCloud</b></a>
         <div className="public-actions"><a className="ghost-link" href="/login/">Sign in</a><a className="primary-link" href="/signup/">Start trading <ArrowRight size={16}/></a></div>
       </header>
 
@@ -19,7 +20,7 @@ export default function Landing(){
 
         <div className="product-preview">
           <div className="preview-side">
-            <span className="brandmark small">M</span>
+            <span className="brandmark small"><BrandGlyph size={18}/></span>
             <i/><i/><i/><i/><i/>
           </div>
           <div className="preview-body">
@@ -37,7 +38,7 @@ export default function Landing(){
         </div>
       </section>
 
-      <footer className="public-footer"><div className="brand"><span className="brandmark small">M</span><b>MemeCloud</b></div><span>Simulation until you go live</span></footer>
+      <footer className="public-footer"><div className="brand"><span className="brandmark small"><BrandGlyph size={18}/></span><b>MemeCloud</b></div><span>Simulation until you go live</span></footer>
     </div>
     <InstallAppPrompt/>
   </main>

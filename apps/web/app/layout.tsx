@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from "next";
 import { PwaRegistrar } from "../components/PwaRegistrar";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://wheat-viper-505237.hostingersite.com"),
+  metadataBase: new URL("https://meme.xaucloud.io"),
   title: "MemeCloud — Autonomous Crypto Intelligence",
   description: "MemeCloud discovers, scores and manages crypto opportunities with explainable market and wallet intelligence.",
   manifest: "/manifest.webmanifest",
@@ -17,7 +17,14 @@ export const metadata: Metadata = {
     title: "MemeCloud — Autonomous Crypto Intelligence",
     description: "Discovery, intelligence, scoring, decisions, execution and position management in one system.",
     type: "website",
-    siteName: "MemeCloud"
+    siteName: "MemeCloud",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "MemeCloud" }]
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "MemeCloud — Autonomous Crypto Intelligence",
+    description: "Discovery, intelligence, scoring, decisions, execution and position management in one system.",
+    images: ["/og-image.png"]
   },
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "MemeCloud" }
 };

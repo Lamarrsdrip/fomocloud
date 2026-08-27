@@ -2,6 +2,7 @@
 import {useEffect,useState} from "react";
 import {apiFetch,plainError,money} from "../../lib/api";
 import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus,KeyRound,Gauge,SlidersHorizontal,ChevronRight,Home,Wallet,Database,PlugZap,Coins,Fish,AlertTriangle,Layers} from "lucide-react";
+import {BrandGlyph} from "../../components/BrandGlyph";
 
 const sections=[
  ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["tokens","Tokens",Coins],["whales","Whales",Fish],["users","Users",Users],["traders","Wallets",Radio],["signals","Decisions",Activity],
@@ -41,7 +42,7 @@ export default function Admin(){
  useEffect(()=>{void load("overview")},[]);
  function change(t:string){setTab(t);void load(t)}
  return <main className="admin-layout">
-  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small">M</span><span><b>MemeCloud</b><small>Owner controls</small></span></a><nav>{navGroups.map(([label,ids])=><div className="admin-nav-group" key={label}><small>{label}</small>{ids.map(id=>{const s=sections.find(x=>x[0]===id);if(!s)return null;const[,name,Icon]=s;return <button key={id} data-admin-target={id} className={tab===id?"active":""} onClick={()=>change(id)}><Icon size={15}/><span>{name}</span></button>})}</div>)}</nav><div className="admin-side-foot"><div className="owner-chip"><ShieldCheck size={15}/><div><b>{me?.displayName||"Platform owner"}</b><small>{me?.email||"Full control"}</small></div></div><a className="soft-action" href="/app/"><Home size={13}/> Back to MemeCloud</a></div></aside>
+  <aside className="admin-side"><a className="brand" href="/app/"><span className="brandmark small"><BrandGlyph size={18}/></span><span><b>MemeCloud</b><small>Owner controls</small></span></a><nav>{navGroups.map(([label,ids])=><div className="admin-nav-group" key={label}><small>{label}</small>{ids.map(id=>{const s=sections.find(x=>x[0]===id);if(!s)return null;const[,name,Icon]=s;return <button key={id} data-admin-target={id} className={tab===id?"active":""} onClick={()=>change(id)}><Icon size={15}/><span>{name}</span></button>})}</div>)}</nav><div className="admin-side-foot"><div className="owner-chip"><ShieldCheck size={15}/><div><b>{me?.displayName||"Platform owner"}</b><small>{me?.email||"Full control"}</small></div></div><a className="soft-action" href="/app/"><Home size={13}/> Back to MemeCloud</a></div></aside>
   <section className="admin-main"><div className="admin-head"><div><small>MemeCloud · OWNER CONTROL</small><h1>{sections.find(x=>x[0]===tab)?.[1]}</h1><p>{tab==="overview"?"Run the platform from one place.":tab==="config"?"APIs, fees, email, push, discovery and trading rules.":"Real platform data and controls."}</p></div><button className="soft-action" onClick={()=>load()}><RefreshCw size={12}/> Refresh</button></div>
    {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
     {tab==="overview"&&<Overview d={data}/>}

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { ArrowRight, WalletCards, CheckCircle2, ShieldCheck, Zap } from "lucide-react";
 import { apiFetch, login, signup, setAccessToken, plainError } from "../lib/api";
+import {BrandGlyph} from "./BrandGlyph";
 
 function toBase64(bytes:Uint8Array){
   let s=""; bytes.forEach(b=>s+=String.fromCharCode(b)); return btoa(s);
@@ -39,7 +40,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
 
   return <div className="auth-page">
     <section className="auth-art">
-      <a className="brand" href="/"><span className="brandmark">M</span><b>MemeCloud</b></a>
+      <a className="brand" href="/"><span className="brandmark"><BrandGlyph size={24}/></span><b>MemeCloud</b></a>
       <div className="auth-art-copy"><span>AUTONOMOUS CRYPTO INTELLIGENCE</span><h1>Discover.<br/>Decide.<br/>Manage.</h1><p>Your private MemeCloud workspace combines market discovery, wallet intelligence, scoring, execution controls and position management without fabricating account data.</p></div>
       <div className="auth-points">
         <div className="auth-point"><CheckCircle2 size={15}/> Follow, watch or Auto Copy each trader independently</div>
@@ -49,7 +50,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
     </section>
     <section className="auth-box-wrap">
       <div className="auth-box">
-        <a className="brand" href="/"><span className="brandmark small">M</span><b>MemeCloud</b></a>
+        <a className="brand" href="/"><span className="brandmark small"><BrandGlyph size={18}/></span><b>MemeCloud</b></a>
         <h2>{mode==="signup"?"Create your account":"Welcome back"}</h2>
         <p>{mode==="signup"?"Start with an account, then choose your traders and connect a trading wallet separately.":"Sign in to your private dashboard."}</p>
         <form className="auth-form" onSubmit={submit}>

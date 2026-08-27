@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Download, PlusSquare, Share, X } from "lucide-react";
+import {BrandGlyph} from "./BrandGlyph";
 
 const DISMISSED_KEY = "memecloud_install_dismissed_at";
 const INSTALLED_KEY = "memecloud_install_completed_at";
@@ -48,7 +49,7 @@ export function InstallAppPrompt() {
     if (location.pathname !== "/") return;
     const details = platformDetails();
     setPlatform(details);
-    if (details.isStandalone) return;
+    if (details.isStandalone) return; // never show once running as an installed PWA
     if (recentStorageValue(DISMISSED_KEY, DISMISS_COOLDOWN_MS) ||
       recentStorageValue(INSTALLED_KEY, INSTALLED_COOLDOWN_MS)) return;
 
@@ -72,6 +73,13 @@ export function InstallAppPrompt() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!visible || !platform?.isIOS) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [visible, platform?.isIOS]);
+
   if (!platform || !visible || platform.isStandalone) return null;
 
   function dismiss() {
@@ -89,20 +97,21 @@ export function InstallAppPrompt() {
     setDeferred(null);
   }
 
-  if (platform.isIOS) return <div className="install-ios-wrap" data-testid="install-ios-guide">
-    <section className="install-ios-sheet" role="dialog" aria-modal="false" aria-labelledby="install-ios-title">
+  if (platform.isIOS) return <div className="install-ios-wrap" onClick={dismiss}>
+    <section className="install-ios-sheet" role="dialog" aria-modal="true" aria-labelledby="install-ios-title" onClick={e=>e.stopPropagation()}>
       <div className="install-ios-handle" />
+      <button className="install-ios-close" onClick={dismiss} aria-label="Close"><X size={18}/></button>
       <div className="install-ios-head">
-        <div className="install-brand-icon" aria-hidden="true">M</div>
-        <div><span>INSTALL MemeCloud</span><b id="install-ios-title">Use MemeCloud like a native app.</b></div>
-        <button onClick={dismiss} aria-label="Dismiss install guide"><X size={18}/></button>
+        <div className="install-brand-icon" aria-hidden="true"><BrandGlyph size={26}/></div>
+        <b id="install-ios-title">Install MemeCloud</b>
+        <p>Use MemeCloud like an app on your iPhone.</p>
       </div>
-      {!platform.isSafari && <p className="install-ios-browser-note">For the standard Home Screen experience, open this page in Safari first.</p>}
-      <ol className="install-ios-steps">
-        <li><i>1</i><div><b>Tap the Share button</b><span><Share size={15}/> Find Share in the Safari toolbar.</span></div></li>
-        <li><i>2</i><div><b>Choose “Add to Home Screen”</b><span><PlusSquare size={15}/> Scroll down if it is not immediately visible.</span></div></li>
-        <li><i>3</i><div><b>Tap Add</b><span>MemeCloud will open full-screen at secure sign-in from your Home Screen.</span></div></li>
-      </ol>
+      {!platform.isSafari && <p className="install-ios-browser-note">Open this page in Safari to install it.</p>}
+      <div className="install-ios-steps">
+        <div className="install-step"><i>1</i><span>Tap <Share size={14}/> Share</span></div>
+        <div className="install-step"><i>2</i><span>Tap <PlusSquare size={14}/> "Add to Home Screen"</span></div>
+        <div className="install-step"><i>3</i><span>Tap "Add"</span></div>
+      </div>
       <button className="install-done" onClick={dismiss}>Got it</button>
     </section>
   </div>;
@@ -111,7 +120,7 @@ export function InstallAppPrompt() {
 
   return <div className="install-prompt-wrap" data-testid="install-app-banner" data-platform={platform.isAndroid ? "android" : "desktop"}>
     <section className="install-prompt">
-        <div className="install-brand-icon" aria-hidden="true">M</div>
+        <div className="install-brand-icon" aria-hidden="true"><BrandGlyph size={22}/></div>
         <div className="install-copy"><b>Install MemeCloud</b><span>Open MemeCloud like a native app.</span></div>
         <button className="install-action" onClick={install} data-testid="install-app-btn"><Download size={14}/> Install</button>
         <button className="install-close" onClick={dismiss} aria-label="Dismiss install prompt"><X size={17}/></button>
