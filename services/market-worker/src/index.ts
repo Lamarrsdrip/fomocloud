@@ -34,7 +34,8 @@ async function trackedMints(){
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:1500}),
     db.discoveryToken.findMany({where:{chain:"SOLANA",lastSeenAt:{gte:since}},select:{mint:true},take:300})
   ]);
-  return [...new Set([...signals.map(s=>s.outputMint),...positions.map(p=>p.mint),...discoveries.map(x=>x.mint)])].slice(0,350);
+  const excluded=new Set([usdc,"So11111111111111111111111111111111111111112"]);
+  return [...new Set([...signals.map(s=>s.outputMint),...positions.map(p=>p.mint),...discoveries.map(x=>x.mint)])].filter(m=>!excluded.has(m)).slice(0,350);
 }
 
 async function jupiterMark(mint:string){
