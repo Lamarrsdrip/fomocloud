@@ -21,8 +21,8 @@ async function scanFromChainFlow(){
   const cfg=await getConfig<any>("discovery");
   const windowMin=Math.max(5,Number(cfg?.chainFlowWindowMinutes??15));
   const since=new Date(Date.now()-windowMin*60_000);
-  const minBuyers=Math.max(2,Number(cfg?.minChainFlowBuyers??3));
-  const minBuyUsd=Math.max(50,Number(cfg?.minChainFlowBuyUsd??200));
+  const minBuyers=Math.max(1,Number(cfg?.minChainFlowBuyers??2));
+  const minBuyUsd=Math.max(10,Number(cfg?.minChainFlowBuyUsd??50));
   const rows=await db.chainFlowObservation.findMany({where:{side:"BUY",observedAt:{gte:since}},select:{chain:true,mint:true,walletAddress:true,knownWallet:true,amountUsd:true},take:5000});
   const byMint=new Map<string,{chain:Chain;mint:string;buyUsd:number;wallets:Map<string,boolean>}>();
   for(const r of rows){
