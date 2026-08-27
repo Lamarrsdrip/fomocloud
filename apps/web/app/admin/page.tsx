@@ -1,17 +1,17 @@
 "use client";
 import {useEffect,useState} from "react";
 import {apiFetch,plainError,money} from "../../lib/api";
-import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus,KeyRound,Gauge,SlidersHorizontal,ChevronRight,Home,Wallet,Database,PlugZap} from "lucide-react";
+import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus,KeyRound,Gauge,SlidersHorizontal,ChevronRight,Home,Wallet,Database,PlugZap,Coins,Fish,AlertTriangle,Layers} from "lucide-react";
 
 const sections=[
- ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["users","Users",Users],["traders","Traders",Radio],["signals","Signals",Activity],
- ["trades","Trades",WalletCards],["config","Settings",SlidersHorizontal],["broadcasts","Messages",Send],["audit","Audit",ShieldCheck],["health","Health",Activity]
+ ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["tokens","Tokens",Coins],["whales","Whales",Fish],["users","Users",Users],["traders","Wallets",Radio],["signals","Decisions",Activity],
+ ["trades","Live Trades",WalletCards],["positions","Positions",Layers],["failed","Failed Trades",AlertTriangle],["config","Settings",SlidersHorizontal],["broadcasts","Messages",Send],["audit","Audit",ShieldCheck],["health","Health",Activity]
 ] as const;
 const navGroups=[
  ["OVERVIEW",["overview"]],
  ["GLOBAL BRAIN",["brain"]],
- ["DISCOVERY",["traders"]],
- ["TRADING",["signals","trades"]],
+ ["DISCOVERY",["tokens","whales","traders"]],
+ ["TRADING",["trades","positions","signals","failed"]],
  ["USERS",["users"]],
  ["CONFIGURATION",["config"]],
  ["SYSTEM",["broadcasts","audit","health"]]
@@ -28,6 +28,10 @@ export default function Admin(){
   if(which==="traders")r=await apiFetch("/v1/admin/traders");
   if(which==="signals")r=await apiFetch("/v1/admin/signals");
   if(which==="trades")r=await apiFetch("/v1/admin/trades");
+  if(which==="positions")r=await apiFetch("/v1/admin/positions");
+  if(which==="failed")r=await apiFetch("/v1/admin/risk-incidents");
+  if(which==="tokens")r=await apiFetch("/v1/admin/discovery/tokens");
+  if(which==="whales")r=await apiFetch("/v1/admin/discovery/candidates");
   if(which==="config")r=await apiFetch("/v1/admin/config");
   if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
   if(which==="audit")r=await apiFetch("/v1/admin/audit");
@@ -46,6 +50,10 @@ export default function Admin(){
     {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="OWNER"}/>}
     {tab==="signals"&&<Signals d={data}/>}
     {tab==="trades"&&<Trades d={data}/>}
+    {tab==="positions"&&<AdminPositions d={data}/>}
+    {tab==="failed"&&<FailedTrades d={data}/>}
+    {tab==="tokens"&&<Tokens d={data}/>}
+    {tab==="whales"&&<Whales d={data} reload={()=>load("whales")} admin={me?.role==="OWNER"}/>}
     {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="OWNER"}/>}
     {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="OWNER"}/>}
     {tab==="audit"&&<Audit d={data}/>}
@@ -60,9 +68,9 @@ function Metric({label,value,note,moneyValue=false}:{label:string;value:any;note
 function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{};return <>
  <section className="owner-hero"><div><span>OWNER HOME</span><h2>Everything important, without digging.</h2><p>Real users, trading, discovery and engine activity. Use the controls below to change how MemeCloud operates.</p></div><div className={`owner-mode ${d.liveExecutionEnabled?"live":"safe"}`}><small>Execution</small><b>{String(d.executionMode||"simulation").toUpperCase()}</b><span>{d.liveExecutionEnabled?"Live trading enabled":"Live funds protected"}</span></div></section>
  <section className="admin-quick-grid">
+  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="whales"]')?.click()}><Fish/><div><b>Whales</b><small>Discovered wallets awaiting review</small></div><ChevronRight/></button>
+  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="tokens"]')?.click()}><Coins/><div><b>Tokens</b><small>What Discovery has seen</small></div><ChevronRight/></button>
   <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="config"]')?.click()}><PlugZap/><div><b>APIs & providers</b><small>RPC, Birdeye, Jupiter, Privy</small></div><ChevronRight/></button>
-  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="config"]')?.click()}><Mail/><div><b>Email & push</b><small>SMTP, VAPID and test tools</small></div><ChevronRight/></button>
-  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="config"]')?.click()}><SlidersHorizontal/><div><b>Fees & bot rules</b><small>Risk, chase and discovery settings</small></div><ChevronRight/></button>
   <a href="/app/"><Wallet/><div><b>Open user app</b><small>See MemeCloud exactly as users do</small></div><ChevronRight/></a>
  </section>
  <section className="admin-kpi-row"><Metric label="Users" value={u.registered} note={`${u.active??0} active`}/><Metric label="Wallets connected" value={u.walletConnected} note={`${u.autoCopyEnabled??0} Auto Copy`}/><Metric label="Open positions" value={t.openPositions} note={`${t.ordersToday??0} orders today`}/><Metric label="Platform traders" value={s.platform} note={`${s.candidates??0} candidates`}/></section>
@@ -105,7 +113,32 @@ function TraderWalletControls({trader,admin,reload}:{trader:any;admin:boolean;re
  </div>
 }
 function Signals({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>Trader</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Copies</th><th>Detected</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{s.trader?.displayName}</td><td>{s.chain}</td><td>{s.action}</td><td>{s.action==="BUY"?s.outputMint.slice(0,10):s.inputMint.slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s._count?.copyDecisions||0}</td><td>{new Date(s.observedAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
-function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
+function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}{!(d.orders||[]).length&&<tr><td colSpan={7}>No trades recorded yet.</td></tr>}</tbody></table></section>}
+function AdminPositions({d}:{d:any}){
+ const[filter,setFilter]=useState("ALL");
+ const rows=(d.positions||[]).filter((p:any)=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");
+ return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>ALL USERS</span><h2>Open &amp; closed positions</h2></div><div className="performance-tabs">{["ALL","OPEN","CLOSED"].map(x=><button key={x} className={filter===x?"active":""} onClick={()=>setFilter(x)}>{x}</button>)}</div></div>
+  <table className="admin-table"><thead><tr><th>User</th><th>Token</th><th>Chain</th><th>Mode</th><th>Status</th><th>Cost</th><th>Unrealized</th><th>Realized</th><th>Recovery</th><th>Opened</th></tr></thead><tbody>{rows.map((p:any)=>{const recovered=(p.profitTakenUsd||0)>=(p.costUsd||0)&&(p.costUsd||0)>0;return <tr key={p.id}><td>{p.user?.email||p.user?.displayName||p.userId.slice(-6)}</td><td><small>{p.mint.slice(0,8)}…</small></td><td>{p.chain}</td><td>{p.mode}</td><td>{String(p.status).replaceAll("_"," ")}</td><td>{money(p.costUsd)}</td><td className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)}</td><td className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</td><td>{p.status!=="CLOSED"?(recovered?"✓ Recovered":"Not yet"):"—"}</td><td>{new Date(p.openedAt).toLocaleString()}</td></tr>})}{!rows.length&&<tr><td colSpan={10}>No positions in this filter.</td></tr>}</tbody></table>
+ </section>
+}
+function FailedTrades({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>EXECUTION SAFETY</span><h2>Failed / risk incidents</h2></div></div><table className="admin-table"><thead><tr><th>Severity</th><th>Scope</th><th>Chain</th><th>Token</th><th>Code</th><th>When</th></tr></thead><tbody>{(d.incidents||[]).map((i:any)=><tr key={i.id}><td><span className={`status-badge ${i.severity==="CRITICAL"?"watch":""}`}>{i.severity}</span></td><td>{i.scope}</td><td>{i.chain||"—"}</td><td>{i.mint?<small>{i.mint.slice(0,8)}…</small>:"—"}</td><td>{i.code}</td><td>{new Date(i.createdAt).toLocaleString()}</td></tr>)}{!(d.incidents||[]).length&&<tr><td colSpan={6}>No failed or risky executions recorded. Good sign.</td></tr>}</tbody></table></section>}
+function Tokens({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>DISCOVERY</span><h2>Tokens MemeCloud has seen</h2></div></div><table className="admin-table"><thead><tr><th>Chain</th><th>Mint</th><th>Market cap</th><th>Liquidity</th><th>Holders</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>{(d.tokens||[]).map((t:any)=><tr key={t.id}><td>{t.chain}</td><td><small>{t.mint.slice(0,10)}…</small></td><td>{t.marketCapUsd?money(t.marketCapUsd):"—"}</td><td>{t.liquidityUsd?money(t.liquidityUsd):"—"}</td><td>{t.holders??"—"}</td><td>{t.discoveredAt?new Date(t.discoveredAt).toLocaleDateString():"—"}</td><td>{t.lastSeenAt?new Date(t.lastSeenAt).toLocaleString():"—"}</td></tr>)}{!(d.tokens||[]).length&&<tr><td colSpan={7}>No tokens discovered yet — needs a configured Solana RPC.</td></tr>}</tbody></table></section>}
+function Whales({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
+ const[stage,setStage]=useState("ALL");
+ const[open,setOpen]=useState(false);
+ const[form,setForm]=useState<any>({chain:"SOLANA",address:"",label:""});
+ const[err,setErr]=useState("");
+ const rows=(d.candidates||[]).filter((c:any)=>stage==="ALL"?true:c.stage===stage);
+ async function decide(id:string,action:string){try{await apiFetch(`/v1/admin/discovery/candidates/${id}/decision`,{method:"POST",body:JSON.stringify({action})});reload()}catch(e){setErr(plainError(e))}}
+ async function relabel(id:string,label:string){try{await apiFetch(`/v1/admin/discovery/candidates/${id}`,{method:"PATCH",body:JSON.stringify({label})});reload()}catch(e){setErr(plainError(e))}}
+ async function add(e:React.FormEvent){e.preventDefault();setErr("");try{await apiFetch("/v1/admin/discovery/candidates",{method:"POST",body:JSON.stringify(form)});setOpen(false);setForm({chain:"SOLANA",address:"",label:""});reload()}catch(e){setErr(plainError(e))}}
+ return <>
+  {admin&&<button className="action-primary" style={{padding:"10px 13px",borderRadius:12,marginBottom:12}} onClick={()=>setOpen(!open)}><Plus size={13}/> Add wallet manually</button>}
+  {open&&<section className="app-card" style={{marginBottom:10}}><form className="form-grid" onSubmit={add}><label className="field"><span>Chain</span><select value={form.chain} onChange={e=>setForm({...form,chain:e.target.value})}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select></label><label className="field span2"><span>Wallet address</span><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})} required/></label><label className="field"><span>Label (e.g. KOL name)</span><input value={form.label} onChange={e=>setForm({...form,label:e.target.value})}/></label>{err&&<div className="auth-error span2">{err}</div>}<button className="action-primary span2" style={{height:42,borderRadius:12}}>Track wallet</button></form></section>}
+  <div className="config-tabs" style={{marginBottom:12}}>{["ALL","DISCOVERED","PAPER_TRACKING","PROVEN","REJECTED","PAUSED"].map(s=><button key={s} className={stage===s?"active":""} onClick={()=>setStage(s)}>{s.replaceAll("_"," ")}</button>)}</div>
+  <section className="app-card admin-table-wrap"><table className="admin-table"><thead><tr><th>Wallet</th><th>Chain</th><th>Label</th><th>Stage</th><th>Copyability</th><th>Realized P&amp;L</th><th>Source</th><th>Action</th></tr></thead><tbody>{rows.map((c:any)=><tr key={c.id}><td><small>{c.address.slice(0,6)}…{c.address.slice(-5)}</small></td><td>{c.chain}</td><td><input defaultValue={c.label||""} placeholder="Add label" disabled={!admin} onBlur={e=>{if(e.target.value!==(c.label||""))relabel(c.id,e.target.value)}} style={{background:"transparent",border:"1px solid var(--line)",borderRadius:8,padding:"4px 7px",color:"inherit",width:110,fontSize:9}}/></td><td><span className="status-badge">{c.stage.replaceAll("_"," ")}</span></td><td>{Math.round(c.copyabilityScore)}</td><td className={(c.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(c.realizedPnlUsd)}</td><td>{c.source}</td><td>{admin&&<div className="table-actions"><button className="soft-action" onClick={()=>decide(c.id,"PROVEN")}>Prove</button><button className="soft-action" onClick={()=>decide(c.id,"PAUSED")}>Pause</button><button className="soft-action" onClick={()=>decide(c.id,"REJECTED")}>Reject</button></div>}</td></tr>)}{!rows.length&&<tr><td colSpan={8}>No wallets in this stage yet.</td></tr>}</tbody></table></section>
+ </>
+}
 function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  const sections=["brain","marketData","execution","signer","discovery","risk","fees","email","push","social","chains","branding"];
  const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState(""),[testing,setTesting]=useState(false);

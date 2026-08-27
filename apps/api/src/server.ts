@@ -1228,9 +1228,38 @@ app.get("/v1/admin/discovery/candidates", requireAdmin, asyncRoute(async (req:Au
   const candidates=await db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:500});
   res.json({candidates});
 }));
+app.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const chain=String(req.body?.chain??"").toUpperCase();
+  const address=String(req.body?.address??"").trim();
+  const label=req.body?.label?String(req.body.label):undefined;
+  if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return res.status(400).json({error:"INVALID_CHAIN"});
+  if(!address) return res.status(400).json({error:"ADDRESS_REQUIRED"});
+  const existing=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:chain as Chain,address}}});
+  if(existing) return res.status(409).json({error:"WALLET_ALREADY_TRACKED"});
+  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"PAPER_TRACKING",source:"ADMIN_MANUAL",label}});
+  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label});
+  res.status(201).json({candidate});
+}));
+app.patch("/v1/admin/discovery/candidates/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
+  const data:any={};
+  if(typeof req.body?.label==="string") data.label=req.body.label;
+  const updated=await db.smartWalletCandidate.update({where:{id:c.id},data});
+  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_UPDATE",c.id,data);
+  res.json({candidate:updated});
+}));
 app.get("/v1/admin/discovery/tokens", requireAdmin, asyncRoute(async (_req,res) => {
   const tokens=await db.discoveryToken.findMany({orderBy:{lastSeenAt:"desc"},take:500});
   res.json({tokens});
+}));
+app.get("/v1/admin/positions", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
+  const status=String(req.query.status??"").toUpperCase();
+  const positions=await db.position.findMany({
+    where:status?{status:status as any}:undefined,
+    include:{user:{select:{id:true,email:true,displayName:true}},sourceTrader:{select:{id:true,displayName:true,handle:true}}},
+    orderBy:{openedAt:"desc"},take:300
+  });
+  res.json({positions});
 }));
 app.get("/v1/admin/intelligence/snapshots", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const mint=String(req.query.mint??"").trim();
