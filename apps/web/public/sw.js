@@ -24,8 +24,8 @@ self.addEventListener("push", event => {
   try { data={...data,...event.data.json()}; } catch {}
   event.waitUntil(self.registration.showNotification(data.title,{
     body:data.body,
-    icon:"/icon.svg",
-    badge:"/icon.svg",
+    icon:"/icon-192.png",
+    badge:"/icon-192.png",
     tag:data.type?`memecloud-${data.type}`:undefined,
     data:{url:data.url||"/app/"}
   }));

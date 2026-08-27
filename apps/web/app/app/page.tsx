@@ -24,6 +24,12 @@ function timeAgo(v:string){
 }
 function toBase64(bytes:Uint8Array){let s="";bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function urlB64ToBytes(s:string){const pad="=".repeat((4-s.length%4)%4);const raw=atob((s+pad).replace(/-/g,"+").replace(/_/g,"/"));return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)))}
+function pushEnv(){
+ const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+ const isStandalone=window.matchMedia("(display-mode: standalone)").matches||(navigator as Navigator&{standalone?:boolean}).standalone===true;
+ const supported="serviceWorker"in navigator&&"PushManager"in window&&"Notification"in window;
+ return{isIOS,isStandalone,supported};
+}
 
 export default function AppPage(){
   const[view,setViewState]=useState<View>("home");
@@ -396,14 +402,35 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
    await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})});await reload();
   }catch(e){setErr(plainError(e))}
  }
+ const[pushState,setPushState]=useState<"checking"|"ios-need-install"|"unsupported"|"need-permission"|"denied"|"on"|"error">("checking");
+ const[pushBusy,setPushBusy]=useState(false);const[pushMsg,setPushMsg]=useState("");
+ useEffect(()=>{
+  (async()=>{
+   const env=pushEnv();
+   if(env.isIOS&&!env.isStandalone){setPushState("ios-need-install");return}
+   if(!env.supported){setPushState("unsupported");return}
+   if(Notification.permission==="denied"){setPushState("denied");return}
+   try{
+    const reg=await navigator.serviceWorker.getRegistration("/sw.js");
+    const sub=reg?await reg.pushManager.getSubscription():null;
+    if(sub&&Notification.permission==="granted"){setPushState("on");return}
+   }catch{}
+   setPushState("need-permission");
+  })();
+ },[]);
  async function enablePush(){
-  setErr("");try{
-   if(!("serviceWorker"in navigator)||!("PushManager"in window))throw new Error("Push is not supported in this browser.");
+  setPushBusy(true);setPushMsg("");try{
+   const env=pushEnv();
+   if(env.isIOS&&!env.isStandalone){setPushState("ios-need-install");return}
+   if(!env.supported){setPushState("unsupported");return}
    const cfg=await apiFetch<any>("/v1/public/config",{},false);if(!cfg.pushPublicKey)throw new Error("Push has not been configured by the administrator yet.");
-   const reg=await navigator.serviceWorker.register("/sw.js");const perm=await Notification.requestPermission();if(perm!=="granted")throw new Error("Notification permission was not granted.");
+   const reg=await navigator.serviceWorker.register("/sw.js");await navigator.serviceWorker.ready;
+   const perm=await Notification.requestPermission();
+   if(perm==="denied"){setPushState("denied");return}
+   if(perm!=="granted")throw new Error("Notification permission was not granted.");
    const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToBytes(cfg.pushPublicKey)});
-   await apiFetch("/v1/push/subscribe",{method:"POST",body:JSON.stringify(sub.toJSON())});await reload();
-  }catch(e){setErr(plainError(e))}
+   await apiFetch("/v1/push/subscribe",{method:"POST",body:JSON.stringify(sub.toJSON())});await reload();setPushState("on");
+  }catch(e){setPushMsg(plainError(e));setPushState("error")}finally{setPushBusy(false)}
  }
  async function linkX(){try{const r=await apiFetch<any>("/v1/me/social/x/start");location.href=r.url}catch(e){setErr(plainError(e))}}
  async function unlinkWallet(id:string){if(!confirm("Unlink this wallet from your account? Any active delegated trading permission must be revoked first."))return;try{await apiFetch(`/v1/me/wallets/${id}`,{method:"DELETE"});await reload()}catch(e){setErr(plainError(e))}}
@@ -432,7 +459,23 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <button className="action-primary" style={{width:"100%",height:42,borderRadius:12}} onClick={()=>setView("trade")}><Zap size={15}/> Open Trade settings</button>
    </section>
    <section className="settings-block"><h3>Notifications</h3>
-    <div className="switch-row"><div><b>Web Push</b><small>Register this browser/device</small></div><button className="soft-action" onClick={enablePush}>Enable Push</button></div>
+    <div className="switch-row"><div><b>Notifications</b><small>{
+     pushState==="checking"?"Checking status…":
+     pushState==="on"?"On — you'll get trade alerts on this device.":
+     pushState==="ios-need-install"?"Install MemeCloud to your Home Screen to receive alerts on iPhone.":
+     pushState==="denied"?"Notifications are off for this device.":
+     pushState==="unsupported"?"This browser can't receive push notifications.":
+     pushState==="error"?(pushMsg||"Notifications couldn't be connected."):
+     "Get notified about trades, whales and platform updates."
+    }</small></div>
+    {pushState==="on"&&<span className="status-badge">On</span>}
+    {pushState==="ios-need-install"&&<button className="soft-action" onClick={()=>setPushMsg('Tap the Share icon in Safari, then "Add to Home Screen", then "Add." Open MemeCloud from your Home Screen icon and turn on notifications there.')}>How to install</button>}
+    {pushState==="unsupported"&&<span className="status-badge watch">Unavailable</span>}
+    {pushState==="need-permission"&&<button className="soft-action" disabled={pushBusy} onClick={enablePush}>{pushBusy?"Enabling…":"Enable notifications"}</button>}
+    {pushState==="denied"&&<button className="soft-action" onClick={()=>setPushMsg("iPhone: Settings → Notifications → MemeCloud → turn on Allow Notifications, then reopen the app. Android/desktop: allow notifications for this site in your browser's site settings.")}>How to enable</button>}
+    {pushState==="error"&&<button className="soft-action" disabled={pushBusy} onClick={enablePush}>Try again</button>}
+   </div>
+   {(pushState==="denied"||pushState==="ios-need-install")&&pushMsg&&<div className="notice">{pushMsg}</div>}
     {[['traderBought','Trader bought'],['tradeCopied','Trade copied'],['skippedTrade','Skipped / pullback'],['profitTaken','Profit taken'],['positionClosed','Position closed'],['platformBroadcast','Platform announcements']].map(([k,label])=><div className="switch-row" key={k}><div><b>{label}</b><small>Personal notification preference</small></div><button className={`switch ${prefs?.[k]!==false?"on":""}`} onClick={()=>patchNotifications({[k]:prefs?.[k]===false})}><i/></button></div>)}
     <div className="switch-row"><div><b>Unread notifications</b><small>Personal to this account</small></div><div style={{display:"flex",gap:6,alignItems:"center"}}><span className="status-badge">{notifications.filter(x=>!x.readAt).length}</span>{notifications.some(x=>!x.readAt)&&<button className="soft-action" onClick={markNotificationsRead}>Mark read</button>}</div></div>
     <div className="notification-inbox">{notifications.slice(0,8).map((n:any)=><div className={`notification-row ${n.readAt?"":"unread"}`} key={n.id}><i/><div><b>{n.title}</b><small>{n.body}</small></div><span>{timeAgo(n.createdAt)}</span></div>)}{!notifications.length&&<small>No notifications yet.</small>}</div>
