@@ -1,9 +1,9 @@
-import {db} from "@memecloud/db";
+import {db,type Chain} from "@memecloud/db";
 import {BirdeyeClient} from "@memecloud/providers";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 
-let scans=0,tokensSeen=0,candidatesSeen=0,errors=0,lastRun:string|null=null,running=false;
+let scans=0,tokensSeen=0,candidatesSeen=0,errors=0,lastRun:string|null=null,running=false,mode:"BIRDEYE"|"CHAIN_FLOW"="CHAIN_FLOW";
 
 async function getClient(){
   const cfg=await getConfig<any>("marketData");
@@ -14,11 +14,51 @@ async function getClient(){
 
 function arr(x:any):any[]{return Array.isArray(x)?x:Array.isArray(x?.items)?x.items:Array.isArray(x?.tokens)?x.tokens:Array.isArray(x?.list)?x.list:[]}
 
+// Real fallback when Birdeye isn't configured: derive tokens and known-wallet candidates directly
+// from the chain-wide flow observations already being collected, instead of sitting idle. Only
+// mints crossing a real minimum buyer/volume bar get surfaced — nothing here is fabricated.
+async function scanFromChainFlow(){
+  const cfg=await getConfig<any>("discovery");
+  const windowMin=Math.max(5,Number(cfg?.chainFlowWindowMinutes??15));
+  const since=new Date(Date.now()-windowMin*60_000);
+  const minBuyers=Math.max(2,Number(cfg?.minChainFlowBuyers??3));
+  const minBuyUsd=Math.max(50,Number(cfg?.minChainFlowBuyUsd??200));
+  const rows=await db.chainFlowObservation.findMany({where:{side:"BUY",observedAt:{gte:since}},select:{chain:true,mint:true,walletAddress:true,knownWallet:true,amountUsd:true},take:5000});
+  const byMint=new Map<string,{chain:Chain;mint:string;buyUsd:number;wallets:Map<string,boolean>}>();
+  for(const r of rows){
+    const key=`${r.chain}:${r.mint}`;
+    let g=byMint.get(key);
+    if(!g){g={chain:r.chain,mint:r.mint,buyUsd:0,wallets:new Map()};byMint.set(key,g)}
+    g.buyUsd+=Number(r.amountUsd??0);
+    if(!g.wallets.has(r.walletAddress))g.wallets.set(r.walletAddress,Boolean(r.knownWallet));
+  }
+  for(const g of byMint.values()){
+    if(g.buyUsd<minBuyUsd||g.wallets.size<minBuyers)continue;
+    tokensSeen++;
+    await db.discoveryToken.upsert({
+      where:{chain_mint:{chain:g.chain,mint:g.mint}},
+      update:{lastSeenAt:new Date(),volume24hUsd:g.buyUsd},
+      create:{chain:g.chain,mint:g.mint,source:"CHAIN_FLOW_DISCOVERY",volume24hUsd:g.buyUsd}
+    }).catch(()=>{});
+    for(const [address,known] of g.wallets){
+      if(!known)continue;
+      candidatesSeen++;
+      await db.smartWalletCandidate.upsert({
+        where:{chain_address:{chain:g.chain,address}},
+        update:{sourceToken:g.mint},
+        create:{chain:g.chain,address,stage:"DISCOVERED",source:"CHAIN_FLOW_KNOWN_WALLET",sourceToken:g.mint}
+      }).catch(()=>{});
+    }
+  }
+  scans++;lastRun=new Date().toISOString();
+}
+
 async function scan(){
   if(running)return;running=true;
   try{
     const client=await getClient();
-    if(!client){console.log("[discovery] Birdeye not configured; worker is idle, not fabricating candidates");return}
+    if(!client){mode="CHAIN_FLOW";console.log("[discovery] Birdeye not configured; discovering from real chain flow instead of sitting idle");await scanFromChainFlow();return}
+    mode="BIRDEYE";
     const cfg=await getConfig<any>("discovery");
     const minLiq=Math.max(5000,Number(cfg?.minLiquidityUsd??20000));
     const maxMc=Math.max(100000,Number(cfg?.maxMarketCapUsd??25_000_000));
@@ -72,7 +112,7 @@ async function scan(){
   finally{running=false}
 }
 
-startHeartbeat("discovery-worker",()=>({scans,tokensSeen,candidatesSeen,errors,lastRun,running,mode:"REAL_DATA_ONLY"}));
+startHeartbeat("discovery-worker",()=>({scans,tokensSeen,candidatesSeen,errors,lastRun,running,mode}));
 setInterval(()=>void scan(),Math.max(60_000,Number(process.env.DISCOVERY_SCAN_INTERVAL_MS??process.env.DISCOVERY_INTERVAL_MS??15*60_000)));
 void scan();
 console.log("[discovery-worker] running");

@@ -47,6 +47,40 @@ async function jupiterMark(mint:string){
   return {priceUsd,marketCapUsd,priceImpactPct:Math.abs(Number(q.priceImpactPct??0))};
 }
 
+async function chainFlowMetrics(mint:string){
+  const since5=new Date(Date.now()-5*60_000),since1=new Date(Date.now()-60_000);
+  const rows=await db.chainFlowObservation.findMany({where:{chain:"SOLANA",mint,observedAt:{gte:since5}},select:{side:true,amountUsd:true,walletAddress:true,observedAt:true}});
+  let buyVolume5mUsd=0,sellVolume5mUsd=0,buyVolume1mUsd=0,buys1m=0,sells1m=0,buys5m=0,sells5m=0;
+  const buyers1m=new Set<string>(),buyers5m=new Set<string>(),sellers5m=new Set<string>();
+  for(const r of rows){
+    const usd=Number(r.amountUsd??0),within1m=r.observedAt>=since1;
+    if(r.side==="BUY"){buyVolume5mUsd+=usd;buys5m++;buyers5m.add(r.walletAddress);if(within1m){buyVolume1mUsd+=usd;buys1m++;buyers1m.add(r.walletAddress)}}
+    else{sellVolume5mUsd+=usd;sells5m++;sellers5m.add(r.walletAddress);if(within1m)sells1m++;}
+  }
+  const avgPerMin=buyVolume5mUsd/5;
+  const volumeAcceleration1m=avgPerMin>0?buyVolume1mUsd/avgPerMin:1;
+  return {buys1m,sells1m,buys5m,sells5m,buyVolume5mUsd,sellVolume5mUsd,volume1mUsd:buyVolume1mUsd,volume5mUsd:buyVolume5mUsd+sellVolume5mUsd,uniqueBuyers1m:buyers1m.size,uniqueBuyers5m:buyers5m.size,uniqueSellers5m:sellers5m.size,volumeAcceleration1m};
+}
+
+// Real fallback when Birdeye isn't configured: no liquidity/holder data available (kept honestly
+// at 0/null, never guessed), but price and buy/sell flow are genuine on-chain data already being
+// collected, so Global Brain still has something real to score instead of nothing at all.
+async function basicSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;priceImpactPct:number}){
+  const m=await chainFlowMetrics(mint);
+  const observedAt=new Date();
+  const snap=await db.memeMarketSnapshot.create({data:{
+    chain:"SOLANA",mint,priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd:0,ageMinutes:1440,
+    volume1mUsd:m.volume1mUsd,volume5mUsd:m.volume5mUsd,volume15mUsd:m.volume5mUsd,
+    volumeAcceleration1m:m.volumeAcceleration1m,volumeAcceleration5m:1,
+    buys1m:m.buys1m,sells1m:m.sells1m,buys5m:m.buys5m,sells5m:m.sells5m,
+    buyVolume5mUsd:m.buyVolume5mUsd,sellVolume5mUsd:m.sellVolume5mUsd,
+    uniqueBuyers1m:m.uniqueBuyers1m,uniqueBuyers5m:m.uniqueBuyers5m,uniqueSellers5m:m.uniqueSellers5m,
+    source:"JUPITER+CHAIN_FLOW",provenance:{jupiter:{priceImpactPct:j.priceImpactPct},birdeye:null} as any,observedAt
+  }});
+  await redis.set(`meme:SOLANA:${mint}`,JSON.stringify(snap),"EX",45);
+  return snap;
+}
+
 async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;priceImpactPct:number}){
   if(!birdeye)return null;
   const [m,t,h,l]=await Promise.all([
@@ -80,8 +114,10 @@ async function updateMint(mint:string){
     const observedAt=new Date();
     let liquidityUsd:number|undefined;
     try{
-      const rich=await richSnapshot(mint,j);liquidityUsd=rich?.liquidityUsd;
-    }catch(e){enrichmentErrors++;console.error("[market-worker] enrichment",mint,e)}
+      const rich=await richSnapshot(mint,j);
+      if(rich)liquidityUsd=rich.liquidityUsd;
+      else await basicSnapshot(mint,j);
+    }catch(e){enrichmentErrors++;console.error("[market-worker] enrichment",mint,e);await basicSnapshot(mint,j).catch(()=>{})}
     await db.marketPrice.create({data:{chain:"SOLANA",mint,priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:birdeye?"JUPITER_EXECUTABLE+BIRDEYE":"JUPITER_EXECUTABLE_QUOTE",observedAt}});
     await redis.set(`price:SOLANA:${mint}`,JSON.stringify({priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt:observedAt.toISOString()}),"EX",90);
     updates++;
