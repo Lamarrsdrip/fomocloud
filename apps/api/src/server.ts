@@ -14,6 +14,8 @@ import { CopySettingsSchema } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson } from "@memecloud/config";
 import { sendEmail, sendPush, ensureVapid, publicPushKey } from "@memecloud/notifications";
 import { PrivySolanaSigner } from "@memecloud/providers";
+import { JupiterExecution } from "@memecloud/execution";
+import { Connection, PublicKey } from "@solana/web3.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
@@ -651,6 +653,55 @@ app.get("/v1/me/positions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   res.json({positions});
 }));
 
+const USDC_SOL="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+async function manualTradeTrader(){
+  const handle="memecloud-manual-trade";
+  const existing=await db.trader.findUnique({where:{handle}});
+  if(existing) return existing;
+  return db.trader.create({data:{handle,displayName:"Manual trade",bio:"Trades a user places directly from Discover.",category:"MANUAL",verification:"VERIFIED",kind:"PLATFORM",enabled:true,trackingStatus:"TRACKING"}});
+}
+app.post("/v1/me/trade/manual", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const chain=String(req.body?.chain??"SOLANA");
+  const mint=String(req.body?.mint??"");
+  const amountUsd=Number(req.body?.amountUsd??0);
+  if(!mint) return res.status(400).json({error:"MINT_REQUIRED"});
+  if(!Number.isFinite(amountUsd)||amountUsd<=0) return res.status(400).json({error:"INVALID_AMOUNT"});
+  if(chain!=="SOLANA") return res.status(409).json({error:"EXECUTION_ADAPTER_NOT_CONFIGURED",message:"Manual buying only has a verified route on Solana right now."});
+  const allocation=await db.tradingCashAllocation.findFirst({where:{userId:req.user.sub,chain:"SOLANA"}});
+  const available=allocation?.availableUsd??0;
+  if(amountUsd>available) return res.status(400).json({error:"INSUFFICIENT_BALANCE",message:`Only $${available.toFixed(2)} is available on Solana.`});
+  const marketCfg=await getConfig<any>("marketData");
+  const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
+  if(!rpc) return res.status(409).json({error:"SOLANA_RPC_REQUIRED",message:"No Solana RPC is configured yet."});
+  const execCfg=await getConfig<any>("execution");
+  const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+  const amountRaw=String(Math.round(amountUsd*1_000_000));
+  try{
+    const quote=await jupiter.quote({inputMint:USDC_SOL,outputMint:mint,amountRaw,slippageBps:300});
+    const conn=new Connection(rpc,"confirmed");
+    const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
+    const decimals=supply.value.decimals;
+    const tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
+    if(!Number.isFinite(tokenAmount)||tokenAmount<=0) throw Object.assign(new Error("A genuine executable quote could not be verified."),{code:"INVALID_EXECUTABLE_QUOTE"});
+    const executablePriceUsd=amountUsd/tokenAmount;
+    const reverse=await jupiter.quote({inputMint:mint,outputMint:USDC_SOL,amountRaw:quote.outAmount,slippageBps:300}).catch(()=>null);
+    if(!reverse) return res.status(409).json({error:"NO_EXECUTABLE_SELL_ROUTE",message:"MemeCloud could not verify a route back to USDC for this token, so no buy was placed."});
+    const trader=await manualTradeTrader();
+    const now=new Date();
+    const key=`manual:${req.user.sub}:${mint}:${now.getTime()}`;
+    const signal=await db.signal.create({data:{idempotencyKey:key,chain:"SOLANA",traderId:trader.id,sourceWallet:"MANUAL_USER_TRADE",sourceTx:key,action:"BUY",inputMint:USDC_SOL,outputMint:mint,inputRaw:amountRaw,outputRaw:quote.outAmount,sourcePriceUsd:executablePriceUsd,sourcePriceMethod:"MANUAL_EXECUTABLE_QUOTE",observedAt:now,status:"COMPLETED"}});
+    const decision=await db.copyDecision.create({data:{signalId:signal.id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual buy from Discover."}});
+    const [order,position]=await db.$transaction([
+      db.order.create({data:{idempotencyKey:key,decisionId:decision.id,userId:req.user.sub,chain:"SOLANA",mode:"SIMULATION",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:now,venue:"JUPITER_QUOTE",quoteJson:{simulation:true,realQuote:true,manual:true,priceImpactPct:quote.priceImpactPct} as any}}),
+      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsd:amountUsd,avgEntryPriceUsd:executablePriceUsd,currentPriceUsd:executablePriceUsd,peakPriceUsd:executablePriceUsd,takeProfitPct:200,status:"OPEN",lastMarkedAt:now}})
+    ]);
+    await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual buy placed",body:`$${amountUsd.toFixed(2)} simulation buy from a real executable quote. No live funds moved.`,data:{orderId:order.id,positionId:position.id,mint} as any}});
+    await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd,mode:"SIMULATION"});
+    res.status(201).json({ok:true,order,position});
+  }catch(e:any){
+    res.status(409).json({error:e?.code||"QUOTE_UNAVAILABLE",message:e?.message||"A genuine executable quote could not be verified, so MemeCloud did not fabricate a fill."});
+  }
+}));
 app.get("/v1/me/trades", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const orders=await db.order.findMany({
     where:{userId:req.user.sub},
@@ -1151,6 +1202,16 @@ app.get("/v1/brain/feed", auth, asyncRoute(async (_req,res) => {
     orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:120
   });
   res.json({watching:true,opportunities});
+}));
+app.get("/v1/brain/token/:chain/:mint", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const chain=routeParam(req.params.chain) as Chain;
+  const mint=routeParam(req.params.mint);
+  const [opportunity,flows,catalyst]=await Promise.all([
+    db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain,mint}}}),
+    db.chainFlowObservation.findMany({where:{chain,mint},orderBy:{observedAt:"desc"},take:40}),
+    db.catalystEvent.findFirst({where:{chain,mint},orderBy:{announcedAt:"desc"}})
+  ]);
+  res.json({opportunity,flows,catalyst});
 }));
 app.get("/v1/admin/brain", requireAdmin, asyncRoute(async (_req,res) => {
   const [opportunities,flows,outcomes]=await Promise.all([

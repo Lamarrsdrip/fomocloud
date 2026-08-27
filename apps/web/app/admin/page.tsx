@@ -9,10 +9,12 @@ const sections=[
 ] as const;
 const navGroups=[
  ["OVERVIEW",["overview"]],
- ["INTELLIGENCE",["brain"]],
- ["PEOPLE",["users","traders"]],
- ["ACTIVITY",["signals","trades"]],
- ["PLATFORM",["config","broadcasts","audit","health"]]
+ ["GLOBAL BRAIN",["brain"]],
+ ["DISCOVERY",["traders"]],
+ ["TRADING",["signals","trades"]],
+ ["USERS",["users"]],
+ ["CONFIGURATION",["config"]],
+ ["SYSTEM",["broadcasts","audit","health"]]
 ] as const;
 
 export default function Admin(){

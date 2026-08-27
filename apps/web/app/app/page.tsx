@@ -3,13 +3,13 @@ import {useEffect,useMemo,useState} from "react";
 import {
   Home,Users,Activity,WalletCards,UserRound,Bell,Power,Plus,Search,Settings2,
   ShieldCheck,LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
-  TrendingUp,Flame,Sparkles,CheckCheck
+  TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine
 } from "lucide-react";
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 
-type View="home"|"discover"|"traders"|"community"|"activity"|"positions"|"profile";
-const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["community","Copy",Copy],["activity","Activity",Activity],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
-const mobileNav=nav.filter(([id])=>id!=="activity");
+type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"activity";
+const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+const mobileNav=nav;
 
 function initialView():View{
   if(typeof window==="undefined") return "home";
@@ -40,6 +40,7 @@ export default function AppPage(){
   const[notifications,setNotifications]=useState<any[]>([]);
   const[customOpen,setCustomOpen]=useState(false);
   const[brain,setBrain]=useState<any[]>([]);
+  const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
   async function load(){
@@ -102,21 +103,24 @@ export default function AppPage(){
       </aside>
 
       <section className="app-main">
+        {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="traders"?"Traders":view==="community"?"Copy":view==="positions"?"Portfolio":view==="profile"?"Account":view[0].toUpperCase()+view.slice(1)}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
-            <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Copy {autoOn?"On":"Off"}</button>
+            <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {view==="home"&&<HomeView d={dashboard} activity={activity} follows={follows} brain={brain} setView={setView}/>}
-        {view==="discover"&&<DiscoverView brain={brain} setView={setView}/>}
+        {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} setView={setView} openToken={setSelectedMint}/>}
+        {view==="discover"&&<DiscoverView brain={brain} setView={setView} openToken={setSelectedMint}/>}
+        {view==="trade"&&<TradeView settings={settings} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
-        {view==="positions"&&<PositionsView positions={positions}/>}
-        {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut}/>}
+        {view==="positions"&&<PositionsView positions={positions} d={dashboard}/>}
+        {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView}/>}
+        </>}
       </section>
     </div>
     <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
@@ -136,41 +140,38 @@ function PerformanceChart({snapshots}:{snapshots:any[]}){
 }
 function PnlSvg({vals}:{vals:number[]}){const min=Math.min(...vals),max=Math.max(...vals),span=Math.max(1e-9,max-min);const pts=vals.map((v,i)=>`${(i/Math.max(1,vals.length-1))*100},${94-((v-min)/span)*78}`).join(" ");return <div className="pnl-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Account value history"><polyline points={pts}/></svg></div>}
 
-function HomeView({d,activity,follows,brain,setView}:{d:any;activity:any;follows:any[];brain:any[];setView:(v:View)=>void}){
- const s=d?.summary||{};const sim=d?.simulation||{};
+function feedLine(o:any){
+ const whales=whaleCount(o);
+ if(o.state==="MONEY_RUSH")return {emoji:"🐋",text:`${whales||o.buyers60s||0} wallets bought ${o.symbol||"a token"}`,sub:`${money(o.inflow60sUsd||0)} entered in 60s`};
+ if((o.volumeAcceleration1m||0)>=1.5)return {emoji:"🚀",text:`Momentum increasing on ${o.symbol||"a token"}`,sub:`Volume up ${(o.volumeAcceleration1m*100-100).toFixed(0)}%`};
+ if(o.action==="BUY_NOW")return {emoji:"🧠",text:`MemeCloud is watching ${o.symbol||"a token"}`,sub:o.reasons?.[0]||"Strong setup detected"};
+ return {emoji:"👀",text:`Watching ${o.symbol||o.name||"a new token"}`,sub:`${o.chain} · score ${Math.round(o.score)}`};
+}
+function eventLine(e:any){
+ const map:Record<string,string>={TRADE_COPIED:"💰",PROFIT_TAKEN:"💰",POSITION_CLOSED:"✅",TRADE_SKIPPED:"⏸️",WAIT_PULLBACK:"⏳",GLOBAL_BRAIN:"🧠"};
+ return {emoji:map[e.type]||"📣",text:e.title,sub:e.body,at:e.createdAt};
+}
+function HomeView({d,activity,brain,setView,openToken}:{d:any;activity:any;brain:any[];setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
+ const s=d?.summary||{};
+ const feed=useMemo(()=>{
+  const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain}));
+  const eventItems=(activity?.events||[]).slice(0,8).map((e:any)=>eventLine(e));
+  return [...brainItems,...eventItems].sort((a,b)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,10);
+ },[brain,activity]);
  return <>
-  <section className="user-welcome"><div><span>YOUR MONEY</span><h2>{money(s.tradingCashUsd)}</h2><p>{s.tradingCashUsd?"Ready to use across your connected wallet.":"Connect a wallet to get started."}</p></div><div className="user-quick-actions"><button onClick={()=>setView("profile")}><WalletCards size={16}/><span>Connect wallet</span></button><button onClick={()=>setView("traders")}><Users size={16}/><span>Find traders</span></button><button onClick={()=>setView("positions")}><Activity size={16}/><span>Portfolio</span></button></div></section>
-  <div className="app-grid-4">
-    <div className="stat-card"><span>Available</span><b>{money(s.tradingCashUsd)}</b><small>{s.tradingCashUsd?"Connected balance":"No wallet balance yet"}</small></div>
-    <div className="stat-card"><span>Profit &amp; loss</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b><small>Realized + unrealized live positions</small></div>
-    <div className="stat-card"><span>Open positions</span><b>{s.openPositions??0}</b><small>{sim.openPositions?`${sim.openPositions} simulation position(s) separate`:"Live positions only"}</small></div>
-    <div className="stat-card"><span>Copied traders</span><b>{s.copiedTraders??0}</b><small>{s.winRate==null?"Win rate appears after closed live trades":`${s.winRate.toFixed(1)}% live win rate`}</small></div>
-  </div>
-  {String(d?.executionMode||"").toLowerCase()==="simulation"&&<section className="app-card simulation-summary"><div className="card-title"><div><span>SIMULATION WORKSPACE</span><h2>Test decisions without moving live funds</h2></div><span className="sim-badge">SIMULATION</span></div><div className="simulation-stats"><div><span>Open simulated positions</span><b>{sim.openPositions??0}</b></div><div><span>Simulated realized P&amp;L</span><b className={(sim.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.realizedPnlUsd)}</b></div><div><span>Simulated unrealized P&amp;L</span><b className={(sim.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(sim.unrealizedPnlUsd)}</b></div></div><p>Simulation uses the real source-signal and market-data pipeline where configured, but it never presents these numbers as live account money.</p></section>}
-  <section className="app-card brain-live"><div className="card-title"><div><span>GLOBAL BRAIN · LIVE</span><h2>MemeCloud is watching money move</h2></div><span className="status-badge">Scanning</span></div>{brain.length?<div className="list">{brain.slice(0,7).map((x:any)=><div className="list-row brain-row" key={x.id}><div><b>{x.symbol||x.name||"New token"} · {x.chain}</b><small>{x.buyers10s||0} buyers / ~10s · {(x.whaleBuyers60s||0)+(x.knownWhaleBuyers60s||0)} whale signals · {money(x.inflow60sUsd||0)} / 60s</small><small className="contract-line">{x.mint}</small></div><span className={`status-badge ${x.action==="BUY_NOW"?"":"watch"}`}>{Math.round(x.score)} · {String(x.action).replaceAll("_"," ")}</span></div>)}</div>:<div className="pnl-empty">The Global Brain is scanning chain flow. New opportunities appear here as real on-chain evidence arrives.</div>}</section>
-  <PerformanceChart snapshots={d?.snapshots||[]} />
-  <section className="app-card cash-breakdown"><div className="card-title"><div><span>YOUR WALLET</span><h2>Available funds</h2></div></div>
-    {d?.allocations?.length?<div className="chain-cash-grid">{d.allocations.map((a:any)=><div className="chain-cash" key={a.id}><span>{a.chain}</span><b>{money(a.availableUsd+a.inTradesUsd)}</b><small>{money(a.availableUsd)} available · {money(a.inTradesUsd)} in live trades</small><em>{a.lastSyncedAt?`Synced ${timeAgo(a.lastSyncedAt)}`:"Awaiting wallet sync"}</em></div>)}</div>:<div className="pnl-empty">Connect your wallet to see available USDC here.</div>}
+  <section className="home-hero">
+   <div><span>TRADING BALANCE</span><h2>{money(s.tradingCashUsd)}</h2></div>
+   <div className="home-hero-pnl"><span>P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{(s.netPnlUsd||0)>=0?"+":""}{money(s.netPnlUsd)}</b></div>
   </section>
-  <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>RECENT</span><h2>Your activity</h2></div><button onClick={()=>setView("activity")}>See all <ChevronRight size={12}/></button></div>
-      {activity?.events?.length?<div className="list">{activity.events.slice(0,6).map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.status||e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="No activity yet" body="Choose traders and enable Auto Copy or Watch mode. Your real account activity will appear here." action="Choose traders" onClick={()=>setView("traders")}/>}
-    </section>
-    <section className="app-card"><div className="card-title"><div><span>COPY</span><h2>Your traders</h2></div></div>
-      {follows.length?<div className="list">{follows.slice(0,5).map((f:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={f.id}><div><b>{f.trader.displayName}</b><small>@{f.trader.handle}</small></div><span className={`status-badge ${f.mode==="WATCH_ONLY"?"watch":f.mode==="FOLLOW_ONLY"?"follow":""}`}>{f.mode.replaceAll("_"," ")}</span></div>)}</div>:<Empty icon={Users} title="Your list is empty" body="Follow platform traders or add a public wallet you already trust." action="Find traders" onClick={()=>setView("traders")}/>}
-    </section>
+  <div className="quick-actions-row">
+   <button onClick={()=>setView("profile")}><ArrowDownToLine size={18}/><span>Fund</span></button>
+   <button onClick={()=>setView("trade")}><Zap size={18}/><span>Trade</span></button>
+   <button onClick={()=>setView("discover")}><TrendingUp size={18}/><span>Discover</span></button>
+   <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Portfolio</span></button>
   </div>
-  <div className="app-two">
-    <section className="app-card"><div className="card-title"><div><span>OPEN POSITIONS</span><h2>Your positions</h2></div><button onClick={()=>setView("positions")}>Open positions <ChevronRight size={12}/></button></div>
-      {d?.positions?.length?<div className="list">{d.positions.slice(0,6).map((p:any)=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title="No positions yet" body="Your account starts clean. Positions appear only after a genuine decision and execution/simulation event."/>}
-    </section>
-    <section className="app-card"><div className="card-title"><div><span>GET STARTED</span><h2>Quick check</h2></div></div>
-      <div className="list">
-        <StatusLine label="Wallet funds" value={s.tradingCashUsd>0?"Ready":"Connect wallet"} ok={s.tradingCashUsd>0}/>
-        <StatusLine label="Auto Copy" value={d?.settings?.autoCopyEnabled?"On":"Off"} ok={Boolean(d?.settings?.autoCopyEnabled)}/>
-      </div>
-    </section>
-  </div>
+  <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">Live</span></div>
+   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">MemeCloud is scanning the chain. Real activity appears here as evidence arrives — nothing is invented while it's quiet.</div>}
+  </section>
  </>;
 }
 function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){return <div className="list-row" style={{gridTemplateColumns:"1fr auto"}}><div><b>{label}</b></div><span className={`status-badge ${ok?"":"watch"}`}>{value}</span></div>}
@@ -179,7 +180,8 @@ const discoverFilters=[["trending","Trending now",TrendingUp],["whales","Whales 
 function qualityLabel(score:number){return score>=76?"Strong setup":score>=56?"Building evidence":score>=40?"Early — thin evidence":"Just watching"}
 function whaleCount(o:any){return (o.whaleBuyers60s||0)+(o.knownWhaleBuyers60s||0)}
 function copyText(t:string){try{navigator.clipboard.writeText(t)}catch{}}
-function DiscoverView({brain,setView}:{brain:any[];setView:(v:View)=>void}){
+function TokenAvatar({symbol,size=38}:{symbol?:string;size?:number}){return <div className="token-avatar" style={{width:size,height:size,fontSize:size*0.4}}>{(symbol||"?").slice(0,2).toUpperCase()}</div>}
+function DiscoverView({brain,setView,openToken}:{brain:any[];setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
  const[filter,setFilter]=useState<typeof discoverFilters[number][0]>("trending");
  const rows=useMemo(()=>{
   const list=[...brain];
@@ -189,20 +191,70 @@ function DiscoverView({brain,setView}:{brain:any[];setView:(v:View)=>void}){
   return list.sort((a,b)=>(b.volumeAcceleration1m||0)-(a.volumeAcceleration1m||0));
  },[brain,filter]);
  return <>
-  <section className="app-card"><div className="card-title"><div><span>GLOBAL BRAIN</span><h2>What MemeCloud is watching</h2></div></div>
-   <div className="config-tabs">{discoverFilters.map(([id,label,Icon])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}><Icon size={13} style={{verticalAlign:"middle",marginRight:5}}/>{label}</button>)}</div>
+  <div className="config-tabs discover-tabs">{discoverFilters.map(([id,label,Icon])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}><Icon size={13} style={{verticalAlign:"middle",marginRight:5}}/>{label}</button>)}</div>
+  {rows.length?<div className="token-list">{rows.map(o=><div className="token-row" key={o.id} onClick={()=>openToken({chain:o.chain,mint:o.mint})}>
+    <TokenAvatar symbol={o.symbol||o.name}/>
+    <div className="token-row-main"><b>{o.symbol||o.name||"New token"}</b><small>{o.chain} · {money(o.marketCapUsd||0)} MC · {money(o.inflow60sUsd||0)} / 60s</small></div>
+    <div className="token-row-side"><span className={`status-badge ${o.action==="BUY_NOW"?"":"watch"}`}>{whaleCount(o)>0?`🐋 ${whaleCount(o)}`:qualityLabel(o.score)}</span><small>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x momentum`:"Watching"}</small></div>
+   </div>)}</div>:<Empty icon={TrendingUp} title="Nothing here yet" body="MemeCloud is scanning chain flow. Real opportunities appear here as on-chain evidence arrives — nothing is invented while it's quiet." action="Browse traders instead" onClick={()=>setView("traders")}/>}
+ </>
+}
+
+function TokenDetail({sel,opp,close,onTraded}:{sel:{chain:string;mint:string};opp:any;close:()=>void;onTraded:()=>void}){
+ const[data,setData]=useState<any>(null);
+ const[amount,setAmount]=useState(25);
+ const[busy,setBusy]=useState(false);
+ const[msg,setMsg]=useState("");
+ const o=data?.opportunity||opp;
+ useEffect(()=>{let live=true;apiFetch<any>(`/v1/brain/token/${sel.chain}/${sel.mint}`).then(x=>{if(live)setData(x)}).catch(()=>{});return()=>{live=false}},[sel.chain,sel.mint]);
+ async function buy(){
+  setBusy(true);setMsg("");
+  try{const r=await apiFetch<any>("/v1/me/trade/manual",{method:"POST",body:JSON.stringify({chain:sel.chain,mint:sel.mint,amountUsd:amount})});setMsg(`Bought ${money(amount)} in simulation at ${money(r.position.avgEntryPriceUsd)}/token.`);onTraded()}
+  catch(e){setMsg(plainError(e))}finally{setBusy(false)}
+ }
+ return <div className="token-detail">
+  <button className="soft-action" onClick={close}><ArrowLeft size={13}/> Back</button>
+  <div className="token-detail-head"><TokenAvatar symbol={o?.symbol||o?.name} size={48}/><div><h2>{o?.symbol||o?.name||"Token"}</h2><small>{sel.chain}</small></div></div>
+  <div className="review-grid">
+   <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
+   <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Unknown"}</b></div>
+   <div><span>Money in last 60s</span><b>{money(o?.inflow60sUsd||0)}</b></div>
+   <div><span>Whales buying</span><b>{o?whaleCount(o):0}</b></div>
+  </div>
+  {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud likes this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
+  <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade — simulation</h2></div></div>
+   <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
+   <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={buy}>{busy?"Buying…":`Buy ${money(amount)}`}</button>
+   {msg&&<div className="notice" style={{marginTop:10}}>{msg}</div>}
+   <div className="notice" style={{marginTop:10}}>Uses a real executable quote. Runs in simulation until a reviewed live signer is configured — no live funds move.</div>
   </section>
-  {rows.length?<div className="discover-grid">{rows.map(o=><div className="app-card discover-card" key={o.id}>
-    <div className="card-title"><div><span>{o.chain}</span><h2>{o.symbol||o.name||"New token"}</h2></div><span className={`status-badge ${o.action==="BUY_NOW"?"":"watch"}`}>{qualityLabel(o.score)}</span></div>
-    <div className="review-grid">
-     <div><span>Market cap</span><b>{o.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
-     <div><span>Money in last 60s</span><b>{money(o.inflow60sUsd||0)}</b></div>
-     <div><span>Whales buying</span><b>{whaleCount(o)}</b></div>
-     <div><span>Momentum</span><b>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"—"}</b></div>
-    </div>
-    {!!(o.reasons&&o.reasons.length)&&<div className="notice"><b>Why MemeCloud likes it: </b>{o.reasons.join(" · ")}</div>}
-    <div className="list-row" style={{gridTemplateColumns:"1fr auto",marginTop:8}}><div><small className="contract-line">{o.mint}</small></div><button className="soft-action" onClick={()=>copyText(o.mint)}><Copy size={12}/> Copy</button></div>
-   </div>)}</div>:<Empty icon={TrendingUp} title="Nothing here yet" body="The Global Brain is scanning chain flow. Real opportunities appear here as on-chain evidence arrives — nothing is invented while it's quiet." action="Find traders instead" onClick={()=>setView("traders")}/>}
+  <section className="app-card"><div className="card-title"><div><span>ON-CHAIN</span><h2>Recent wallet activity</h2></div></div>
+   {data?.flows?.length?<div className="list">{data.flows.slice(0,10).map((f:any)=><div className="list-row" key={f.id}><div><b>{f.side} · {f.walletTier||"FLOW"}</b><small>{f.walletAddress.slice(0,6)}…{f.walletAddress.slice(-4)}</small></div><span>{money(f.amountUsd||0)}</span><span>{timeAgo(f.observedAt)}</span></div>)}</div>:<div className="pnl-empty">No recorded wallet activity yet for this token.</div>}
+  </section>
+  <div className="list-row" style={{gridTemplateColumns:"1fr auto"}}><div><small className="contract-line">{sel.mint}</small></div><button className="soft-action" onClick={()=>copyText(sel.mint)}><Copy size={12}/> Copy contract</button></div>
+ </div>
+}
+
+function TradeView({settings,patchTrading,setView}:{settings:any;patchTrading:(b:any)=>Promise<void>;setView:(v:View)=>void}){
+ const trading=settings?.trading||{};
+ return <>
+  <section className="app-card"><div className="card-title"><div><span>AUTO TRADE</span><h2>Let MemeCloud trade for you</h2></div><button className={`switch ${trading.globalBrainEnabled!==false&&trading.autoCopyEnabled?"on":""}`} onClick={()=>patchTrading({autoCopyEnabled:!trading.autoCopyEnabled,globalBrainEnabled:true})}><i/></button></div>
+   <label className="field"><span>Use this % of my available trading cash per entry</span><input type="number" min="0.01" max="100" step="0.1" value={trading.percentBalance??2} onChange={e=>patchTrading({sizingMode:"PERCENT",percentBalance:Number(e.target.value)})}/></label>
+   <div className="switch-row"><div><b>Recover original capital</b><small>Sell only enough to recover your original money, then let the rest ride.</small></div><button className={`switch ${trading.capitalRecoveryEnabled!==false?"on":""}`} onClick={()=>patchTrading({capitalRecoveryEnabled:trading.capitalRecoveryEnabled===false})}><i/></button></div>
+   {trading.capitalRecoveryEnabled!==false&&<label className="field"><span>Recover capital at</span><input type="number" min="1.01" step="0.1" value={trading.capitalRecoveryMultiple??3} onChange={e=>patchTrading({capitalRecoveryMultiple:Number(e.target.value)})}/></label>}
+   <div className="switch-row"><div><b>Runner mode</b><small>Let exceptional memes keep running while evidence stays strong.</small></div><button className={`switch ${trading.runnerMode?"on":""}`} onClick={()=>patchTrading({runnerMode:!trading.runnerMode})}><i/></button></div>
+  </section>
+  <section className="app-card"><div className="card-title"><div><span>CHAINS</span><h2>Where MemeCloud can trade</h2></div></div>
+   <div className="chain-config">{["SOLANA","BNB","ETHEREUM"].map(c=><label key={c} className="check-line"><input type="checkbox" checked={(trading.allowedChains||["SOLANA"]).includes(c)} onChange={()=>{const cur=trading.allowedChains||["SOLANA"];patchTrading({allowedChains:cur.includes(c)?cur.filter((x:string)=>x!==c):[...cur,c]})}}/><span>{c==="SOLANA"?"Solana":c==="BNB"?"BNB":"Ethereum"}</span></label>)}</div>
+  </section>
+  <section className="app-card"><div className="card-title"><div><span>MANUAL</span><h2>Buy a specific token</h2></div></div>
+   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 10px"}}>Pick a token from Discover to buy an exact amount right now.</p>
+   <button className="action-primary" onClick={()=>setView("discover")}><TrendingUp size={15}/> Browse Discover</button>
+  </section>
+  <section className="app-card"><div className="card-title"><div><span>ADVANCED</span><h2>Copy specific traders</h2></div></div>
+   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 10px"}}>Follow individual wallets instead of — or alongside — the Global Brain.</p>
+   <button className="soft-action" onClick={()=>setView("community")}>Manage copy trading</button>
+  </section>
  </>
 }
 
@@ -315,10 +367,20 @@ function ActivityView({activity,trades}:{activity:any;trades:any[]}){
 }
 
 function positionMath(p:any){try{const original=BigInt(p.entryTokenRaw||"0"),remaining=BigInt(p.remainingTokenRaw||"0");const fraction=original>BigInt(0)?Number((remaining*BigInt(1000000))/original)/1_000_000:0;const remainingCost=Number(p.costUsd||0)*fraction;const currentValue=remainingCost+Number(p.unrealizedPnlUsd||0);const pnlPct=remainingCost>0?Number(p.unrealizedPnlUsd||0)/remainingCost*100:0;return{fraction,remainingCost,currentValue,pnlPct}}catch{return{fraction:0,remainingCost:0,currentValue:Number(p.unrealizedPnlUsd||0),pnlPct:0}}}
-function PositionRow({p}:{p:any}){const m=positionMath(p);return <div className="position-row"><div className="position-main"><div className="position-token"><b>{p.mint?.slice(0,8)}…</b><span className="sim-badge">{p.mode}</span><span className="status-badge">{String(p.status).replaceAll("_"," ")}</span></div><small>{p.sourceTrader?.displayName||"Source trader"} · {p.chain} · opened {timeAgo(p.openedAt)}</small></div><div><span>Invested remaining</span><b>{money(m.remainingCost)}</b></div><div><span>Current value</span><b>{p.currentPriceUsd?money(m.currentValue):"Awaiting mark"}</b></div><div><span>Unrealized</span><b className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)} <small>({pct(m.pnlPct)})</small></b></div><div><span>Realized</span><b className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</b></div><div><span>Profit taken</span><b>{money(p.profitTakenUsd)}</b></div></div>}
-function PositionsView({positions}:{positions:any[]}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");return <section className="app-card"><div className="card-title"><div><span>PERSONAL POSITIONS</span><h2>Open &amp; closed positions</h2></div><div className="performance-tabs">{["ALL","OPEN","CLOSED"].map(x=><button key={x} className={filter===x?"active":""} onClick={()=>setFilter(x)}>{x}</button>)}</div></div>{shown.length?<div className="positions-list">{shown.map(p=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title={positions.length?"No positions in this filter":"No positions yet"} body={positions.length?"Choose another filter.":"There is no shared demo portfolio here. Your positions appear only after your own account gets a real decision."}/>}</section>}
+function PositionRow({p}:{p:any}){
+ const m=positionMath(p);
+ const recovered=(p.profitTakenUsd||0)>=(p.costUsd||0)&&(p.costUsd||0)>0;
+ return <div className="position-row"><div className="position-main"><div className="position-token"><b>{p.mint?.slice(0,8)}…</b><span className="sim-badge">{p.mode}</span><span className="status-badge">{String(p.status).replaceAll("_"," ")}</span></div><small>{p.sourceTrader?.displayName||"Source trader"} · {p.chain} · opened {timeAgo(p.openedAt)}</small>{p.status!=="CLOSED"&&<small className={recovered?"positive":""}>{recovered?"✓ Principal recovered · runner active":"Principal not recovered"}</small>}</div><div><span>Invested remaining</span><b>{money(m.remainingCost)}</b></div><div><span>Current value</span><b>{p.currentPriceUsd?money(m.currentValue):"Awaiting mark"}</b></div><div><span>Unrealized</span><b className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)} <small>({pct(m.pnlPct)})</small></b></div><div><span>Realized</span><b className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</b></div><div><span>Profit taken</span><b>{money(p.profitTakenUsd)}</b></div></div>}
+function PositionsView({positions,d}:{positions:any[];d:any}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");const s=d?.summary||{};return <>
+ <div className="app-grid-4" style={{marginBottom:10}}>
+  <div className="stat-card"><span>Portfolio value</span><b>{money((s.tradingCashUsd||0))}</b></div>
+  <div className="stat-card"><span>Total P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b></div>
+ </div>
+ <PerformanceChart snapshots={d?.snapshots||[]}/>
+ <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>PERSONAL POSITIONS</span><h2>Open &amp; closed positions</h2></div><div className="performance-tabs">{["ALL","OPEN","CLOSED"].map(x=><button key={x} className={filter===x?"active":""} onClick={()=>setFilter(x)}>{x}</button>)}</div></div>{shown.length?<div className="positions-list">{shown.map(p=><PositionRow p={p} key={p.id}/>)}</div>:<Empty icon={WalletCards} title={positions.length?"No positions in this filter":"No positions yet"} body={positions.length?"Choose another filter.":"There is no shared demo portfolio here. Your positions appear only after your own account gets a real decision."}/>}</section>
+</>}
 
-function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reload,signOut}:{me:any;setMe:any;settings:any;notifications:any[];sessions:any[];setSettings:any;reload:()=>Promise<void>;signOut:()=>void}){
+function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reload,signOut,setView}:{me:any;setMe:any;settings:any;notifications:any[];sessions:any[];setSettings:any;reload:()=>Promise<void>;signOut:()=>void;setView:(v:View)=>void}){
  const[err,setErr]=useState(""); const[name,setName]=useState(me?.displayName||""); const[username,setUsername]=useState(me?.username||""); const[closeValue,setCloseValue]=useState("");
  const trading=settings?.trading||{}; const prefs=settings?.notifications||{};
  async function patchTrading(body:any){try{const r=await apiFetch("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setErr(plainError(e))}}
@@ -364,16 +426,9 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
     <div className="switch-row"><div><b>X account</b><small>{me?.linkedSocialAccounts?.find((x:any)=>x.provider==="X")?.username?`@${me.linkedSocialAccounts.find((x:any)=>x.provider==="X").username}`:"Optional"}</small></div><button className="soft-action" onClick={linkX}>Link X</button></div>
     {me?.role==="OWNER"&&<div className="switch-row"><div><b>Admin Command Center</b><small>Owner platform controls</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
    </section>
-   <section className="settings-block"><h3>Trading money</h3>
-    <label className="field"><span>Use this % of my available trading cash per entry</span><input type="number" min="0.01" max="100" step="0.1" value={trading.percentBalance??2} onChange={e=>patchTrading({sizingMode:"PERCENT",percentBalance:Number(e.target.value)})}/></label>
-    <div className="notice">MemeCloud uses the percentage you choose. It does not silently reduce your risk. Set optional limits below only if you personally want them.</div>
-    <label className="field"><span>Optional maximum per trade (0 = no cap)</span><input type="number" min="0" value={trading.maxAmountPerTradeUsd??0} onChange={e=>patchTrading({maxAmountPerTradeUsd:Number(e.target.value)})}/></label>
-    <label className="field"><span>Optional maximum total exposure (0 = no cap)</span><input type="number" min="0" value={trading.maxTotalExposureUsd??0} onChange={e=>patchTrading({maxTotalExposureUsd:Number(e.target.value)})}/></label>
-    <label className="field"><span>Optional open-position limit (0 = no limit)</span><input type="number" min="0" value={trading.maxConcurrentPositions??0} onChange={e=>patchTrading({maxConcurrentPositions:Number(e.target.value)})}/></label>
-    <div className="switch-row"><div><b>Global Brain entries</b><small>Let chain-wide money-flow opportunities trade even when no saved wallet started the move.</small></div><button className={`switch ${trading.globalBrainEnabled!==false?"on":""}`} onClick={()=>patchTrading({globalBrainEnabled:trading.globalBrainEnabled===false})}><i/></button></div>
-    <div className="switch-row"><div><b>Recover original capital</b><small>Default: when the position reaches 3×, sell only enough to recover the original money and leave the rest running.</small></div><button className={`switch ${trading.capitalRecoveryEnabled!==false?"on":""}`} onClick={()=>patchTrading({capitalRecoveryEnabled:trading.capitalRecoveryEnabled===false})}><i/></button></div>
-    {trading.capitalRecoveryEnabled!==false&&<label className="field"><span>Recover capital at</span><input type="number" min="1.01" step="0.1" value={trading.capitalRecoveryMultiple??3} onChange={e=>patchTrading({capitalRecoveryMultiple:Number(e.target.value)})}/></label>}
-    <div className="switch-row"><div><b>Runner mode</b><small>Let exceptional memes keep running while money, volume and holder evidence remain alive.</small></div><button className={`switch ${trading.runnerMode?"on":""}`} onClick={()=>patchTrading({runnerMode:!trading.runnerMode})}><i/></button></div>
+   <section className="settings-block"><h3>Trading settings</h3>
+    <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 12px"}}>Allocation, principal recovery and chains now live on the Trade tab.</p>
+    <button className="action-primary" style={{width:"100%",height:42,borderRadius:12}} onClick={()=>setView("trade")}><Zap size={15}/> Open Trade settings</button>
    </section>
    <section className="settings-block"><h3>Notifications</h3>
     <div className="switch-row"><div><b>Web Push</b><small>Register this browser/device</small></div><button className="soft-action" onClick={enablePush}>Enable Push</button></div>

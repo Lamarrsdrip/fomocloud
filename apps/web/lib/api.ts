@@ -50,6 +50,7 @@ export function pct(n:number|undefined|null){
   return `${Number(n)>=0?"+":""}${Number(n).toFixed(1)}%`;
 }
 export function plainError(e:any){
+  if(typeof e?.body?.message==="string"&&e.body.message) return e.body.message;
   const code=String(e?.body?.error??e?.message??"UNKNOWN");
   const map:Record<string,string>={
     INVALID_CREDENTIALS:"That email or password isn't correct.",
