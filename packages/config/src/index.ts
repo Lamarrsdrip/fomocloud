@@ -32,6 +32,14 @@ export function decryptJson<T=any>(ciphertext: string): T {
   return JSON.parse(plain.toString("utf8")) as T;
 }
 
+// Non-secret hint for a secret value: never reversible to the original, safe to send to the browser.
+export function maskHint(value: unknown): string {
+  const s = String(value ?? "");
+  if (!s) return "";
+  if (s.length <= 4) return "*".repeat(s.length);
+  return `****${s.slice(-4)}`;
+}
+
 export async function getConfig<T=any>(key: string): Promise<T | null> {
   const row = await db.appConfig.findUnique({ where: { key } });
   if (!row) return null;
@@ -39,28 +47,77 @@ export async function getConfig<T=any>(key: string): Promise<T | null> {
   return (row.valueJson ?? null) as T | null;
 }
 
-export async function setConfig(key: string, value: unknown, opts: {secret?:boolean; updatedBy?:string}={}) {
+export async function setConfig(
+  key: string,
+  value: unknown,
+  opts: { secret?: boolean; updatedBy?: string; secretHints?: Record<string, string>; restartPending?: boolean } = {}
+) {
   const isSecret = Boolean(opts.secret);
   return db.appConfig.upsert({
     where: { key },
     create: {
       key, isSecret, updatedBy: opts.updatedBy,
       valueJson: isSecret ? { configured: true } : value as any,
-      encryptedValue: isSecret ? encryptJson(value) : null
+      encryptedValue: isSecret ? encryptJson(value) : null,
+      secretHints: opts.secretHints ?? undefined,
+      restartPending: opts.restartPending ?? false
     },
     update: {
       isSecret, updatedBy: opts.updatedBy,
       valueJson: isSecret ? { configured: true } : value as any,
-      encryptedValue: isSecret ? encryptJson(value) : null
+      encryptedValue: isSecret ? encryptJson(value) : null,
+      secretHints: opts.secretHints ?? undefined,
+      ...(opts.restartPending !== undefined ? { restartPending: opts.restartPending } : {})
     }
   });
 }
 
-export function redactedConfig(row: {key:string;isSecret:boolean;valueJson:any;encryptedValue?:string|null;updatedAt:Date}) {
+// Clears the restart-pending flag once an admin confirms they restarted the consuming service.
+export async function ackRestart(key: string) {
+  return db.appConfig.update({ where: { key }, data: { restartPending: false } }).catch(() => null);
+}
+
+export type TestResult = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string };
+
+// Records real provider-test outcomes without touching the saved config value itself. Upserts
+// because a test can legitimately run (and fail, e.g. "no key saved yet") before any config for
+// this key was ever saved — there may be no row yet.
+export async function recordTestResults(key: string, results: Record<string, TestResult>) {
+  const row = await db.appConfig.findUnique({ where: { key } });
+  const merged = { ...(row?.testResults as any ?? {}), ...results };
+  return db.appConfig.upsert({
+    where: { key },
+    create: { key, isSecret: false, valueJson: null, testResults: merged },
+    update: { testResults: merged }
+  });
+}
+
+// secretFieldNames: only these fields (within an isSecret config) are stripped from the response —
+// the rest of that same config object (e.g. execution.jupiterBaseUrl, marketData.solanaRpc) is
+// genuinely non-secret and must round-trip to the admin UI in the clear, or every plain field in a
+// "secret" section would wrongly appear to reset on every reload.
+export function redactedConfig(row: {
+  key: string; isSecret: boolean; valueJson: any; encryptedValue?: string | null; updatedAt: Date;
+  secretHints?: any; testResults?: any; restartPending?: boolean;
+}, secretFieldNames: string[] = []) {
+  let value: any;
+  if (row.isSecret) {
+    if (row.encryptedValue) {
+      value = { ...decryptJson<any>(row.encryptedValue) };
+      for (const f of secretFieldNames) delete value[f];
+    } else {
+      value = {};
+    }
+  } else {
+    value = row.valueJson;
+  }
   return {
     key: row.key,
-    value: row.isSecret ? { configured: Boolean(row.encryptedValue) } : row.valueJson,
+    value,
     isSecret: row.isSecret,
-    updatedAt: row.updatedAt
+    updatedAt: row.updatedAt,
+    secretHints: row.secretHints ?? null,
+    testResults: row.testResults ?? null,
+    restartPending: Boolean(row.restartPending)
   };
 }

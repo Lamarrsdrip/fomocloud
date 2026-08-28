@@ -11,7 +11,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema } from "@memecloud/shared";
-import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson } from "@memecloud/config";
+import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordTestResults, ackRestart, type TestResult } from "@memecloud/config";
 import { sendEmail, sendPush, ensureVapid, publicPushKey } from "@memecloud/notifications";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { JupiterExecution } from "@memecloud/execution";
@@ -1299,9 +1299,29 @@ app.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) => {
 
 const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","discovery","brain"]);
 const secretConfigKeys=new Set(["push","email","execution","marketData","social","signer"]);
+// Every long-running worker (services/*) reads these once at process boot — a save here only takes
+// effect on the next restart. Stays true until the admin explicitly acknowledges the restart.
+const RESTART_REQUIRED_KEYS=new Set(["marketData","execution","chains","signer","discovery","risk","brain"]);
+// Only these fields within a secret config get a masked hint + "Replace/Remove" UX. Non-secret
+// fields inside the same section (e.g. execution.jupiterBaseUrl) are shown in plain text as-is.
+const SECRET_FIELDS:Record<string,string[]>={
+  execution:["jupiterApiKey","zeroXApiKey"],
+  signer:["privyAppSecret","privyAuthorizationPrivateKey"],
+  social:["xBearerToken","xOAuthClientSecret"],
+  marketData:["heliusApiKey","birdeyeApiKey"],
+  email:["pass"]
+};
+app.use("/v1/admin/config", (_req,res,next)=>{res.set("Cache-Control","no-store");next()});
+function sanitizeForClient(cfg:any){
+  // The auto-derived Helius RPC URL embeds the raw API key as a query param — even though
+  // heliusRpc itself isn't a listed secret field, this specific value must never reach the
+  // browser, or saving just a Helius key would leak it back out through a "plain" field.
+  if(cfg.key==="marketData" && cfg.value?.heliusRpcAutoManaged) cfg.value={...cfg.value,heliusRpc:""};
+  return cfg;
+}
 app.get("/v1/admin/config", requireAdmin, asyncRoute(async (_req,res) => {
   const rows=await db.appConfig.findMany({orderBy:{key:"asc"}});
-  res.json({config:rows.map(redactedConfig)});
+  res.json({config:rows.map(r=>sanitizeForClient(redactedConfig(r as any,SECRET_FIELDS[r.key]??[])))});
 }));
 app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const key=routeParam(req.params.key);
@@ -1309,19 +1329,53 @@ app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,
   if(!req.body || typeof req.body!=="object" || Array.isArray(req.body)) return res.status(400).json({error:"INVALID_CONFIG"});
   const secret=secretConfigKeys.has(key);
   let value:any=req.body;
+  let secretHints:Record<string,string>|undefined;
   // Secret forms intentionally send blanks for values the browser is not allowed to read back.
-  // Preserve existing encrypted fields unless the admin explicitly supplies a replacement.
+  // Preserve existing encrypted fields (and their hints) unless the admin explicitly supplies a
+  // replacement. A field is only cleared when the admin explicitly sends null for it (Remove key).
   if(secret){
     const current=await getConfig<any>(key)??{};
+    const existingRow=await db.appConfig.findUnique({where:{key}});
     value={...current};
+    secretHints={...(existingRow?.secretHints as any??{})};
+    const fields=SECRET_FIELDS[key]??[];
     for(const [field,incoming] of Object.entries(req.body)){
       if(incoming===undefined || incoming==="") continue;
-      if(incoming===null) delete value[field]; else value[field]=incoming;
+      if(incoming===null){
+        delete value[field];
+        if(fields.includes(field)) delete secretHints![field];
+      } else {
+        value[field]=incoming;
+        if(fields.includes(field)) secretHints![field]=maskHint(incoming);
+      }
+    }
+    // Helius: a saved API key must actually feed the real Solana RPC/scanning path (every worker
+    // already falls back to marketData.heliusRpc — see services/*), not sit unused. Auto-derive the
+    // Helius RPC URL from the key only when the admin hasn't set an explicit heliusRpc themselves —
+    // an explicit heliusRpc always wins and is never silently overwritten, and the dedicated
+    // solanaRpc primary is never touched here.
+    if(key==="marketData"){
+      const explicitHeliusRpc=req.body.heliusRpc!==undefined && req.body.heliusRpc!=="";
+      if(explicitHeliusRpc){
+        value.heliusRpcAutoManaged=false;
+      } else if(value.heliusApiKey && (value.heliusRpcAutoManaged || !value.heliusRpc)){
+        value.heliusRpc=`https://mainnet.helius-rpc.com/?api-key=${value.heliusApiKey}`;
+        value.heliusRpcAutoManaged=true;
+      } else if(!value.heliusApiKey && value.heliusRpcAutoManaged){
+        delete value.heliusRpc;
+        value.heliusRpcAutoManaged=false;
+      }
     }
   }
-  const row=await setConfig(key,value,{secret,updatedBy:req.user.sub});
+  const restartRequired=RESTART_REQUIRED_KEYS.has(key);
+  await setConfig(key,value,{secret,updatedBy:req.user.sub,secretHints,restartPending:restartRequired?true:undefined});
   await audit(req.user.sub,"ADMIN","CONFIG_UPDATE",key,secret?{secret:true,fields:Object.keys(req.body)}:{value:req.body});
-  res.json({ok:true,config:redactedConfig(row as any),restartRequired:["marketData","execution","chains","signer","discovery","risk","brain"].includes(key)});
+  // "Save" must mean something real: for a provider-backed section, immediately run the same test
+  // a manual "Test connection" click would — never leave the operator to guess whether Save worked.
+  const testResults=await runProviderTests(key);
+  if(testResults) await recordTestResults(key,testResults);
+  const freshRow=await db.appConfig.findUnique({where:{key}});
+  res.json({ok:true,config:sanitizeForClient(redactedConfig(freshRow as any,SECRET_FIELDS[key]??[])),restartRequired});
 }));
 
 app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
@@ -1331,56 +1385,177 @@ app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedReque
 }));
 app.post("/v1/admin/test-push", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const target=String(req.body?.userId??req.user.sub);
-  const result=await sendPush(target,{title:"MemeCloud push test",body:"Push notifications are working.",url:"/app/"});
-  res.json({ok:true,result});
+  const started=Date.now();
+  const pushResult=await sendPush(target,{title:"MemeCloud push test",body:"Push notifications are working.",url:"/app/"});
+  const ok=Boolean(pushResult?.sent>0);
+  await recordTestResults("push",{push:{ok,message:ok?`Sent to ${pushResult.sent} subscription(s).`:`0 sent, ${pushResult?.failed||0} failed.`,latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+  res.json({ok:true,result:pushResult});
 }));
 app.post("/v1/admin/test-email", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const to=String(req.body?.to??"");
   if(!to) return res.status(400).json({error:"EMAIL_REQUIRED"});
-  const info=await sendEmail(to,"MemeCloud email test","<h2>Email is working.</h2>");
-  res.json({ok:true,messageId:info.messageId});
+  const started=Date.now();
+  try{
+    const info=await sendEmail(to,"MemeCloud email test","<h2>Email is working.</h2>");
+    await recordTestResults("email",{smtp:{ok:true,message:"Test email accepted by SMTP provider.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+    res.json({ok:true,messageId:info.messageId});
+  }catch(e:any){
+    await recordTestResults("email",{smtp:{ok:false,message:e?.message||"SMTP send failed.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+    throw e;
+  }
 }));
+// Every sub-test below hits the saved backend config (getConfig — never req.body/frontend state)
+// with a genuine, harmless provider request, and returns a typed, timed, non-secret result.
+const withTimeout=(p:Promise<any>,ms=8000)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error("Timed out")),ms))]);
+type FetchResponse=Awaited<ReturnType<typeof fetch>>;
+async function timedFetch(url:string,init:RequestInit={}):Promise<{r:FetchResponse|null;latencyMs:number;error?:Error}>{
+  const started=Date.now();
+  try{
+    const r=await withTimeout(fetch(url,init)) as FetchResponse;
+    return {r,latencyMs:Date.now()-started};
+  }catch(e:any){
+    return {r:null,latencyMs:Date.now()-started,error:e};
+  }
+}
+// A test result older than this no longer counts as "Connected" — must be re-verified. Keeps a
+// stale green badge from permanently misrepresenting current reality.
+const STALE_MS=20*60_000;
+function isFresh(tr:TestResult|undefined|null):boolean{
+  return Boolean(tr?.ok && tr.checkedAt && (Date.now()-new Date(tr.checkedAt).getTime())<STALE_MS);
+}
+function result(ok:boolean,message:string,extra:{httpStatus?:number;latencyMs?:number}={}):TestResult{
+  return {ok,message,httpStatus:extra.httpStatus,latencyMs:extra.latencyMs,checkedAt:new Date().toISOString()};
+}
+async function testJupiter(cfg:any):Promise<TestResult>{
+  const base=(cfg?.jupiterBaseUrl||"https://api.jup.ag").replace(/\/$/,"");
+  const usdc="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",wsol="So11111111111111111111111111111111111111112";
+  // Same path/headers as the live JupiterExecution class (packages/execution) — this must test
+  // the exact route real trades use, not a stale/guessed one.
+  const url=`${base}/swap/v1/quote?inputMint=${wsol}&outputMint=${usdc}&amount=10000000&slippageBps=100`;
+  const {r,latencyMs,error}=await timedFetch(url,{headers:cfg?.jupiterApiKey?{"x-api-key":cfg.jupiterApiKey}:{}});
+  if(error) return result(false,error.message||"Jupiter request failed.",{latencyMs});
+  if(r!.ok) return result(true,"Jupiter returned a real executable quote.",{httpStatus:r!.status,latencyMs});
+  return result(false,`Jupiter responded with HTTP ${r!.status}.`,{httpStatus:r!.status,latencyMs});
+}
+async function testZeroX(cfg:any):Promise<TestResult>{
+  if(!cfg?.zeroXApiKey) return result(false,"No 0x API key is saved yet.");
+  const weth="0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",usdc="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+  const url=`https://api.0x.org/swap/permit2/price?chainId=1&sellToken=${weth}&buyToken=${usdc}&sellAmount=1000000000000000`;
+  const {r,latencyMs,error}=await timedFetch(url,{headers:{"0x-api-key":cfg.zeroXApiKey,"0x-version":"v2"}});
+  if(error) return result(false,error.message||"0x request failed.",{latencyMs});
+  if(r!.ok) return result(true,"0x returned a real price quote.",{httpStatus:r!.status,latencyMs});
+  if(r!.status===401) return result(false,"0x rejected the API key.",{httpStatus:r!.status,latencyMs});
+  return result(false,`0x responded with HTTP ${r!.status}.`,{httpStatus:r!.status,latencyMs});
+}
+async function testSolanaRpc(cfg:any):Promise<TestResult>{
+  const rpc=cfg?.solanaRpc||cfg?.heliusRpc;
+  if(!rpc) return result(false,"No Solana RPC URL is saved yet.");
+  const {r,latencyMs,error}=await timedFetch(rpc,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"getHealth"})});
+  if(error) return result(false,error.message||"RPC request failed.",{latencyMs});
+  const body=await r!.json().catch(()=>null);
+  if(r!.ok&&body?.result==="ok") return result(true,"Solana RPC responded healthy.",{httpStatus:r!.status,latencyMs});
+  return result(false,`RPC responded with HTTP ${r!.status}${body?.error?.message?`: ${body.error.message}`:""}`,{httpStatus:r!.status,latencyMs});
+}
+async function testBirdeye(cfg:any):Promise<TestResult>{
+  if(!cfg?.birdeyeApiKey) return result(false,"No Birdeye API key is saved yet.");
+  const {r,latencyMs,error}=await timedFetch(`https://public-api.birdeye.so/defi/price?address=So11111111111111111111111111111111111111112`,{headers:{"accept":"application/json","X-API-KEY":cfg.birdeyeApiKey,"x-chain":"solana"}});
+  if(error) return result(false,error.message||"Birdeye request failed.",{latencyMs});
+  if(r!.ok) return result(true,"Birdeye accepted the API key.",{httpStatus:r!.status,latencyMs});
+  return result(false,`Birdeye responded with HTTP ${r!.status}. Check the API key.`,{httpStatus:r!.status,latencyMs});
+}
+async function testHelius(cfg:any):Promise<TestResult>{
+  if(!cfg?.heliusApiKey) return result(false,"No Helius API key is saved yet.");
+  // Tests the key directly against Helius's real RPC, independent of whatever ended up in
+  // heliusRpc — this is what actually validates the saved key, not just a URL string.
+  const url=`https://mainnet.helius-rpc.com/?api-key=${cfg.heliusApiKey}`;
+  const {r,latencyMs,error}=await timedFetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"getHealth"})});
+  if(error) return result(false,error.message||"Helius request failed.",{latencyMs});
+  const body=await r!.json().catch(()=>null);
+  if(r!.ok&&body?.result==="ok") return result(true,"Helius RPC responded healthy.",{httpStatus:r!.status,latencyMs});
+  if(r!.status===401) return result(false,"Helius rejected the API key.",{httpStatus:r!.status,latencyMs});
+  return result(false,`Helius responded with HTTP ${r!.status}.`,{httpStatus:r!.status,latencyMs});
+}
+async function testX(cfg:any):Promise<TestResult>{
+  if(!cfg?.xBearerToken) return result(false,"No X bearer token is saved yet.");
+  const {r,latencyMs,error}=await timedFetch("https://api.x.com/2/tweets/search/recent?query=test&max_results=10",{headers:{authorization:`Bearer ${cfg.xBearerToken}`}});
+  if(error) return result(false,error.message||"X API request failed.",{latencyMs});
+  if(r!.ok) return result(true,"X API accepted the bearer token.",{httpStatus:r!.status,latencyMs});
+  return result(false,`X API responded with HTTP ${r!.status}. Check the bearer token.`,{httpStatus:r!.status,latencyMs});
+}
+async function testPrivy(cfg:any):Promise<TestResult>{
+  if(!cfg?.privyAppId||!cfg?.privyAppSecret) return result(false,"Privy App ID and App Secret are both required.");
+  const auth=Buffer.from(`${cfg.privyAppId}:${cfg.privyAppSecret}`).toString("base64");
+  const {r,latencyMs,error}=await timedFetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`}});
+  if(error) return result(false,error.message||"Privy request failed.",{latencyMs});
+  if(r!.ok) return result(true,"Privy accepted the App ID and Secret.",{httpStatus:r!.status,latencyMs});
+  return result(false,`Privy responded with HTTP ${r!.status}. Check the App ID/Secret.`,{httpStatus:r!.status,latencyMs});
+}
+const EXPECTED_CHAIN_ID:Record<string,string>={BNB:"0x38",Ethereum:"0x1"};
+async function testWebSocket(url:string,label:string):Promise<TestResult>{
+  if(!url) return result(false,`No ${label} WebSocket URL is saved yet.`);
+  const started=Date.now();
+  const expected=EXPECTED_CHAIN_ID[label];
+  return new Promise<TestResult>((resolve)=>{
+    let done=false,ws:WebSocket;
+    const finish=(r:TestResult)=>{if(done)return;done=true;clearTimeout(timer);try{ws?.close()}catch{}resolve(r)};
+    const timer=setTimeout(()=>finish(result(false,`${label} WebSocket timed out.`,{latencyMs:Date.now()-started})),8000);
+    try{ws=new WebSocket(url)}catch(e:any){clearTimeout(timer);return resolve(result(false,e?.message||`${label} WebSocket failed to connect.`))}
+    // A socket that merely opens proves reachability, not the right chain — confirm via a real
+    // eth_chainId JSON-RPC call so a reachable-but-wrong-network endpoint fails verification.
+    ws.onopen=()=>{try{ws.send(JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_chainId",params:[]}))}catch(e:any){finish(result(false,`${label} WebSocket connected but the chain ID request failed to send.`,{latencyMs:Date.now()-started}))}};
+    ws.onmessage=(ev:any)=>{
+      const latencyMs=Date.now()-started;
+      try{
+        const chainId=JSON.parse(String(ev.data))?.result;
+        if(!chainId) return finish(result(false,`${label} WebSocket connected but returned no chain ID.`,{latencyMs}));
+        if(expected && String(chainId).toLowerCase()!==expected) return finish(result(false,`${label} WebSocket connected but reports chain ID ${chainId} (expected ${expected} for ${label}) — wrong network.`,{latencyMs}));
+        finish(result(true,`${label} WebSocket connected — chain ID ${chainId} confirmed.`,{httpStatus:200,latencyMs}));
+      }catch{
+        finish(result(false,`${label} WebSocket connected but sent an unparseable response.`,{latencyMs}));
+      }
+    };
+    ws.onerror=()=>finish(result(false,`${label} WebSocket connection failed.`,{latencyMs:Date.now()-started}));
+  });
+}
+// Shared by both the manual "Test connection" button and the automatic post-save verification —
+// one code path, so a save and a manual test can never disagree about what "real" means.
+async function runProviderTests(key:string):Promise<Record<string,TestResult>|null>{
+  if(key==="marketData"){
+    const cfg=await getConfig<any>("marketData");
+    return {rpc:await testSolanaRpc(cfg),helius:await testHelius(cfg),birdeye:await testBirdeye(cfg)};
+  }
+  if(key==="execution"){
+    const cfg=await getConfig<any>("execution");
+    return {jupiter:await testJupiter(cfg),zeroX:await testZeroX(cfg)};
+  }
+  if(key==="social") return {x:await testX(await getConfig<any>("social"))};
+  if(key==="signer") return {privy:await testPrivy(await getConfig<any>("signer"))};
+  if(key==="brain"){
+    const cfg=await getConfig<any>("brain");
+    return {bnb:await testWebSocket(cfg?.bnbWs,"BNB"),eth:await testWebSocket(cfg?.ethWs,"Ethereum")};
+  }
+  return null;
+}
 app.post("/v1/admin/config/:key/test", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const key=routeParam(req.params.key);
-  const withTimeout=(p:Promise<any>,ms=8000)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error("Timed out")),ms))]);
   try{
-    if(key==="marketData"){
-      const cfg=await getConfig<any>("marketData");
-      const rpc=cfg?.solanaRpc||cfg?.heliusRpc;
-      if(!rpc) return res.json({ok:false,message:"No Solana RPC URL is saved yet."});
-      const r=await withTimeout(fetch(rpc,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"getHealth"})})) as any;
-      const body=await r.json().catch(()=>null);
-      if(r.ok&&body?.result==="ok") return res.json({ok:true,message:"Solana RPC responded healthy."});
-      return res.json({ok:false,message:`RPC responded with ${r.status}${body?.error?.message?`: ${body.error.message}`:""}`});
-    }
-    if(key==="execution"){
-      const cfg=await getConfig<any>("execution");
-      const base=cfg?.jupiterBaseUrl||"https://api.jup.ag";
-      const usdc="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",wsol="So11111111111111111111111111111111111111112";
-      const url=`${base.replace(/\/$/,"")}/v6/quote?inputMint=${wsol}&outputMint=${usdc}&amount=10000000&slippageBps=100`;
-      const r=await withTimeout(fetch(url,{headers:cfg?.jupiterApiKey?{"x-api-key":cfg.jupiterApiKey}:{}})) as any;
-      if(r.ok) return res.json({ok:true,message:"Jupiter returned a real executable quote."});
-      return res.json({ok:false,message:`Jupiter responded with ${r.status}.`});
-    }
-    if(key==="social"){
-      const cfg=await getConfig<any>("social");
-      if(!cfg?.xBearerToken) return res.json({ok:false,message:"No X bearer token is saved yet."});
-      const r=await withTimeout(fetch("https://api.x.com/2/tweets/search/recent?query=test&max_results=10",{headers:{authorization:`Bearer ${cfg.xBearerToken}`}})) as any;
-      if(r.ok) return res.json({ok:true,message:"X API accepted the bearer token."});
-      return res.json({ok:false,message:`X API responded with ${r.status}. Check the bearer token.`});
-    }
-    if(key==="signer"){
-      const cfg=await getConfig<any>("signer");
-      if(!cfg?.privyAppId||!cfg?.privyAppSecret) return res.json({ok:false,message:"Privy App ID and App Secret are both required."});
-      const auth=Buffer.from(`${cfg.privyAppId}:${cfg.privyAppSecret}`).toString("base64");
-      const r=await withTimeout(fetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`}})) as any;
-      if(r.ok) return res.json({ok:true,message:"Privy accepted the App ID and Secret."});
-      return res.json({ok:false,message:`Privy responded with ${r.status}. Check the App ID/Secret.`});
-    }
-    return res.json({ok:false,message:"No live test is available for this provider yet."});
+    const results=await runProviderTests(key);
+    if(!results) return res.json({ok:false,message:"No live test is available for this provider yet.",results:{}});
+    await recordTestResults(key,results);
+    const entries=Object.entries(results);
+    const configured=entries.filter(([,v])=>v.ok||!/no .* is saved yet/i.test(v.message));
+    const ok=configured.length>0 && configured.every(([,v])=>v.ok);
+    const message=entries.map(([name,v])=>`${name}: ${v.ok?"OK":v.message}`).join(" · ");
+    res.json({ok,message,results});
   }catch(e:any){
-    return res.json({ok:false,message:e?.message||"The test request failed."});
+    res.json({ok:false,message:e?.message||"The test request failed.",results:{}});
   }
+}));
+app.post("/v1/admin/config/:key/ack-restart", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const key=routeParam(req.params.key);
+  const row=await ackRestart(key);
+  await audit(req.user.sub,"ADMIN","CONFIG_RESTART_ACK",key);
+  res.json({ok:true,config:row?sanitizeForClient(redactedConfig(row as any,SECRET_FIELDS[key]??[])):null});
 }));
 app.post("/v1/admin/broadcast", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const title=String(req.body?.title??"").trim(), body=String(req.body?.body??"").trim();
@@ -1423,6 +1598,43 @@ app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
     database:"healthy",
     redis:await redis.ping().then(()=>"healthy").catch(()=>"unavailable"),
     executionMode:process.env.EXECUTION_MODE??"simulation"
+  });
+}));
+// Answers "can MemeCloud actually trade real money right now?" purely from real, currently-fresh
+// signals — never from whether a value merely exists in the database.
+app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
+  const [marketDataRow,executionRow,signerRow,activeWallets,heartbeats]=await Promise.all([
+    db.appConfig.findUnique({where:{key:"marketData"}}),
+    db.appConfig.findUnique({where:{key:"execution"}}),
+    db.appConfig.findUnique({where:{key:"signer"}}),
+    db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}}),
+    db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}})
+  ]);
+  const now=Date.now();
+  const mdResults=marketDataRow?.testResults as any, exResults=executionRow?.testResults as any, sgResults=signerRow?.testResults as any;
+  const rpcOk=isFresh(mdResults?.rpc)||isFresh(mdResults?.helius);
+  const jupiterOk=isFresh(exResults?.jupiter);
+  const privyOk=isFresh(sgResults?.privy);
+  const liveExecutionEnabledEnv=process.env.LIVE_EXECUTION_ENABLED==="true";
+  const workers=["executor","exits","market-worker","solana-listener","solana-flow-scanner"].map(name=>{
+    const h=heartbeats.find(x=>x.name===name);
+    return {name,running:Boolean(h)&&now-h!.lastBeatAt.getTime()<45_000,lastBeatAt:h?.lastBeatAt??null};
+  });
+  const workersHealthy=workers.every(w=>w.running);
+  const signerReady=privyOk && liveExecutionEnabledEnv && activeWallets>0;
+  const ready=rpcOk && jupiterOk && signerReady && workersHealthy;
+  const reasons:string[]=[];
+  if(!rpcOk) reasons.push("Solana RPC has not passed a fresh connection test (test connection or re-save Market data).");
+  if(!jupiterOk) reasons.push("Jupiter has not passed a fresh connection test (test connection or re-save Trade routing).");
+  if(!privyOk) reasons.push("Privy signer has not passed a fresh connection test.");
+  if(!liveExecutionEnabledEnv) reasons.push("LIVE_EXECUTION_ENABLED is not set to true on the VPS — this is the real kill switch and is currently off.");
+  if(activeWallets===0) reasons.push("No user wallet currently has an active delegated trading permission — nothing could actually be signed for.");
+  if(!workersHealthy) reasons.push("One or more execution workers (executor / exits / market-worker / listener / flow scanner) are not sending a healthy heartbeat.");
+  res.json({
+    chain:"SOLANA",ready,reasons,
+    dependencies:{rpc:rpcOk,jupiter:jupiterOk,signerCredentialsConnected:privyOk,liveExecutionEnabledEnv,walletsWithActivePermission:activeWallets},
+    workers,
+    note:"BNB/Ethereum/other chains have no delegated live-execution signer implemented yet — Solana is the only chain this endpoint evaluates for live trading readiness."
   });
 }));
 

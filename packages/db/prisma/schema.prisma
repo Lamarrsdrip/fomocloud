@@ -591,6 +591,14 @@ model AppConfig {
   updatedBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  // Non-secret masked hints for secret fields, e.g. {"jupiterApiKey":"****7F2A"}. Never full values.
+  secretHints    Json?
+  // Last real provider-test outcome per sub-provider, e.g. {"jupiter":{"ok":true,"httpStatus":200,"latencyMs":132,"checkedAt":"...","message":"..."}}.
+  testResults    Json?
+  // True from the moment a restart-required key is saved until an admin explicitly acknowledges
+  // the worker/service was restarted (POST /v1/admin/config/:key/ack-restart). Never auto-cleared —
+  // there is no reliable process-boot-time signal to infer a restart happened.
+  restartPending Boolean  @default(false)
 }
 
 model Broadcast {
