@@ -11,7 +11,9 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema } from "@memecloud/shared";
-import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordTestResults, ackRestart, type TestResult } from "@memecloud/config";
+import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, type ProviderRecord } from "@memecloud/config";
+// A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
+type TestResult = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string };
 import { sendEmail, sendPush, ensureVapid, publicPushKey } from "@memecloud/notifications";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { JupiterExecution } from "@memecloud/execution";
@@ -1314,6 +1316,19 @@ const SECRET_FIELDS:Record<string,string[]>={
   marketData:["heliusApiKey","birdeyeApiKey","solanaRpc","heliusRpc","fallbackRpc"],
   email:["pass"]
 };
+// Which fields feed each provider's connectivity, per config key — this is what a "verified"
+// result is pinned to. Changing any of these fields for a provider invalidates ONLY that
+// provider's standing verification, not its siblings (e.g. rotating the Birdeye key never
+// invalidates an already-verified Helius key in the same marketData section).
+const PROVIDER_FINGERPRINT_FIELDS:Record<string,Record<string,string[]>>={
+  execution:{jupiter:["jupiterBaseUrl","jupiterApiKey"],zeroX:["zeroXApiKey"]},
+  marketData:{rpc:["solanaRpc","heliusRpc","fallbackRpc"],helius:["heliusApiKey"],birdeye:["birdeyeApiKey"]},
+  signer:{privy:["privyAppId","privyAppSecret","privyAuthorizationPrivateKey","privySignerId","privyPolicyId"]},
+  social:{x:["xBearerToken"]},
+  brain:{bnb:["bnbWs"],eth:["ethWs"]},
+  push:{push:["vapidPublicKey","vapidPrivateKey","subject"]},
+  email:{smtp:["host","port","secure","user","pass","from"]}
+};
 app.use("/v1/admin/config", (_req,res,next)=>{res.set("Cache-Control","no-store");next()});
 // heliusRpc/solanaRpc/fallbackRpc are now listed in SECRET_FIELDS.marketData (a paid RPC URL
 // commonly embeds the provider's API key in its query string), so redactedConfig already strips
@@ -1324,7 +1339,7 @@ function sanitizeForClient(cfg:any){
 }
 app.get("/v1/admin/config", requireAdmin, asyncRoute(async (_req,res) => {
   const rows=await db.appConfig.findMany({orderBy:{key:"asc"}});
-  res.json({config:rows.map(r=>sanitizeForClient(redactedConfig(r as any,SECRET_FIELDS[r.key]??[])))});
+  res.json({config:rows.map(r=>sanitizeForClient(redactedConfig(r as any,SECRET_FIELDS[r.key]??[],PROVIDER_FINGERPRINT_FIELDS[r.key])))});
 }));
 app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const key=routeParam(req.params.key);
@@ -1378,9 +1393,9 @@ app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,
   // "Save" must mean something real: for a provider-backed section, immediately run the same test
   // a manual "Test connection" click would — never leave the operator to guess whether Save worked.
   const testResults=await runProviderTests(key);
-  if(testResults) await recordTestResults(key,testResults);
+  if(testResults) await recordProviderResults(key,testResults);
   const freshRow=await db.appConfig.findUnique({where:{key}});
-  res.json({ok:true,config:sanitizeForClient(redactedConfig(freshRow as any,SECRET_FIELDS[key]??[])),restartRequired});
+  res.json({ok:true,config:sanitizeForClient(redactedConfig(freshRow as any,SECRET_FIELDS[key]??[],PROVIDER_FINGERPRINT_FIELDS[key])),restartRequired});
 }));
 
 app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
@@ -1391,6 +1406,7 @@ app.post("/v1/admin/push/generate", adminOnly, asyncRoute(async (req:AuthedReque
 app.post("/v1/admin/test-push", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const target=String(req.body?.userId??req.user.sub);
   const started=Date.now();
+  const pushCfg=await getConfig<any>("push");
   const pushResult=await sendPush(target,{title:"MemeCloud push test",body:"Push notifications are working.",url:"/app/"});
   // subscriptions:0 proves the VAPID/backend path itself is genuinely working (sendPush would have
   // thrown PUSH_NOT_CONFIGURED otherwise) — there's simply nothing to deliver to yet. That's a real,
@@ -1398,19 +1414,21 @@ app.post("/v1/admin/test-push", adminOnly, asyncRoute(async (req:AuthedRequest,r
   const noRecipients=pushResult?.subscriptions===0;
   const ok=noRecipients||Boolean(pushResult?.sent>0);
   const message=noRecipients?"Push backend ready — no subscribed devices":(ok?`Sent to ${pushResult.sent} subscription(s).`:`0 sent, ${pushResult?.failed||0} failed out of ${pushResult?.subscriptions??0} subscription(s).`);
-  await recordTestResults("push",{push:{ok,message,latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+  await recordProviderResults("push",{push:{ok,message,latencyMs:Date.now()-started,checkedAt:new Date().toISOString(),fingerprint:fingerprintOf(pushCfg,PROVIDER_FINGERPRINT_FIELDS.push.push)}});
   res.json({ok:true,result:pushResult});
 }));
 app.post("/v1/admin/test-email", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const to=String(req.body?.to??"");
   if(!to) return res.status(400).json({error:"EMAIL_REQUIRED"});
   const started=Date.now();
+  const emailCfg=await getConfig<any>("email");
+  const emailFp=fingerprintOf(emailCfg,PROVIDER_FINGERPRINT_FIELDS.email.smtp);
   try{
     const info=await sendEmail(to,"MemeCloud email test","<h2>Email is working.</h2>");
-    await recordTestResults("email",{smtp:{ok:true,message:"Test email accepted by SMTP provider.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+    await recordProviderResults("email",{smtp:{ok:true,message:"Test email accepted by SMTP provider.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString(),fingerprint:emailFp}});
     res.json({ok:true,messageId:info.messageId});
   }catch(e:any){
-    await recordTestResults("email",{smtp:{ok:false,message:e?.message||"SMTP send failed.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+    await recordProviderResults("email",{smtp:{ok:false,message:e?.message||"SMTP send failed.",latencyMs:Date.now()-started,checkedAt:new Date().toISOString(),fingerprint:emailFp}});
     throw e;
   }
 }));
@@ -1427,12 +1445,10 @@ async function timedFetch(url:string,init:RequestInit={}):Promise<{r:FetchRespon
     return {r:null,latencyMs:Date.now()-started,error:e};
   }
 }
-// A test result older than this no longer counts as "Connected" — must be re-verified. Keeps a
-// stale green badge from permanently misrepresenting current reality.
-const STALE_MS=20*60_000;
-function isFresh(tr:TestResult|undefined|null):boolean{
-  return Boolean(tr?.ok && tr.checkedAt && (Date.now()-new Date(tr.checkedAt).getTime())<STALE_MS);
-}
+// How recent a background health check must be to count for the strict "ready for live trading"
+// claim (see /v1/admin/live-readiness) — this is intentionally NOT used for the general admin
+// "Connected" badge, which is fingerprint-based and does not decay with time on its own.
+const HEALTH_CHECK_MAX_AGE_MS=60*60_000;
 function result(ok:boolean,message:string,extra:{httpStatus?:number;latencyMs?:number}={}):TestResult{
   return {ok,message,httpStatus:extra.httpStatus,latencyMs:extra.latencyMs,checkedAt:new Date().toISOString()};
 }
@@ -1543,20 +1559,35 @@ async function testWebSocket(url:string,label:string):Promise<TestResult>{
 }
 // Shared by both the manual "Test connection" button and the automatic post-save verification —
 // one code path, so a save and a manual test can never disagree about what "real" means.
-async function runProviderTests(key:string):Promise<Record<string,TestResult>|null>{
+// Attaches each provider's config fingerprint to its raw test outcome — this is what lets a
+// later save/read decide whether a past PASS still applies (fingerprint unchanged) or needs a
+// fresh test (fingerprint changed), instead of an arbitrary time-based staleness window.
+function withFingerprints(key:string,cfg:any,raw:Record<string,TestResult>):Record<string,ProviderRecord>{
+  const fields=PROVIDER_FINGERPRINT_FIELDS[key]??{};
+  const out:Record<string,ProviderRecord>={};
+  for(const [provider,r] of Object.entries(raw)) out[provider]={...r,fingerprint:fingerprintOf(cfg,fields[provider]??[])};
+  return out;
+}
+async function runProviderTests(key:string):Promise<Record<string,ProviderRecord>|null>{
   if(key==="marketData"){
     const cfg=await getConfig<any>("marketData");
-    return {rpc:await testSolanaRpc(cfg),helius:await testHelius(cfg),birdeye:await testBirdeye(cfg)};
+    return withFingerprints(key,cfg,{rpc:await testSolanaRpc(cfg),helius:await testHelius(cfg),birdeye:await testBirdeye(cfg)});
   }
   if(key==="execution"){
     const cfg=await getConfig<any>("execution");
-    return {jupiter:await testJupiter(cfg),zeroX:await testZeroX(cfg)};
+    return withFingerprints(key,cfg,{jupiter:await testJupiter(cfg),zeroX:await testZeroX(cfg)});
   }
-  if(key==="social") return {x:await testX(await getConfig<any>("social"))};
-  if(key==="signer") return {privy:await testPrivy(await getConfig<any>("signer"))};
+  if(key==="social"){
+    const cfg=await getConfig<any>("social");
+    return withFingerprints(key,cfg,{x:await testX(cfg)});
+  }
+  if(key==="signer"){
+    const cfg=await getConfig<any>("signer");
+    return withFingerprints(key,cfg,{privy:await testPrivy(cfg)});
+  }
   if(key==="brain"){
     const cfg=await getConfig<any>("brain");
-    return {bnb:await testWebSocket(cfg?.bnbWs,"BNB"),eth:await testWebSocket(cfg?.ethWs,"Ethereum")};
+    return withFingerprints(key,cfg,{bnb:await testWebSocket(cfg?.bnbWs,"BNB"),eth:await testWebSocket(cfg?.ethWs,"Ethereum")});
   }
   return null;
 }
@@ -1565,7 +1596,7 @@ app.post("/v1/admin/config/:key/test", adminOnly, asyncRoute(async (req:AuthedRe
   try{
     const results=await runProviderTests(key);
     if(!results) return res.json({ok:false,message:"No live test is available for this provider yet.",results:{}});
-    await recordTestResults(key,results);
+    await recordProviderResults(key,results);
     const entries=Object.entries(results);
     const configured=entries.filter(([,v])=>v.ok||!/no .* is saved yet/i.test(v.message));
     const ok=configured.length>0 && configured.every(([,v])=>v.ok);
@@ -1579,7 +1610,7 @@ app.post("/v1/admin/config/:key/ack-restart", adminOnly, asyncRoute(async (req:A
   const key=routeParam(req.params.key);
   const row=await ackRestart(key);
   await audit(req.user.sub,"ADMIN","CONFIG_RESTART_ACK",key);
-  res.json({ok:true,config:row?sanitizeForClient(redactedConfig(row as any,SECRET_FIELDS[key]??[])):null});
+  res.json({ok:true,config:row?sanitizeForClient(redactedConfig(row as any,SECRET_FIELDS[key]??[],PROVIDER_FINGERPRINT_FIELDS[key])):null});
 }));
 app.post("/v1/admin/broadcast", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const title=String(req.body?.title??"").trim(), body=String(req.body?.body??"").trim();
@@ -1627,18 +1658,33 @@ app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
 // Answers "can MemeCloud actually trade real money right now?" purely from real, currently-fresh
 // signals — never from whether a value merely exists in the database.
 app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
-  const [marketDataRow,executionRow,signerRow,activeWallets,heartbeats]=await Promise.all([
+  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats]=await Promise.all([
     db.appConfig.findUnique({where:{key:"marketData"}}),
     db.appConfig.findUnique({where:{key:"execution"}}),
     db.appConfig.findUnique({where:{key:"signer"}}),
+    getConfig<any>("marketData"),
+    getConfig<any>("execution"),
+    getConfig<any>("signer"),
     db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}}),
     db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}})
   ]);
   const now=Date.now();
-  const mdResults=marketDataRow?.testResults as any, exResults=executionRow?.testResults as any, sgResults=signerRow?.testResults as any;
-  const rpcOk=isFresh(mdResults?.rpc)||isFresh(mdResults?.helius);
-  const jupiterOk=isFresh(exResults?.jupiter);
-  const privyOk=isFresh(sgResults?.privy);
+  // Live-trading readiness is a stricter, safety-critical claim than the general admin "Connected"
+  // badge: it must require BOTH a standing verification whose fingerprint still matches the saved
+  // config (not merely "was correct once, config unchanged forever") AND a health check recent
+  // enough to mean something for "right now" — the periodic background health check keeps this
+  // fresh automatically, so this never depends on the operator manually re-testing.
+  function readyNow(row:any,cfg:any,fields:Record<string,string[]>,provider:string):boolean{
+    const status=row?.testResults?.[provider];
+    if(!status?.verified?.ok) return false;
+    if(status.verified.fingerprint!==fingerprintOf(cfg,fields[provider]??[])) return false;
+    if(!status.health?.ok) return false;
+    if(!status.health.checkedAt||(now-new Date(status.health.checkedAt).getTime())>HEALTH_CHECK_MAX_AGE_MS) return false;
+    return true;
+  }
+  const rpcOk=readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"rpc")||readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"helius");
+  const jupiterOk=readyNow(executionRow,executionCfg,PROVIDER_FINGERPRINT_FIELDS.execution,"jupiter");
+  const privyOk=readyNow(signerRow,signerCfg,PROVIDER_FINGERPRINT_FIELDS.signer,"privy");
   const liveExecutionEnabledEnv=process.env.LIVE_EXECUTION_ENABLED==="true";
   const workers=["executor","exits","market-worker","solana-listener","solana-flow-scanner"].map(name=>{
     const h=heartbeats.find(x=>x.name===name);
@@ -1667,6 +1713,25 @@ app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   console.error("[api]",err);
   res.status(500).json({error:"INTERNAL_ERROR"});
 });
+
+// Automatic, low-frequency background health checks — keeps "currently healthy" / "temporarily
+// unreachable" state fresh (see live-readiness's HEALTH_CHECK_MAX_AGE_MS) without the operator
+// needing to click Test Connection. Deliberately excludes push/email: those "tests" send a real
+// push notification / real email to a real recipient, so running them automatically would spam
+// users rather than just check health — only a manual Test/Send from the admin covers those.
+const BACKGROUND_HEALTH_KEYS=["marketData","execution","social","signer","brain"];
+async function runBackgroundHealthChecks(){
+  for(const key of BACKGROUND_HEALTH_KEYS){
+    try{
+      const results=await runProviderTests(key);
+      if(results) await recordProviderResults(key,results);
+    }catch(e){
+      console.error(`[background-health] ${key}`,e);
+    }
+  }
+}
+setInterval(()=>{void runBackgroundHealthChecks()},15*60_000).unref?.();
+setTimeout(()=>{void runBackgroundHealthChecks()},30_000).unref?.();
 
 async function apiHeartbeat(){
   await db.workerHeartbeat.upsert({where:{name:"api"},create:{name:"api",status:"healthy",detail:{port} as any,lastBeatAt:new Date()},update:{status:"healthy",detail:{port} as any,lastBeatAt:new Date()}}).catch(()=>{});

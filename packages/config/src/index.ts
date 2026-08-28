@@ -77,14 +77,37 @@ export async function ackRestart(key: string) {
   return db.appConfig.update({ where: { key }, data: { restartPending: false } }).catch(() => null);
 }
 
-export type TestResult = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string };
+// A one-way, non-reversible fingerprint of the exact field values a provider's connectivity
+// depends on (secrets included) — never exposed to the client, only compared server-side to
+// decide whether a past verification still applies to what's currently saved.
+export function fingerprintOf(cfg: any, fields: string[]): string {
+  const parts = fields.map(f => String(cfg?.[f] ?? ""));
+  return crypto.createHash("sha256").update(parts.join("")).digest("hex").slice(0, 16);
+}
 
-// Records real provider-test outcomes without touching the saved config value itself. Upserts
+export type ProviderRecord = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string; fingerprint: string };
+// verified: the last time this provider's connection genuinely PASSED, pinned to the config
+// fingerprint at that moment — this is what "Connected" means, and it must survive time passing,
+// API restarts, and unrelated saves. It only ever advances forward on a fresh pass; a failing
+// health check never erases it.
+// health: the single most recent attempt, pass or fail — this is what "currently reachable" means.
+export type ProviderStatus = { verified: ProviderRecord | null; health: ProviderRecord };
+
+// Records a real test/health-check attempt for one or more providers within a config key. Upserts
 // because a test can legitimately run (and fail, e.g. "no key saved yet") before any config for
 // this key was ever saved — there may be no row yet.
-export async function recordTestResults(key: string, results: Record<string, TestResult>) {
+export async function recordProviderResults(key: string, results: Record<string, ProviderRecord>) {
   const row = await db.appConfig.findUnique({ where: { key } });
-  const merged = { ...(row?.testResults as any ?? {}), ...results };
+  const existing = (row?.testResults as any) ?? {};
+  const merged: Record<string, ProviderStatus> = { ...existing };
+  for (const [provider, rec] of Object.entries(results)) {
+    const prior: ProviderStatus | undefined = merged[provider];
+    merged[provider] = {
+      health: rec,
+      // Never let a failing attempt overwrite a standing verification — only a genuine pass does.
+      verified: rec.ok ? rec : (prior?.verified ?? null)
+    };
+  }
   return db.appConfig.upsert({
     where: { key },
     create: { key, isSecret: false, valueJson: null, testResults: merged },
@@ -96,28 +119,47 @@ export async function recordTestResults(key: string, results: Record<string, Tes
 // the rest of that same config object (e.g. execution.jupiterBaseUrl, marketData.solanaRpc) is
 // genuinely non-secret and must round-trip to the admin UI in the clear, or every plain field in a
 // "secret" section would wrongly appear to reset on every reload.
+// fingerprintFields, when given, lets the response tell the client whether each provider's
+// standing verification still matches what's currently saved — WITHOUT ever sending the
+// fingerprint itself or any secret value, only a derived boolean.
 export function redactedConfig(row: {
   key: string; isSecret: boolean; valueJson: any; encryptedValue?: string | null; updatedAt: Date;
   secretHints?: any; testResults?: any; restartPending?: boolean;
-}, secretFieldNames: string[] = []) {
-  let value: any;
+}, secretFieldNames: string[] = [], fingerprintFields?: Record<string, string[]>) {
+  let fullValue: any;
   if (row.isSecret) {
-    if (row.encryptedValue) {
-      value = { ...decryptJson<any>(row.encryptedValue) };
-      for (const f of secretFieldNames) delete value[f];
-    } else {
-      value = {};
-    }
+    fullValue = row.encryptedValue ? decryptJson<any>(row.encryptedValue) : {};
   } else {
-    value = row.valueJson;
+    fullValue = row.valueJson ?? {};
   }
+  const value = { ...fullValue };
+  for (const f of secretFieldNames) delete value[f];
+
+  let testResults: any = row.testResults ?? null;
+  if (testResults && fingerprintFields) {
+    const out: Record<string, any> = {};
+    for (const [provider, status] of Object.entries(testResults as Record<string, any>)) {
+      if (status && typeof status === "object" && "verified" in status) {
+        const currentFp = fingerprintOf(fullValue, fingerprintFields[provider] ?? []);
+        const v = (status as ProviderStatus).verified;
+        out[provider] = {
+          health: status.health ? { ok: status.health.ok, httpStatus: status.health.httpStatus, latencyMs: status.health.latencyMs, message: status.health.message, checkedAt: status.health.checkedAt, stale: status.health.fingerprint !== currentFp } : null,
+          verified: v ? { ok: v.ok, httpStatus: v.httpStatus, latencyMs: v.latencyMs, message: v.message, checkedAt: v.checkedAt, stale: v.fingerprint !== currentFp } : null
+        };
+      } else {
+        out[provider] = status; // legacy flat shape from before this change — self-heals on next test
+      }
+    }
+    testResults = out;
+  }
+
   return {
     key: row.key,
     value,
     isSecret: row.isSecret,
     updatedAt: row.updatedAt,
     secretHints: row.secretHints ?? null,
-    testResults: row.testResults ?? null,
+    testResults,
     restartPending: Boolean(row.restartPending)
   };
 }

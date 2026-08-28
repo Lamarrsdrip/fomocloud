@@ -189,52 +189,70 @@ const ITEM_SUMMARY:Record<string,{name:string;secretField?:string;valueField?:st
  brain:[{name:"BNB RPC",valueField:"bnbWs",testKey:"bnb"},{name:"Ethereum RPC",valueField:"ethWs",testKey:"eth"}]
 };
 // The real, honest status of one named sub-item — never "Connected" without a fresh passing test.
+// A provider's persisted state from the server is now {verified, health}, not a single flat
+// attempt — verified is the last genuine PASS, pinned to a config fingerprint, and never erased
+// by a later failure; health is the single most recent attempt. `verified.stale` (computed
+// server-side, since only the server can see the real secret values a fingerprint is built from)
+// means the saved config has changed since that pass and it no longer applies.
+type ProviderState="connected"|"unreachable"|"changed"|"neverPassed"|"untested";
+// health.stale/verified.stale mean "this record's fingerprint no longer matches what's saved
+// now" — computed server-side, the only place that can see the real values a fingerprint covers.
+// A fresh (non-stale) health record is always the most direct evidence, since it reflects an
+// attempt against the CURRENTLY saved config specifically — trust it first. Only fall back to a
+// standing verification, or to "changed", when there's no fresh attempt to go on yet.
+function classifyProvider(status:any):ProviderState{
+ const v=status?.verified,h=status?.health;
+ const vFresh=v&&!v.stale,hFresh=h&&!h.stale;
+ if(hFresh&&h.ok)return"connected";
+ if(hFresh&&!h.ok)return vFresh?"unreachable":"neverPassed";
+ if(vFresh)return"connected";
+ if(v)return"changed";
+ return"untested";
+}
 function itemStatus(item:{secretField?:string;valueField?:string;disabledValue?:string;testKey?:string;neverConnected?:boolean},current:any,liveForm:any):{label:string;tone:"good"|"watch"|"follow"}{
  const hasValue=item.secretField?Boolean((current?.secretHints as any)?.[item.secretField]):(item.valueField?Boolean(liveForm?.[item.valueField])&&liveForm[item.valueField]!==item.disabledValue:false);
  if(item.testKey){
-  const tr=(current?.testResults as any)?.[item.testKey];
-  if(tr){
-   const fresh=Boolean(tr.ok&&tr.checkedAt&&(Date.now()-new Date(tr.checkedAt).getTime())<STALE_MS);
-   if(fresh)return{label:"Connected",tone:"good"};
-   if(tr.ok)return{label:"Stale — re-verify",tone:"follow"};
-   return{label:"Connection failed",tone:"watch"};
-  }
+  const status=(current?.testResults as any)?.[item.testKey];
+  const kind=classifyProvider(status);
+  if(kind==="connected")return{label:"Connected",tone:"good"};
+  if(kind==="unreachable")return{label:"Connection issue — previously verified",tone:"watch"};
+  if(kind==="changed")return{label:"Configuration changed — verify again",tone:"follow"};
+  if(kind==="neverPassed")return{label:"Connection failed",tone:"watch"};
  }
  if(!hasValue)return{label:"Not set up",tone:item.neverConnected?"follow":"watch"};
  return{label:"Saved — not verified",tone:"follow"};
 }
-// Mirrors the server's STALE_MS (apps/api/src/server.ts) — a result older than this no longer
-// counts as proof of anything current. A green badge from three weeks ago is a lie, not a fact.
-const STALE_MS=20*60*1000;
-function summarizeTest(testResults:any):{tested:boolean;allFreshOk:boolean;anyFreshOk:boolean;anyStaleOk:boolean;anyFailed:boolean;checkedAt?:string}{
- if(!testResults||typeof testResults!=="object")return{tested:false,allFreshOk:false,anyFreshOk:false,anyStaleOk:false,anyFailed:false};
- const entries=Object.values(testResults).filter((e:any)=>e&&typeof e==="object"&&"ok"in e) as any[];
- if(!entries.length)return{tested:false,allFreshOk:false,anyFreshOk:false,anyStaleOk:false,anyFailed:false};
- const now=Date.now();
- const isFresh=(e:any)=>Boolean(e?.ok&&e?.checkedAt&&(now-new Date(e.checkedAt).getTime())<STALE_MS);
- const checkedAt=entries.map(e=>e?.checkedAt).filter(Boolean).sort().slice(-1)[0];
+function summarizeProviders(testResults:any):{tested:boolean;allConnected:boolean;anyConnected:boolean;anyUnreachable:boolean;anyChanged:boolean;anyNeverPassed:boolean;latestAt?:string}{
+ const empty={tested:false,allConnected:false,anyConnected:false,anyUnreachable:false,anyChanged:false,anyNeverPassed:false};
+ if(!testResults||typeof testResults!=="object")return empty;
+ const entries=Object.values(testResults).filter((e:any)=>e&&typeof e==="object"&&("verified"in e||"health"in e)) as any[];
+ if(!entries.length)return empty;
+ const kinds=entries.map(classifyProvider);
+ const latestAt=entries.map((e:any)=>e?.verified?.checkedAt||e?.health?.checkedAt).filter(Boolean).sort().slice(-1)[0];
  return{
   tested:true,
-  allFreshOk:entries.every(isFresh),
-  anyFreshOk:entries.some(isFresh),
-  anyStaleOk:entries.some(e=>e?.ok)&&!entries.every(isFresh),
-  anyFailed:entries.some(e=>!e?.ok),
-  checkedAt
+  allConnected:kinds.every(k=>k==="connected"),
+  anyConnected:kinds.some(k=>k==="connected"),
+  anyUnreachable:kinds.some(k=>k==="unreachable"),
+  anyChanged:kinds.some(k=>k==="changed"),
+  anyNeverPassed:kinds.some(k=>k==="neverPassed"),
+  latestAt
  };
 }
 // Exact vocabulary requested: Not set up / Saved — not verified / Connected / Connection failed /
-// Using public fallback / Restart required (rendered as a separate pill, see restartPill below).
-// "good" tone is reserved for a state that is ACTUALLY true right now, never for "a row exists."
+// Configuration changed / Connection issue — previously verified / Using public fallback /
+// Restart required (its own pill, see restartPill below). "good" tone is reserved for a state
+// that is ACTUALLY true right now, never for "a row exists," and — just as importantly — a
+// standing verification is never downgraded just because time passed with nothing changing.
 function cfgStatus(k:string,current:any):{label:string;tone:"good"|"watch"|"follow";detail:string}{
  if(LIVE_TESTABLE.has(k)){
-  const t=summarizeTest(current?.testResults);
-  if(t.tested){
-   if(t.allFreshOk)return{label:"Connected",tone:"good",detail:t.checkedAt?`Verified ${new Date(t.checkedAt).toLocaleString()}`:"Verified"};
-   if(t.anyFreshOk||t.anyStaleOk){
-    if(t.anyFailed)return{label:"Connection failed",tone:"watch",detail:"At least one provider in this section is failing right now — see the breakdown below"};
-    return{label:"Stale — re-verify",tone:"follow",detail:"Was connected, but that result has expired — press Test connection"};
-   }
-   return{label:"Connection failed",tone:"watch",detail:"The last real test failed — check the saved values"};
+  const s=summarizeProviders(current?.testResults);
+  if(s.tested){
+   if(s.anyNeverPassed)return{label:"Connection failed",tone:"watch",detail:"At least one provider in this section has never passed a real test — see the breakdown below"};
+   if(s.anyChanged)return{label:"Configuration changed",tone:"follow",detail:"Saved values changed since the last passing test — press Test connection"};
+   if(s.anyUnreachable)return{label:"Connection issue — previously verified",tone:"watch",detail:"A recent automatic check failed, but this genuinely passed before — see the breakdown below"};
+   if(s.allConnected)return{label:"Connected",tone:"good",detail:s.latestAt?`Verified ${new Date(s.latestAt).toLocaleString()}`:"Verified"};
+   return{label:"Saved — not verified",tone:"follow",detail:"Required values are saved but have not passed a real test yet — press Test connection"};
   }
   if(current)return{label:"Saved — not verified",tone:"follow",detail:"Required values are saved but have not passed a real test yet — press Test connection"};
   if(CFG_WORKS_WITHOUT_KEY.has(k))return{label:"Using public fallback",tone:"follow",detail:"No key saved — running on MemeCloud's shared public default, not your own"};
@@ -447,13 +465,23 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
     {ITEM_SUMMARY[key].map(it=>{const st=itemStatus(it,current,form);return <div key={it.name}><span>{it.name}</span><em className={badgeClass(st.tone)}>{st.label}</em></div>})}
    </div>}
    {current?.testResults&&Object.keys(current.testResults).length>0&&<div className="app-card" style={{padding:12,marginBottom:14}}>
-    <div style={{fontSize:11,color:"#8a8fa0",marginBottom:6}}>LAST TEST CONNECTION RESULT</div>
-    {Object.entries(current.testResults as Record<string,any>).map(([name,tr])=><div key={name} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",borderTop:"1px solid var(--line)"}}>
-     <span style={{textTransform:"capitalize"}}>{name}</span>
-     <span className={tr.ok?"positive":"negative"}>{tr.ok?"Connected":"Failed"}{tr.httpStatus?` · HTTP ${tr.httpStatus}`:""}{typeof tr.latencyMs==="number"?` · ${tr.latencyMs}ms`:""}</span>
-     <span style={{color:"#8a8fa0"}}>{tr.checkedAt?new Date(tr.checkedAt).toLocaleTimeString():""}</span>
-    </div>)}
-    {Object.entries(current.testResults as Record<string,any>).filter(([,tr]:any)=>!tr.ok).map(([name,tr]:any)=><div key={name+"-msg"} className="notice" style={{marginTop:6}}>{name}: {tr.message}</div>)}
+    <div style={{fontSize:11,color:"#8a8fa0",marginBottom:6}}>VERIFICATION STATUS</div>
+    {Object.entries(current.testResults as Record<string,any>).map(([name,status])=>{
+     const kind=classifyProvider(status);
+     const v=(status as any)?.verified,h=(status as any)?.health;
+     const label=kind==="connected"?"Connected":kind==="unreachable"?"Connection issue — previously verified":kind==="changed"?"Configuration changed — verify again":kind==="neverPassed"?"Connection failed":"Not tested yet";
+     const cls=kind==="connected"?"positive":kind==="unreachable"||kind==="changed"?"":"negative";
+     const shownAt=v?.checkedAt;
+     const noteMsg=kind==="unreachable"?h?.message:(h?.message||v?.message);
+     return <div key={name}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",borderTop:"1px solid var(--line)"}}>
+       <span style={{textTransform:"capitalize"}}>{name}</span>
+       <span className={cls}>{label}{h?.httpStatus?` · HTTP ${h.httpStatus}`:""}{typeof h?.latencyMs==="number"?` · ${h.latencyMs}ms`:""}</span>
+       <span style={{color:"#8a8fa0"}}>{shownAt?`Verified ${new Date(shownAt).toLocaleDateString()}`:""}</span>
+      </div>
+      {kind!=="connected"&&noteMsg&&<div className="notice" style={{marginTop:2,marginBottom:6}}>{name}: {noteMsg}</div>}
+     </div>;
+    })}
    </div>}
    <div className="admin-form">
     {key==="brain"&&<><div className="form-grid"><Cfg label="Auto-entry score (1-100)" type="number" value={form.autoEntryScore} on={v=>field("autoEntryScore",Math.max(1,Math.min(100,Number(v))))}/><Cfg label="Notify score (1-100)" type="number" value={form.notifyScore} on={v=>field("notifyScore",Math.max(1,Math.min(100,Number(v))))}/><Cfg label="Max market snapshot age ms" type="number" value={form.snapshotMaxAgeMs} on={v=>field("snapshotMaxAgeMs",Math.max(5000,Number(v)))}/><Cfg label="Large-wallet profiling starts at trade USD" type="number" value={form.profileTradeUsd} on={v=>field("profileTradeUsd",Math.max(0,Number(v)))}/><Cfg label="Solana scan concurrency" type="number" value={form.solanaFlowConcurrency} on={v=>field("solanaFlowConcurrency",Math.max(2,Number(v)))}/><Cfg label="BNB WebSocket RPC" value={form.bnbWs} placeholder="wss://..." on={v=>field("bnbWs",v)}/><Cfg label="Ethereum WebSocket RPC" value={form.ethWs} placeholder="wss://..." on={v=>field("ethWs",v)}/><Cfg label="BNB USD reference (optional)" type="number" value={form.bnbUsd} on={v=>field("bnbUsd",Number(v))}/><Cfg label="ETH USD reference (optional)" type="number" value={form.ethUsd} on={v=>field("ethUsd",Number(v))}/></div><label className="check-line"><input type="checkbox" checked={Boolean(form.solanaChainWideEnabled)} onChange={e=>field("solanaChainWideEnabled",e.target.checked)}/><span>Scan chain-wide Solana swap flow</span></label><div className="notice">0 caps in user trading settings mean unlimited by MemeCloud. The brain scores what money is doing now; it does not reject a meme simply because it already pumped hard or survived a deep dip. Leave BNB/Ethereum RPC blank to keep those chains in "prepared, not scanning" state.</div></>}
