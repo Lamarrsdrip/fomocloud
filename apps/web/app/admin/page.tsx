@@ -391,6 +391,20 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  const[liveReadiness,setLiveReadiness]=useState<any>(null);
  async function loadLiveReadiness(){try{setLiveReadiness(await apiFetch<any>("/v1/admin/live-readiness"))}catch{}}
  useEffect(()=>{void loadLiveReadiness()},[]);
+ const[liveTradingBusy,setLiveTradingBusy]=useState(false);
+ const[liveTradingMsg,setLiveTradingMsg]=useState("");
+ async function enableLiveTrading(){
+  setLiveTradingBusy(true);setLiveTradingMsg("");
+  try{await apiFetch("/v1/admin/live-trading/enable",{method:"POST"});setLiveTradingMsg("Live Solana trading is ON.");await loadLiveReadiness()}
+  catch(e:any){setLiveTradingMsg(e?.body?.reasons?Array.isArray(e.body.reasons)?e.body.reasons.join(" "):plainError(e):plainError(e))}
+  finally{setLiveTradingBusy(false)}
+ }
+ async function disableLiveTrading(){
+  setLiveTradingBusy(true);setLiveTradingMsg("");
+  try{await apiFetch("/v1/admin/live-trading/disable",{method:"POST"});setLiveTradingMsg("Live Solana trading is OFF.");await loadLiveReadiness()}
+  catch(e:any){setLiveTradingMsg(plainError(e))}
+  finally{setLiveTradingBusy(false)}
+ }
  const REQUIRED_SUMMARY:[string,string][]=[["marketData","Blockchain data"],["execution","Trade routing"],["discovery","Discovery"],["push","Notifications"],["email","Email"]];
  const readyCount=REQUIRED_SUMMARY.filter(([k])=>cfgStatus(k,(d.config||[]).find((x:any)=>x.key===k)).tone==="good").length;
  const activeCatDef=SETTINGS_CATEGORIES.find(c=>c.id===activeCat);
@@ -419,7 +433,6 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
       <div><span>Solana RPC</span><em className={badgeClass(liveReadiness.dependencies.rpc?"good":"watch")}>{liveReadiness.dependencies.rpc?"Connected":"Not verified"}</em></div>
       <div><span>Jupiter</span><em className={badgeClass(liveReadiness.dependencies.jupiter?"good":"watch")}>{liveReadiness.dependencies.jupiter?"Connected":"Not verified"}</em></div>
       <div><span>Signer credentials (Privy)</span><em className={badgeClass(liveReadiness.dependencies.signerCredentialsConnected?"good":"watch")}>{liveReadiness.dependencies.signerCredentialsConnected?"Connected":"Not verified"}</em></div>
-      <div><span>LIVE_EXECUTION_ENABLED (VPS)</span><em className={badgeClass(liveReadiness.dependencies.liveExecutionEnabledEnv?"good":"follow")}>{liveReadiness.dependencies.liveExecutionEnabledEnv?"On":"Off"}</em></div>
       <div><span>Wallets with active delegated permission</span><em className={badgeClass(liveReadiness.dependencies.walletsWithActivePermission>0?"good":"watch")}>{liveReadiness.dependencies.walletsWithActivePermission}</em></div>
      </div>
      <div className="settings-summary-rows">
@@ -428,6 +441,16 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
      {!liveReadiness.ready&&liveReadiness.reasons.length>0&&<div className="notice">{liveReadiness.reasons.map((r:string)=><div key={r}>{r}</div>)}</div>}
      <div className="notice">{liveReadiness.note}</div>
      <button type="button" className="soft-action" onClick={loadLiveReadiness}>Refresh</button>
+     <div className="card-title" style={{marginTop:16}}><div><span>MASTER SWITCH</span><h2>Live Solana trading</h2></div>
+      <span className={badgeClass(liveReadiness.liveTradingEnabled?"good":"follow")}>{liveTradingBusy?"Working…":liveReadiness.liveTradingEnabled?"ON":"OFF"}</span>
+     </div>
+     <div className="notice" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+      <span>{liveReadiness.liveTradingEnabled?"Executor and exits will sign and submit real transactions for any user with an active delegated permission.":"Executor and exits currently skip every live decision — this is the real switch, checked fresh on every trade, no VPS restart needed either way."}</span>
+      {admin&&(liveReadiness.liveTradingEnabled
+       ?<button type="button" className="action-primary" style={{background:"#c0392b"}} disabled={liveTradingBusy} onClick={disableLiveTrading}>Turn OFF</button>
+       :<button type="button" className="action-primary" disabled={liveTradingBusy||!liveReadiness.ready} onClick={enableLiveTrading} title={!liveReadiness.ready?"All dependencies above must be Connected first":""}>Turn ON</button>)}
+     </div>
+     {liveTradingMsg&&<div className="notice">{liveTradingMsg}</div>}
     </>}
    </section>
    <section className="app-card"><div className="settings-cat-list">

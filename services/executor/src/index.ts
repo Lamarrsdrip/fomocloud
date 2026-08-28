@@ -8,7 +8,7 @@ import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { startHeartbeat } from "@memecloud/ops";
-import { getConfig } from "@memecloud/config";
+import { getConfig, isLiveTradingEnabled } from "@memecloud/config";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection});
@@ -421,7 +421,9 @@ const worker=new Worker("signals",async job=>{
       });
 
       if(executionMode==="live"){
-        if(process.env.LIVE_EXECUTION_ENABLED!=="true"){
+        // The real, owner-controlled gate — read fresh from the database on every decision, so
+        // the Admin toggle takes effect immediately with no env file edit or service restart.
+        if(!(await isLiveTradingEnabled())){
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"LIVE_EXECUTION_NOT_ENABLED",explanation:"Live execution is intentionally disabled. The executable quote was verified, but no funds were moved."}});
           skippedCount++; continue;
         }

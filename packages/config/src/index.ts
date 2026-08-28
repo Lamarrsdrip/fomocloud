@@ -47,6 +47,14 @@ export async function getConfig<T=any>(key: string): Promise<T | null> {
   return (row.valueJson ?? null) as T | null;
 }
 
+// The real, owner-controlled live-trading gate. Checked fresh from the database on every
+// decision — never cached — so switching it off takes effect on the very next check, and
+// switching it on from Admin never requires touching an env file or restarting a service.
+export async function isLiveTradingEnabled(): Promise<boolean> {
+  const cfg = await getConfig<{ enabled?: boolean }>("liveTrading");
+  return Boolean(cfg?.enabled);
+}
+
 export async function setConfig(
   key: string,
   value: unknown,

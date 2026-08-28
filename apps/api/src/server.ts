@@ -11,7 +11,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema } from "@memecloud/shared";
-import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, type ProviderRecord } from "@memecloud/config";
+import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, isLiveTradingEnabled, type ProviderRecord } from "@memecloud/config";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
 type TestResult = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string };
 import { sendEmail, sendPush, ensureVapid, publicPushKey } from "@memecloud/notifications";
@@ -214,7 +214,7 @@ app.get("/v1/public/config", asyncRoute(async (_req,res) => {
   res.json({
     appName:"MemeCloud",
     executionMode:process.env.EXECUTION_MODE??"simulation",
-    liveExecutionEnabled:process.env.LIVE_EXECUTION_ENABLED==="true",
+    liveExecutionEnabled:await isLiveTradingEnabled(),
     pushPublicKey:await publicPushKey(),
     supportedChains:chainCfg?.enabled??(process.env.ENABLED_CHAINS??"SOLANA").split(","),
     adapterReadyChains:(process.env.ADAPTER_READY_CHAINS??"BASE,ETHEREUM,BNB,ARBITRUM,AVALANCHE").split(",").filter(Boolean),
@@ -1085,7 +1085,7 @@ app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest
       engine:{signals,signalsToday,buyDecisions,waitDecisions,skipDecisions}
     },
     executionMode:process.env.EXECUTION_MODE??"simulation",
-    liveExecutionEnabled:process.env.LIVE_EXECUTION_ENABLED==="true",
+    liveExecutionEnabled:await isLiveTradingEnabled(),
     broadcasts,
     health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
   });
@@ -1656,9 +1656,12 @@ app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
   });
 }));
 // Answers "can MemeCloud actually trade real money right now?" purely from real, currently-fresh
-// signals — never from whether a value merely exists in the database.
-app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
-  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats]=await Promise.all([
+// signals — never from whether a value merely exists in the database. This checks the real
+// INFRASTRUCTURE dependencies only; whether live trading is currently switched on is reported
+// separately (liveTradingEnabled) and is never itself a readiness dependency — that would be
+// circular when this same function gates turning it on in the first place.
+async function computeLiveReadiness(){
+  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats,liveTradingEnabled]=await Promise.all([
     db.appConfig.findUnique({where:{key:"marketData"}}),
     db.appConfig.findUnique({where:{key:"execution"}}),
     db.appConfig.findUnique({where:{key:"signer"}}),
@@ -1666,7 +1669,8 @@ app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) =>
     getConfig<any>("execution"),
     getConfig<any>("signer"),
     db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}}),
-    db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}})
+    db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}}),
+    isLiveTradingEnabled()
   ]);
   const now=Date.now();
   // Live-trading readiness is a stricter, safety-critical claim than the general admin "Connected"
@@ -1685,27 +1689,44 @@ app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) =>
   const rpcOk=readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"rpc")||readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"helius");
   const jupiterOk=readyNow(executionRow,executionCfg,PROVIDER_FINGERPRINT_FIELDS.execution,"jupiter");
   const privyOk=readyNow(signerRow,signerCfg,PROVIDER_FINGERPRINT_FIELDS.signer,"privy");
-  const liveExecutionEnabledEnv=process.env.LIVE_EXECUTION_ENABLED==="true";
   const workers=["executor","exits","market-worker","solana-listener","solana-flow-scanner"].map(name=>{
     const h=heartbeats.find(x=>x.name===name);
     return {name,running:Boolean(h)&&now-h!.lastBeatAt.getTime()<45_000,lastBeatAt:h?.lastBeatAt??null};
   });
   const workersHealthy=workers.every(w=>w.running);
-  const signerReady=privyOk && liveExecutionEnabledEnv && activeWallets>0;
+  const signerReady=privyOk && activeWallets>0;
   const ready=rpcOk && jupiterOk && signerReady && workersHealthy;
   const reasons:string[]=[];
   if(!rpcOk) reasons.push("Solana RPC has not passed a fresh connection test (test connection or re-save Market data).");
   if(!jupiterOk) reasons.push("Jupiter has not passed a fresh connection test (test connection or re-save Trade routing).");
   if(!privyOk) reasons.push("Privy signer has not passed a fresh connection test.");
-  if(!liveExecutionEnabledEnv) reasons.push("LIVE_EXECUTION_ENABLED is not set to true on the VPS — this is the real kill switch and is currently off.");
-  if(activeWallets===0) reasons.push("No user wallet currently has an active delegated trading permission — nothing could actually be signed for.");
+  if(activeWallets===0) reasons.push("No user wallet currently has an active delegated trading permission — connect a wallet and grant MemeCloud as an additional signer with the required policy before activating.");
   if(!workersHealthy) reasons.push("One or more execution workers (executor / exits / market-worker / listener / flow scanner) are not sending a healthy heartbeat.");
-  res.json({
-    chain:"SOLANA",ready,reasons,
-    dependencies:{rpc:rpcOk,jupiter:jupiterOk,signerCredentialsConnected:privyOk,liveExecutionEnabledEnv,walletsWithActivePermission:activeWallets},
+  return {
+    chain:"SOLANA",ready,reasons,liveTradingEnabled,
+    dependencies:{rpc:rpcOk,jupiter:jupiterOk,signerCredentialsConnected:privyOk,walletsWithActivePermission:activeWallets},
     workers,
     note:"BNB/Ethereum/other chains have no delegated live-execution signer implemented yet — Solana is the only chain this endpoint evaluates for live trading readiness."
-  });
+  };
+}
+app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
+  res.json(await computeLiveReadiness());
+}));
+// Owner-only. The DB-backed switch executor/exits actually check on every decision (see
+// isLiveTradingEnabled) — takes effect immediately, no env file, no VPS restart. Turning it ON
+// always re-verifies the real dependency chain first and refuses if anything's not genuinely
+// ready; turning it OFF is unconditional and immediate.
+app.post("/v1/admin/live-trading/enable", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const readiness=await computeLiveReadiness();
+  if(!readiness.ready) return res.status(409).json({error:"NOT_READY",reasons:readiness.reasons});
+  await setConfig("liveTrading",{enabled:true,enabledAt:new Date().toISOString(),enabledBy:req.user.sub},{secret:false,updatedBy:req.user.sub});
+  await audit(req.user.sub,"OWNER","LIVE_TRADING_ENABLE","liveTrading",{});
+  res.json({ok:true,enabled:true});
+}));
+app.post("/v1/admin/live-trading/disable", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  await setConfig("liveTrading",{enabled:false,disabledAt:new Date().toISOString(),disabledBy:req.user.sub},{secret:false,updatedBy:req.user.sub});
+  await audit(req.user.sub,"OWNER","LIVE_TRADING_DISABLE","liveTrading",{});
+  res.json({ok:true,enabled:false});
 }));
 
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{

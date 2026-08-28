@@ -8,7 +8,7 @@ import { startHeartbeat } from "@memecloud/ops";
 import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
 import { PrivySolanaSigner } from "@memecloud/providers";
-import { getConfig } from "@memecloud/config";
+import { getConfig, isLiveTradingEnabled } from "@memecloud/config";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
@@ -139,7 +139,9 @@ async function recoverPrivyExitHash(referenceId:string){
 }
 
 async function executeLiveExit(p:any,instruction:any){
-  if(process.env.LIVE_EXECUTION_ENABLED!=="true")return;
+  // The real, owner-controlled gate — read fresh from the database on every exit, so the Admin
+  // toggle takes effect immediately with no env file edit or service restart.
+  if(!(await isLiveTradingEnabled()))return;
   if(p.chain!=="SOLANA"||!rpc||!signer)throw Object.assign(new Error("LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"),{code:"LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"});
   const permitted=await db.wallet.findFirst({where:{userId:p.userId,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}});
   if(!permitted)throw Object.assign(new Error("TRADING_PERMISSION_REQUIRED"),{code:"TRADING_PERMISSION_REQUIRED"});
