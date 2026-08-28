@@ -426,6 +426,17 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
  const[usernameStatus,setUsernameStatus]=useState<"idle"|"saving"|"saved"|"error">("idle");
  const[usernameMsg,setUsernameMsg]=useState("");
  const[sessionsOpen,setSessionsOpen]=useState(false);
+ // The X OAuth callback redirects here with ?x=connected or ?x=error&reason=... after it finishes
+ // its own server-side work. Without reading this, a failed link (expired state, cancelled
+ // authorization, token exchange failure) landed the user back on Account with zero explanation --
+ // the same silent-failure pattern already fixed for login. history.replaceState strips the query
+ // so a later refresh of this same page doesn't re-show a stale result.
+ useEffect(()=>{
+  const params=new URLSearchParams(location.search);
+  const x=params.get("x");
+  if(x==="connected"){setNote("X account connected.");history.replaceState(null,"","/app/?view=profile")}
+  else if(x==="error"){setErr(params.get("reason")||"Unable to link X right now.");history.replaceState(null,"","/app/?view=profile")}
+ },[]);
  const trading=settings?.trading||{}; const prefs=settings?.notifications||{};
  async function patchTrading(body:any){try{const r=await apiFetch("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setErr(plainError(e))}}
  async function patchNotifications(body:any){try{const r=await apiFetch("/v1/me/settings/notifications",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,notifications:r.notifications}))}catch(e){setErr(plainError(e))}}
