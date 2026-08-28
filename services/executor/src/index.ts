@@ -20,13 +20,16 @@ const usdcSol=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGG
 // startup and cached forever, identically to the bug already fixed in listener/flow-worker/
 // market-worker this session. Reloaded on a timer (not per-job) so job latency doesn't pay an
 // AppConfig read on every signal.
-let jupiter:JupiterExecution,solanaRpc:string|undefined,solanaConnection:Connection|null,privy:PrivySolanaSigner|null;
+let jupiter:JupiterExecution,solanaRpc:string|undefined,solanaConnection:Connection|null,privy:PrivySolanaSigner|null,exitSlippageBps=700,maxExecutablePriceImpactPct=35;
 async function reloadConfig(){
   const execCfg=await getConfig<any>("execution");
   const marketCfg=await getConfig<any>("marketData");
+  const riskCfg=await getConfig<any>("risk");
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   solanaRpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
   solanaConnection=solanaRpc?new Connection(solanaRpc,"confirmed"):null;
+  exitSlippageBps=Number(execCfg?.exitSlippageBps??700);
+  maxExecutablePriceImpactPct=Math.max(1,Math.min(50,Number(riskCfg?.maxExecutablePriceImpactPct??35)));
   const signerCfg=await getConfig<any>("signer");
   const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
   const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
@@ -136,6 +139,38 @@ async function reconcileConfirmedSwap(signature:string,owner:string,inputMint:st
   return {actualInputRaw:actualInput.toString(),actualOutputRaw:actualOutput.toString(),feeLamports:tx.meta?.fee??0};
 }
 
+// Confirms a live source-sell-mirror SELL, reconciles it against the real on-chain balance deltas
+// (never trusts the pre-sign quote as the realized amount), and records the exit using the same
+// calculateExitAccounting formula the SIMULATION mirror already uses -- just fed a real,
+// evidence-derived execution price instead of a stale mark. Mirrors finalizeLiveBuy's shape.
+async function finalizeLiveSell(order:any,attemptKey:string,txHash:string,permitted:any,position:any){
+  if(!solanaRpc)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
+  await jupiter.waitConfirmed(solanaRpc,txHash,60_000);
+  const fill=await reconcileConfirmedSwap(txHash,permitted.address,position.mint,usdcSol);
+  const actualTokensSoldRaw=BigInt(fill.actualInputRaw);
+  const actualProceedsUsd=Number(BigInt(fill.actualOutputRaw))/1_000_000;
+  if(actualTokensSoldRaw<=0n||!Number.isFinite(actualProceedsUsd)||actualProceedsUsd<0)throw Object.assign(new Error("INVALID_CONFIRMED_SELL_AMOUNTS"),{code:"INVALID_CONFIRMED_SELL_AMOUNTS"});
+  const decimals=await tokenDecimals(position.mint);
+  const actualTokenAmount=Number(actualTokensSoldRaw)/(10**decimals);
+  if(!Number.isFinite(actualTokenAmount)||actualTokenAmount<=0)throw Object.assign(new Error("INVALID_CONFIRMED_TOKEN_AMOUNT"),{code:"INVALID_CONFIRMED_TOKEN_AMOUNT"});
+  const actualExecutionPriceUsd=actualProceedsUsd/actualTokenAmount;
+  const fresh=await db.position.findUnique({where:{id:position.id}});
+  if(!fresh)throw Object.assign(new Error("POSITION_MISSING_ON_RECONCILE"),{code:"POSITION_MISSING_ON_RECONCILE"});
+  const freshRemaining=BigInt(fresh.remainingTokenRaw);
+  const cappedSoldRaw=actualTokensSoldRaw>freshRemaining?freshRemaining:actualTokensSoldRaw;
+  if(cappedSoldRaw<=0n||!fresh.avgEntryPriceUsd)throw Object.assign(new Error("POSITION_ALREADY_FULLY_EXITED"),{code:"POSITION_ALREADY_FULLY_EXITED"});
+  const accounting=calculateExitAccounting({entryTokenRaw:fresh.entryTokenRaw,remainingTokenRaw:fresh.remainingTokenRaw,tokenRaw:cappedSoldRaw.toString(),costUsd:fresh.costUsd,avgEntryPriceUsd:fresh.avgEntryPriceUsd,executionPriceUsd:actualExecutionPriceUsd});
+  const nextRaw=BigInt(accounting.remainingTokenRaw);
+  const isClosed=nextRaw<=0n;
+  await db.$transaction([
+    db.positionExit.create({data:{positionId:position.id,reason:"SOURCE_SELL_MIRROR_LIVE",tokenRaw:cappedSoldRaw.toString(),proceedsUsd:accounting.netProceedsUsd,pnlUsd:accounting.realizedPnlUsd,txHash}}),
+    db.position.update({where:{id:position.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:accounting.realizedPnlUsd},profitTakenUsd:{increment:Math.max(0,accounting.realizedPnlUsd)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}}),
+    db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
+    db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}})
+  ]);
+  return {isClosed,proceedsUsd:accounting.netProceedsUsd,pnlUsd:accounting.realizedPnlUsd};
+}
+
 async function handleSourceSell(signal:any){
   const mode=(process.env.EXECUTION_MODE??"simulation").toUpperCase() as "SIMULATION"|"LIVE";
   const positions=await db.position.findMany({
@@ -153,9 +188,93 @@ async function handleSourceSell(signal:any){
       await userEvent(userId,"SOURCE_SELL",`${signal.trader.displayName} sold`,"The source sale was detected, but the sold percentage could not be verified, so no automatic mirror exit was invented.",{signalId:signal.id});
       continue;
     }
+    const fraction=Math.min(1,soldPct/100);
     if(mode==="LIVE"){
-      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SIGNER",reason:"SIGNER_PROVIDER_REQUIRED",explanation:`Source trader sold ${soldPct.toFixed(1)}%. Live mirror exits remain disabled until the reviewed delegated signer is connected.`}});
-      await userEvent(userId,"SOURCE_SELL",`${signal.trader.displayName} sold ${soldPct.toFixed(1)}%`,`A live source exit was detected. Your position remains protected by fail-closed mode until the delegated signer is configured.`,{signalId:signal.id,sourceSoldPct:soldPct});
+      const permitted=await db.wallet.findFirst({where:{userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
+      if(!permitted){
+        await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"SKIP",reason:"TRADING_PERMISSION_REQUIRED",explanation:`Source trader sold ${soldPct.toFixed(1)}%, but this account has no active delegated trading permission for this chain. No funds were moved.`}});
+        continue;
+      }
+      // This is the one case where WAIT_SIGNER is actually correct: no delegated signer is
+      // connected, so there is nothing that can sign a real sell. Once signer config exists
+      // (checked fresh via reloadConfig, never cached across an Admin change), fall through to a
+      // genuine on-chain mirror sell below -- this must never be an unconditional placeholder.
+      if(!privy){
+        await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_SIGNER",reason:"SIGNER_PROVIDER_REQUIRED",explanation:`Source trader sold ${soldPct.toFixed(1)}%. Live mirror exits remain disabled until the reviewed delegated signer is connected.`}});
+        await userEvent(userId,"SOURCE_SELL",`${signal.trader.displayName} sold ${soldPct.toFixed(1)}%`,`A live source exit was detected. Your position remains protected by fail-closed mode until the delegated signer is configured.`,{signalId:signal.id,sourceSoldPct:soldPct});
+        continue;
+      }
+      const liveDecision=await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:true,action:"SOURCE_SELL_MIRROR",sourcePriceUsd:signal.sourcePriceUsd,explanation:`Source trader sold ${soldPct.toFixed(1)}%; mirroring that verified fraction with a real on-chain sell.`}});
+      let liveClosed=0,livePartial=0,liveFailed=0,liveSkipped=0;
+      for(const p of userPositions){
+        try{
+          if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0)continue;
+          const remaining=BigInt(p.remainingTokenRaw);
+          if(remaining<=0n)continue;
+          let rawToExit=(remaining*BigInt(Math.round(fraction*1_000_000)))/1_000_000n;
+          if(rawToExit<=0n&&fraction>0)rawToExit=1n;
+          if(rawToExit>remaining)rawToExit=remaining;
+          if(rawToExit<=0n)continue;
+
+          const positionOrderKey=crypto.createHash("sha256").update(`SOURCE_SELL:${signal.id}:${p.id}`).digest("hex");
+          let order=await db.order.findUnique({where:{idempotencyKey:positionOrderKey}});
+          if(order){
+            if(order.status==="CONFIRMED"){continue}
+            const attempt=await db.liveExecutionAttempt.findFirst({where:{orderId:order.id,purpose:"SOURCE_SELL"},orderBy:{createdAt:"desc"}});
+            if(!attempt)throw Object.assign(new Error("LIVE_SOURCE_SELL_ATTEMPT_MISSING"),{code:"LIVE_SOURCE_SELL_ATTEMPT_MISSING"});
+            const ref=attempt.idempotencyKey.slice(0,64);
+            const hash=attempt.txHash||order.txHash||await recoverPrivyHash(ref);
+            if(hash){
+              await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:order.submittedAt??new Date()}});
+              await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"SUBMITTED",txHash:hash}});
+              const outcome=await finalizeLiveSell(order,attempt.idempotencyKey,hash,permitted,p);
+              if(outcome.isClosed)liveClosed++;else livePartial++;
+            }else{
+              // Ambiguous prior attempt with no recoverable provider hash. Never auto-resubmit a
+              // real sell; leave it for reconciliation exactly like the BUY path does.
+              liveSkipped++;
+            }
+            continue;
+          }
+
+          const quote=await jupiter.quote({inputMint:p.mint,outputMint:usdcSol,amountRaw:rawToExit.toString(),slippageBps:exitSlippageBps});
+          const impact=Math.abs(Number(quote.priceImpactPct??0));
+          if(!quote.outAmount||BigInt(quote.outAmount)<=0n||!Number.isFinite(impact)||impact>maxExecutablePriceImpactPct){
+            liveSkipped++;continue;
+          }
+          const built=await jupiter.buildSwap(quote,permitted.address);
+          order=await db.order.create({data:{idempotencyKey:positionOrderKey,decisionId:liveDecision.id,userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdcSol,requestedInputRaw:rawToExit.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,sourceSoldPct:soldPct} as any}});
+          const attemptKey=crypto.createHash("sha256").update(`SOURCE_SELL:${order.id}`).digest("hex");
+          await db.liveExecutionAttempt.create({data:{idempotencyKey:attemptKey,userId,orderId:order.id,positionId:p.id,purpose:"SOURCE_SELL",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
+          try{
+            const sent=await privy.signAndSend(permitted.permissionRef!,built,attemptKey.slice(0,64));
+            await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:sent.hash,submittedAt:new Date()}});
+            await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:sent.hash}});
+            const outcome=await finalizeLiveSell(order,attemptKey,sent.hash,permitted,p);
+            if(outcome.isClosed)liveClosed++;else livePartial++;
+          }catch(e:any){
+            const recovered=await recoverPrivyHash(attemptKey.slice(0,64));
+            if(recovered){
+              await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:new Date()}}).catch(()=>{});
+              await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:recovered}}).catch(()=>{});
+              const outcome=await finalizeLiveSell(order,attemptKey,recovered,permitted,p);
+              if(outcome.isClosed)liveClosed++;else livePartial++;
+              continue;
+            }
+            await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_SOURCE_SELL_ATTEMPT")}}).catch(()=>{});
+            await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_SOURCE_SELL_ATTEMPT"),errorMessage:String(e?.message??e)}}).catch(()=>{});
+            await db.riskIncident.create({data:{severity:"CRITICAL",scope:"LIVE_EXECUTION",userId,chain:"SOLANA",mint:p.mint,positionId:p.id,code:String(e?.code??"AMBIGUOUS_LIVE_SOURCE_SELL_ATTEMPT"),detail:{orderId:order.id,message:String(e?.message??e),referenceId:attemptKey.slice(0,64)}}}).catch(()=>{});
+            liveFailed++;
+          }
+        }catch(e:any){
+          console.error("[executor] live source-sell mirror failed for position",p.id,e);
+          liveFailed++;
+        }
+      }
+      await userEvent(userId,liveFailed?"TRADE_SKIPPED":(liveClosed&&!livePartial?"POSITION_CLOSED":"PROFIT_TAKEN"),
+        `${signal.trader.displayName} source sell mirrored live`,
+        `Verified source sale ${soldPct.toFixed(1)}% mirrored with real on-chain sells across ${userPositions.length} position(s). Closed ${liveClosed}, partially exited ${livePartial}${liveSkipped?`, ${liveSkipped} left open pending a genuine executable route/reconciliation`:""}${liveFailed?`, ${liveFailed} failed and were left open (protected by fail-safe reconciliation, no funds double-moved)`:""}.`,
+        {signalId:signal.id,decisionId:liveDecision.id,sourceSoldPct:soldPct,mode:"LIVE",closed:liveClosed,partial:livePartial,skipped:liveSkipped,failed:liveFailed});
       continue;
     }
     const market=await db.marketPrice.findFirst({where:{chain:signal.chain,mint:signal.inputMint},orderBy:{observedAt:"desc"}});
@@ -163,7 +282,6 @@ async function handleSourceSell(signal:any){
       await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"WAIT_MARKET_DATA",reason:"SOURCE_EXIT_PRICE_UNAVAILABLE",explanation:"The source sell was detected, but a fresh genuine market price is unavailable."}});
       continue;
     }
-    const fraction=Math.min(1,soldPct/100);
     const decision=await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:true,action:"SOURCE_SELL_MIRROR",sourcePriceUsd:signal.sourcePriceUsd,executablePriceUsd:market.priceUsd,explanation:`Source trader sold ${soldPct.toFixed(1)}%; simulation mirrors that verified fraction using the latest genuine price mark.`}});
     let totalPnl=0,totalProceeds=0,closed=0,partial=0;
     for(const p of userPositions){
