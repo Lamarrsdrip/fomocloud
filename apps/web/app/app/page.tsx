@@ -388,7 +388,7 @@ function PositionsView({positions,d}:{positions:any[];d:any}){const[filter,setFi
 </>}
 
 function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reload,signOut,setView}:{me:any;setMe:any;settings:any;notifications:any[];sessions:any[];setSettings:any;reload:()=>Promise<void>;signOut:()=>void;setView:(v:View)=>void}){
- const[err,setErr]=useState(""); const[name,setName]=useState(me?.displayName||""); const[username,setUsername]=useState(me?.username||""); const[closeValue,setCloseValue]=useState("");
+ const[err,setErr]=useState(""); const[note,setNote]=useState(""); const[name,setName]=useState(me?.displayName||""); const[username,setUsername]=useState(me?.username||""); const[closeValue,setCloseValue]=useState("");
  const trading=settings?.trading||{}; const prefs=settings?.notifications||{};
  async function patchTrading(body:any){try{const r=await apiFetch("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setErr(plainError(e))}}
  async function patchNotifications(body:any){try{const r=await apiFetch("/v1/me/settings/notifications",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,notifications:r.notifications}))}catch(e){setErr(plainError(e))}}
@@ -440,7 +440,10 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
  async function unlinkWallet(id:string){if(!confirm("Unlink this wallet from your account? Any active delegated trading permission must be revoked first."))return;try{await apiFetch(`/v1/me/wallets/${id}`,{method:"DELETE"});await reload()}catch(e){setErr(plainError(e))}}
  async function revokeSession(id:string){try{await apiFetch(`/v1/me/sessions/${id}`,{method:"DELETE"});await reload()}catch(e){setErr(plainError(e))}}
  async function markNotificationsRead(){try{await apiFetch("/v1/me/notifications/read",{method:"POST",body:JSON.stringify({})});await reload()}catch(e){setErr(plainError(e))}}
- async function resendVerification(){try{await apiFetch("/auth/resend-verification",{method:"POST"});setErr("Verification email requested. Check your inbox if SMTP is configured.")}catch(e){setErr(plainError(e))}}
+ // The backend only ever resolves here after the SMTP provider has genuinely accepted the
+ // message (nodemailer's sendMail throws otherwise, and the route now propagates that as a
+ // real error code) — so "sent" below is backend-confirmed, not an optimistic guess.
+ async function resendVerification(){setErr("");setNote("");try{const r=await apiFetch<any>("/auth/resend-verification",{method:"POST"});setNote(r?.alreadyVerified?"This email is already verified.":"Verification email sent — check your inbox (and spam folder).")}catch(e){setErr(plainError(e))}}
  async function closeAccount(){
   const expected=me?.hasPassword?"your password":"CLOSE MY ACCOUNT";
   if(!closeValue){setErr(`Enter ${expected} to close this account.`);return}
@@ -449,6 +452,7 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
  }
  return <>
   {err&&<div className="auth-error">{err}</div>}
+  {note&&<div className="auth-success">{note}</div>}
   <div className="settings-grid">
    <section className="settings-block"><h3>Account</h3><div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||"Wallet-created account"}</small></div></div>
     <label className="field"><span>Display name</span><input value={name} onChange={e=>setName(e.target.value)} /></label><label className="field"><span>Public username</span><input value={username} onChange={e=>setUsername(e.target.value.toLowerCase())} placeholder="username" /></label><div className="switch-row"><div><b>Public community profile</b><small>Off by default. Financial details always stay private.</small></div><button className={`switch ${me?.publicProfileEnabled?"on":""}`} onClick={async()=>{try{const r=await apiFetch<any>("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username,publicProfileEnabled:!me?.publicProfileEnabled})});setMe((x:any)=>({...x,...r.user}))}catch(e){setErr(plainError(e))}}}><i/></button></div><button className="soft-action" onClick={saveProfile}>Save profile</button>

@@ -255,8 +255,17 @@ app.post("/auth/resend-verification", auth, asyncRoute(async (req:AuthedRequest,
   if(user.emailVerifiedAt) return res.json({ok:true,alreadyVerified:true});
   const token=await createEmailToken(user.id,"VERIFY_EMAIL",60*24);
   const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
-  await sendEmail(user.email,"Verify your MemeCloud email",`<h2>Verify your email</h2><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(token)}">Verify email</a></p>`,user.id);
-  res.json({ok:true});
+  // Unlike /auth/forgot-password, this route is `auth`-gated — the caller is definitely the real
+  // account owner, so there is no account-existence to protect. The frontend needs the REAL
+  // outcome (unconfigured vs. genuine send failure vs. actually accepted by the SMTP provider),
+  // not a blanket ok:true — see the resendVerification() UI fix in apps/web for why this matters.
+  try {
+    await sendEmail(user.email,"Verify your MemeCloud email",`<h2>Verify your email</h2><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(token)}">Verify email</a></p>`,user.id);
+  } catch(e:any) {
+    if(e?.code==="EMAIL_NOT_CONFIGURED") return res.status(503).json({error:"EMAIL_NOT_CONFIGURED"});
+    return res.status(502).json({error:"EMAIL_SEND_FAILED"});
+  }
+  res.json({ok:true,sent:true});
 }));
 
 app.post("/auth/login", asyncRoute(async (req,res) => {

@@ -61,6 +61,7 @@ export function plainError(e:any){
     EMAIL_VERIFICATION_REQUIRED:"Verify your email before turning Auto Copy on.",
     X_OAUTH_NOT_CONFIGURED:"X linking has not been configured by the platform yet.",
     EMAIL_NOT_CONFIGURED:"Email has not been configured by the administrator yet.",
+    EMAIL_SEND_FAILED:"The email provider rejected this message. Please try again shortly or contact support.",
     SOURCE_WALLET_REQUIRED:"Add the trader's verified public wallet before enabling Auto Copy.",
     WALLET_OR_X_REQUIRED:"Add a public trading wallet or an X username.",
     REVOKE_TRADING_PERMISSION_FIRST:"Revoke this wallet's trading permission before unlinking it.",
