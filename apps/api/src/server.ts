@@ -224,7 +224,13 @@ app.get("/v1/public/config", asyncRoute(async (_req,res) => {
     liveExecutionEnabled:await isLiveTradingEnabled(),
     pushPublicKey:await publicPushKey(),
     supportedChains:chainCfg?.enabled??(process.env.ENABLED_CHAINS??"SOLANA").split(","),
-    adapterReadyChains:(process.env.ADAPTER_READY_CHAINS??"BASE,ETHEREUM,BNB,ARBITRUM,AVALANCHE").split(",").filter(Boolean),
+    // Honest per the multi-chain capability audit: BASE/ARBITRUM/AVALANCHE/SUI/HYPERLIQUID exist
+    // only as schema enum values with zero scanning or execution code anywhere in the repo.
+    // BNB/Ethereum have a real discovery scanner (services/evm-flow-worker) but no signer -- no
+    // chain other than Solana has an execution "adapter" in any real sense, so the field default
+    // previously claiming BASE/ARBITRUM/AVALANCHE were "adapter ready" was simply false.
+    adapterReadyChains:(process.env.ADAPTER_READY_CHAINS??"").split(",").filter(Boolean),
+    discoveryOnlyChains:["BNB","ETHEREUM"],
     xOAuthConfigured:Boolean(socialCfg?.xOAuthClientId||process.env.X_OAUTH_CLIENT_ID)
   });
 }));
