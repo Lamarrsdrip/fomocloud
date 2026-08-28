@@ -93,7 +93,11 @@ export function fingerprintOf(cfg: any, fields: string[]): string {
   return crypto.createHash("sha256").update(parts.join("")).digest("hex").slice(0, 16);
 }
 
-export type ProviderRecord = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string; fingerprint: string };
+// HTTP 429 (RATE_LIMITED) must never be conflated with an actually-invalid credential
+// (INVALID_CREDENTIALS) -- see apps/api/src/server.ts's classifyHttp, the single place every
+// provider test derives this. readyNow() below and the admin UI both depend on this distinction.
+export type ProviderState="CONNECTED"|"RATE_LIMITED"|"INVALID_CREDENTIALS"|"PROVIDER_UNAVAILABLE"|"NETWORK_ERROR"|"TIMEOUT"|"NOT_CONFIGURED"|"UNKNOWN";
+export type ProviderRecord = { ok: boolean; state?: ProviderState; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string; fingerprint: string };
 // verified: the last time this provider's connection genuinely PASSED, pinned to the config
 // fingerprint at that moment — this is what "Connected" means, and it must survive time passing,
 // API restarts, and unrelated saves. It only ever advances forward on a fresh pass; a failing
@@ -151,8 +155,8 @@ export function redactedConfig(row: {
         const currentFp = fingerprintOf(fullValue, fingerprintFields[provider] ?? []);
         const v = (status as ProviderStatus).verified;
         out[provider] = {
-          health: status.health ? { ok: status.health.ok, httpStatus: status.health.httpStatus, latencyMs: status.health.latencyMs, message: status.health.message, checkedAt: status.health.checkedAt, stale: status.health.fingerprint !== currentFp } : null,
-          verified: v ? { ok: v.ok, httpStatus: v.httpStatus, latencyMs: v.latencyMs, message: v.message, checkedAt: v.checkedAt, stale: v.fingerprint !== currentFp } : null
+          health: status.health ? { ok: status.health.ok, state: status.health.state, httpStatus: status.health.httpStatus, latencyMs: status.health.latencyMs, message: status.health.message, checkedAt: status.health.checkedAt, stale: status.health.fingerprint !== currentFp } : null,
+          verified: v ? { ok: v.ok, state: v.state, httpStatus: v.httpStatus, latencyMs: v.latencyMs, message: v.message, checkedAt: v.checkedAt, stale: v.fingerprint !== currentFp } : null
         };
       } else {
         out[provider] = status; // legacy flat shape from before this change — self-heals on next test
