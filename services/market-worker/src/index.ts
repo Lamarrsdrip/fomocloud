@@ -6,19 +6,26 @@ import {BirdeyeClient} from "@memecloud/providers";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
 
-const marketCfg=await getConfig<any>("marketData");
-const execCfg=await getConfig<any>("execution");
-const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
-if(!rpc)throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
-const conn=new Connection(rpc,"confirmed");
-const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
-const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
-const birdeyeKey=marketCfg?.birdeyeApiKey||process.env.BIRDEYE_API_KEY;
-const birdeye=birdeyeKey?new BirdeyeClient(birdeyeKey,marketCfg?.birdeyeBaseUrl):null;
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
 const decimalsCache=new Map<string,{decimals:number;supply:number;at:number}>();
+const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false;
+
+// Previously read once at process startup and cached forever — an Admin change to the RPC URL,
+// Jupiter API key, or Birdeye key silently had no effect until someone manually restarted this
+// service. Re-fetched every tick (a cheap AppConfig read, not per-mint) so config actually applies.
+let conn:Connection,jupiter:JupiterExecution,birdeye:BirdeyeClient|null;
+async function reloadConfig(){
+  const marketCfg=await getConfig<any>("marketData"),execCfg=await getConfig<any>("execution");
+  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!rpc)throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
+  conn=new Connection(rpc,"confirmed");
+  jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+  const birdeyeKey=marketCfg?.birdeyeApiKey||process.env.BIRDEYE_API_KEY;
+  birdeye=birdeyeKey?new BirdeyeClient(birdeyeKey,marketCfg?.birdeyeBaseUrl):null;
+}
+await reloadConfig();
 
 async function tokenMeta(mint:string){
   const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<60*60_000)return c;
@@ -129,19 +136,30 @@ async function updateMint(mint:string){
   }catch(e){quoteErrors++;console.error("[market-worker]",mint,e)}
 }
 
+// Adaptive backoff: sustained provider 429s mean the current pace exceeds whatever tier the
+// configured API key actually has, and hammering harder only makes it worse. Slow down when
+// errors are actively happening; ease back toward the base pace once they stop. This is scoped
+// entirely to this price-polling worker — it does not touch @memecloud/execution, so it has no
+// effect on the real BUY/SELL path in executor/exits.
+let adaptiveDelayMs=Number(process.env.MARKET_BATCH_DELAY_MS??500);
+const baseDelayMs=adaptiveDelayMs,maxDelayMs=Math.max(baseDelayMs,8000);
 async function tick(){
   if(running)return;running=true;
   try{
+    await reloadConfig().catch(e=>console.error("[market-worker] config reload failed, keeping previous clients",e));
     const mints=await trackedMints();tracked=mints.length;
+    const errorsBefore=quoteErrors;
     // Avoid bursting provider limits. Admin can run more workers later if the paid plan supports it.
     const batch=Math.max(1,Math.min(8,Number(process.env.MARKET_BATCH_SIZE??4)));
     for(let i=0;i<mints.length;i+=batch){
       await Promise.all(mints.slice(i,i+batch).map(updateMint));
-      await new Promise(r=>setTimeout(r,Number(process.env.MARKET_BATCH_DELAY_MS??500)));
+      await new Promise(r=>setTimeout(r,adaptiveDelayMs));
     }
+    if(quoteErrors>errorsBefore)adaptiveDelayMs=Math.min(maxDelayMs,Math.round(adaptiveDelayMs*1.6));
+    else adaptiveDelayMs=Math.max(baseDelayMs,Math.round(adaptiveDelayMs*0.85));
   }finally{running=false}
 }
-startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running}));
+startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,adaptiveDelayMs,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running}));
 setInterval(()=>void tick(),Math.max(3000,Number(process.env.MARKET_INTERVAL_MS??7000)));
 void tick();
 console.log("[market-worker] running");

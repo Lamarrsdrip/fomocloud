@@ -1255,9 +1255,25 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 // the entire discovery experience for anyone without an account; wallet/login should only ever
 // gate EXECUTION, never observation.
 app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
+  // lastEvaluatedAt alone is not evidence of a real opportunity — the brain-worker touches it on
+  // every tick for any token with a fresh market-data snapshot, even when the snapshot itself
+  // carries zero real flow (e.g. during an upstream scanner outage). action:"IGNORE" is the
+  // Brain's own scoring already having decided a token isn't a real opportunity right now; showing
+  // it under "Trending" anyway would directly contradict the system's own evaluation. Requiring at
+  // least one genuine evidence signal (not just a non-IGNORE label) additionally guards against a
+  // token sitting at the WATCH threshold on stale/default inputs.
   const opportunities=await db.globalBrainOpportunity.findMany({
-    where:{lastEvaluatedAt:{gte:new Date(Date.now()-6*60*60_000)}},
-    orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:120
+    where:{
+      lastEvaluatedAt:{gte:new Date(Date.now()-6*60*60_000)},
+      action:{not:"IGNORE"},
+      OR:[
+        {inflow60sUsd:{gt:0}},
+        {buyers60s:{gt:0}},
+        {whaleBuyers60s:{gt:0}},
+        {knownWhaleBuyers60s:{gt:0}}
+      ]
+    },
+    orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:120
   });
   res.json({watching:true,opportunities});
 }));

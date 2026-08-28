@@ -5,15 +5,87 @@ import {startHeartbeat} from "@memecloud/ops";
 import {JupiterExecution} from "@memecloud/execution";
 import {walletTier} from "@memecloud/brain";
 
-const cfg=await getConfig<any>("marketData"),brainCfg=await getConfig<any>("brain");
-const rpc=cfg?.solanaRpc||cfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;if(!rpc)throw new Error("SOLANA_RPC_REQUIRED");
-const conn=new Connection(rpc,"confirmed"),USDC=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",USDT="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",WSOL="So11111111111111111111111111111111111111112";
-const quotes=new Set([USDC,USDT,WSOL]),execCfg=await getConfig<any>("execution"),jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
-let seen=0,swaps=0,saved=0,profiled=0,errors=0,inflight=0;const MAX=Math.max(2,Number(brainCfg?.solanaFlowConcurrency??12)),dedupe=new Set<string>();let solUsd=0,solAt=0;
-async function solPrice(){if(solUsd&&Date.now()-solAt<15_000)return solUsd;const q=await jupiter.quote({inputMint:WSOL,outputMint:USDC,amountRaw:"1000000000",slippageBps:100});solUsd=Number(q.outAmount)/1e6;solAt=Date.now();return solUsd}
+const USDC=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",USDT="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",WSOL="So11111111111111111111111111111111111111112";
+const quotes=new Set([USDC,USDT,WSOL]);
+let seen=0,swaps=0,saved=0,profiled=0,errors=0,inflight=0,reconnects=0,lastEventAt=Date.now();
+let solUsd=0,solAt=0;
+async function solPrice(jupiter:JupiterExecution){if(solUsd&&Date.now()-solAt<15_000)return solUsd;const q=await jupiter.quote({inputMint:WSOL,outputMint:USDC,amountRaw:"1000000000",slippageBps:100});solUsd=Number(q.outAmount)/1e6;solAt=Date.now();return solUsd}
 function ownerDeltas(tx:ParsedTransactionWithMeta){const m=new Map<string,Map<string,{raw:bigint,dec:number}>>();const apply=(rows:any[],sgn:bigint)=>{for(const r of rows){if(!r.owner)continue;let w=m.get(r.owner);if(!w)m.set(r.owner,w=new Map());const c=w.get(r.mint)??{raw:0n,dec:r.uiTokenAmount.decimals};c.raw+=sgn*BigInt(r.uiTokenAmount.amount||"0");c.dec=r.uiTokenAmount.decimals;w.set(r.mint,c)}};apply(tx.meta?.postTokenBalances??[],1n);apply(tx.meta?.preTokenBalances??[],-1n);return m}
-async function stableAndNativeBalance(owner:string){let usd=0;try{usd+=(await conn.getBalance(new PublicKey(owner),"confirmed"))/1e9*await solPrice()}catch{};for(const mint of [USDC,USDT])try{const rows=await conn.getParsedTokenAccountsByOwner(new PublicKey(owner),{mint:new PublicKey(mint)},"confirmed");for(const r of rows.value)usd+=Number((r.account.data as any).parsed?.info?.tokenAmount?.uiAmount??0)}catch{};return usd}
-async function processSig(sig:string){if(dedupe.has(sig)||inflight>=MAX)return;dedupe.add(sig);if(dedupe.size>5000)dedupe.clear();inflight++;try{seen++;const tx=await conn.getParsedTransaction(sig,{maxSupportedTransactionVersion:0,commitment:"confirmed"});if(!tx||tx.meta?.err)return;for(const [owner,d] of ownerDeltas(tx)){const pos=[...d.entries()].filter(([,v])=>v.raw>0n),neg=[...d.entries()].filter(([,v])=>v.raw<0n);const spent=neg.find(([m])=>quotes.has(m)),got=pos.find(([m])=>!quotes.has(m)),received=pos.find(([m])=>quotes.has(m)),sold=neg.find(([m])=>!quotes.has(m));let side:"BUY"|"SELL"|null=null,mint="",quote:any;if(spent&&got){side="BUY";mint=got[0];quote=spent}else if(received&&sold){side="SELL";mint=sold[0];quote=received}else continue;swaps++;let amountUsd:number|undefined;const qmint=quote[0],qv=quote[1],qamt=Number(qv.raw<0n?-qv.raw:qv.raw)/(10**qv.dec);if(qmint===USDC||qmint===USDT)amountUsd=qamt;else if(qmint===WSOL)try{amountUsd=qamt*await solPrice()}catch{};const known=Boolean(await db.traderWallet.findUnique({where:{chain_address:{chain:"SOLANA",address:owner}}})||await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:owner}}}));let bal:number|undefined,tier="FLOW";const profileThreshold=Math.max(1000,Number(brainCfg?.profileTradeUsd??5000));if((amountUsd??0)>=profileThreshold||known){bal=await stableAndNativeBalance(owner);tier=walletTier(bal);profiled++;if((bal??0)>=50_000&&!known)await db.smartWalletCandidate.upsert({where:{chain_address:{chain:"SOLANA",address:owner}},create:{chain:"SOLANA",address:owner,stage:"DISCOVERED",source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,discoveredBy:"CHAIN_WIDE_SWAP"} as any},update:{source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,lastSeenBy:"CHAIN_WIDE_SWAP"} as any}}).catch(()=>{});}await db.chainFlowObservation.create({data:{chain:"SOLANA",mint,walletAddress:owner,txHash:sig,side,amountUsd,walletBalanceUsd:bal,walletTier:tier,knownWallet:known,source:"SOLANA_ALL_LOGS",observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()}}).then(()=>saved++).catch(()=>{});}}catch(e){errors++;console.error("[flow-worker]",sig,e)}finally{inflight--}}
-const enabled=String(brainCfg?.solanaChainWideEnabled??process.env.SOLANA_CHAIN_WIDE_SCAN??"true")!=="false";
-let sub:number|undefined;if(enabled)sub=conn.onLogs("all",l=>{if(!l.err)void processSig(l.signature)},"confirmed");
-startHeartbeat("solana-flow-scanner",()=>({enabled,subscription:sub,seen,swaps,saved,profiled,errors,inflight,maxConcurrency:MAX}));console.log("[flow-worker] chain-wide Solana flow scanner",enabled?"online":"disabled");
+async function stableAndNativeBalance(conn:Connection,jupiter:JupiterExecution,owner:string){let usd=0;try{usd+=(await conn.getBalance(new PublicKey(owner),"confirmed"))/1e9*await solPrice(jupiter)}catch{};for(const mint of [USDC,USDT])try{const rows=await conn.getParsedTokenAccountsByOwner(new PublicKey(owner),{mint:new PublicKey(mint)},"confirmed");for(const r of rows.value)usd+=Number((r.account.data as any).parsed?.info?.tokenAmount?.uiAmount??0)}catch{};return usd}
+
+async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,dedupe:Set<string>,MAX:number,sig:string){
+  if(dedupe.has(sig)||inflight>=MAX)return;dedupe.add(sig);if(dedupe.size>5000)dedupe.clear();inflight++;
+  try{
+    seen++;lastEventAt=Date.now();
+    const tx=await conn.getParsedTransaction(sig,{maxSupportedTransactionVersion:0,commitment:"confirmed"});
+    if(!tx||tx.meta?.err)return;
+    for(const [owner,d] of ownerDeltas(tx)){
+      const pos=[...d.entries()].filter(([,v])=>v.raw>0n),neg=[...d.entries()].filter(([,v])=>v.raw<0n);
+      const spent=neg.find(([m])=>quotes.has(m)),got=pos.find(([m])=>!quotes.has(m)),received=pos.find(([m])=>quotes.has(m)),sold=neg.find(([m])=>!quotes.has(m));
+      let side:"BUY"|"SELL"|null=null,mint="",quote:any;
+      if(spent&&got){side="BUY";mint=got[0];quote=spent}else if(received&&sold){side="SELL";mint=sold[0];quote=received}else continue;
+      swaps++;
+      let amountUsd:number|undefined;
+      const qmint=quote[0],qv=quote[1],qamt=Number(qv.raw<0n?-qv.raw:qv.raw)/(10**qv.dec);
+      if(qmint===USDC||qmint===USDT)amountUsd=qamt;else if(qmint===WSOL)try{amountUsd=qamt*await solPrice(jupiter)}catch{};
+      const known=Boolean(await db.traderWallet.findUnique({where:{chain_address:{chain:"SOLANA",address:owner}}})||await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:owner}}}));
+      let bal:number|undefined,tier="FLOW";
+      const profileThreshold=Math.max(1000,Number(brainCfg?.profileTradeUsd??5000));
+      if((amountUsd??0)>=profileThreshold||known){
+        bal=await stableAndNativeBalance(conn,jupiter,owner);tier=walletTier(bal);profiled++;
+        if((bal??0)>=50_000&&!known)await db.smartWalletCandidate.upsert({where:{chain_address:{chain:"SOLANA",address:owner}},create:{chain:"SOLANA",address:owner,stage:"DISCOVERED",source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,discoveredBy:"CHAIN_WIDE_SWAP"} as any},update:{source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,lastSeenBy:"CHAIN_WIDE_SWAP"} as any}}).catch(()=>{});
+      }
+      await db.chainFlowObservation.create({data:{chain:"SOLANA",mint,walletAddress:owner,txHash:sig,side,amountUsd,walletBalanceUsd:bal,walletTier:tier,knownWallet:known,source:"SOLANA_ALL_LOGS",observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()}}).then(()=>saved++).catch(()=>{});
+    }
+  }catch(e){errors++;console.error("[flow-worker]",sig,e)}finally{inflight--}
+}
+
+// A dead/stalled WebSocket subscription must never look identical to "the chain is just quiet" —
+// Solana mainnet always has continuous swap activity, so silence here means the connection died,
+// not that nothing happened. Re-fetching config on every (re)connect also fixes the separate
+// staleness bug where this worker was pinned to whatever RPC URL Admin had saved at process
+// startup, silently ignoring later Admin config changes without a manual restart.
+let conn:Connection,jupiter:JupiterExecution,dedupe=new Set<string>(),MAX=12,sub:number|undefined,enabled=true;
+
+async function connectAndSubscribe(){
+  const cfg=await getConfig<any>("marketData"),brainCfg=await getConfig<any>("brain"),execCfg=await getConfig<any>("execution");
+  const rpc=cfg?.heliusRpc||cfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!rpc)throw new Error("SOLANA_RPC_REQUIRED");
+  conn=new Connection(rpc,"confirmed");
+  jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+  MAX=Math.max(2,Number(brainCfg?.solanaFlowConcurrency??12));
+  dedupe=new Set<string>();
+  enabled=String(brainCfg?.solanaChainWideEnabled??process.env.SOLANA_CHAIN_WIDE_SCAN??"true")!=="false";
+  sub=undefined;
+  if(enabled){
+    sub=conn.onLogs("all",l=>{if(!l.err)void processSig(conn,jupiter,brainCfg,dedupe,MAX,l.signature)},"confirmed");
+    lastEventAt=Date.now();
+    console.log("[flow-worker] subscribed, sub id",sub,"rpc",new URL(rpc).host);
+  }
+}
+
+async function watchdog(){
+  if(!enabled)return;
+  // Chain-wide log volume on Solana mainnet is high enough that any real, live subscription sees
+  // events within a small number of seconds. 90s of total silence is the connection being dead,
+  // not the chain being idle.
+  const silentMs=Date.now()-lastEventAt;
+  if(silentMs>90_000){
+    reconnects++;
+    console.warn(`[flow-worker] no events for ${Math.round(silentMs/1000)}s — reconnecting (reconnect #${reconnects})`);
+    try{
+      if(sub!==undefined)await conn.removeOnLogsListener(sub).catch(()=>{});
+    }catch{}
+    try{
+      await connectAndSubscribe();
+    }catch(e){
+      errors++;console.error("[flow-worker] reconnect failed",e);
+      lastEventAt=Date.now()-60_000; // retry again in 30s rather than waiting a full 90s
+    }
+  }
+}
+
+await connectAndSubscribe();
+startHeartbeat("solana-flow-scanner",()=>({enabled,subscription:sub,seen,swaps,saved,profiled,errors,inflight,reconnects,silentForSec:Math.round((Date.now()-lastEventAt)/1000),maxConcurrency:MAX}));
+setInterval(()=>void watchdog(),15_000);
+console.log("[flow-worker] chain-wide Solana flow scanner",enabled?"online":"disabled");

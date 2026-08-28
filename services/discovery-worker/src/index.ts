@@ -106,6 +106,10 @@ async function scan(){
           });
         }
       }catch(e){errors++;console.error("[discovery] top traders",mint,e)}
+      // Two Birdeye calls per token with zero pacing (up to tokenLimit*2 in a tight burst) is
+      // enough on its own to trip the shared API key's rate limit, independent of any other
+      // service's load. A small fixed delay keeps this scan's own burst well-behaved.
+      await new Promise(r=>setTimeout(r,300));
     }
     scans++;lastRun=new Date().toISOString();
   }catch(e){errors++;console.error("[discovery]",e)}

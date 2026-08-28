@@ -7,9 +7,11 @@ import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
 
 const marketCfg=await getConfig<any>("marketData");
-const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
+const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
 if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required for listener");
-const conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+// Rebuilt on every refreshWatchlist() cycle (see below) so an Admin RPC change takes effect
+// without a manual restart — this was previously read once at process startup and cached forever.
+let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const queue=new Queue("signals",{connection:redis});
 const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
@@ -134,7 +136,21 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   }
 }
 
+let currentRpcHost=new URL(rpc).host;
+async function reconnectIfConfigChanged(){
+  const fresh=await getConfig<any>("marketData");
+  const freshRpc=fresh?.heliusRpc||fresh?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!freshRpc)return;
+  const freshHost=new URL(freshRpc).host;
+  if(freshHost===currentRpcHost)return;
+  console.log("[listener] Admin RPC config changed",currentRpcHost,"->",freshHost,"— reconnecting");
+  for(const [,id] of subscriptions)await conn.removeOnLogsListener(id).catch(()=>{});
+  subscriptions.clear();
+  conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+  currentRpcHost=freshHost;
+}
 async function refreshWatchlist(){
+  await reconnectIfConfigChanged();
   // Watch every enabled verified source wallet ONCE. Fan-out happens downstream per user.
   // This also lets the platform track public trader history before a user enables Auto Copy.
   const wallets=await db.traderWallet.findMany({
@@ -164,7 +180,7 @@ async function refreshWatchlist(){
     }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
   }
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:new URL(rpc).host}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 console.log("[listener] running");
