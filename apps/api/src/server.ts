@@ -50,6 +50,13 @@ app.use(express.json({ limit: "512kb" }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 60, standardHeaders: "draft-7", legacyHeaders: false });
 app.use("/auth", authLimiter);
+// Every other /v1 route was previously unrated-limited. The manual-trade endpoint is the one
+// that actually matters here: it calls Jupiter twice per request (forward+reverse quote) even
+// in simulation, and once live trading is on it can submit real Solana transactions — an
+// authenticated account hammering it is both a real-money risk and a way to exhaust the whole
+// platform's shared Jupiter quota (the same 429 pressure fixed in market-worker/discovery-worker
+// this session). Keyed by user, not IP, since this is auth-gated.
+const tradeLimiter = rateLimit({ windowMs: 60_000, limit: 6, standardHeaders: "draft-7", legacyHeaders: false, keyGenerator:(req:any)=>req.user?.sub||req.ip });
 
 type TokenPayload = { sub:string; role:"USER"|"OWNER"|"ADMIN"|"SUPPORT"; email?:string };
 type AuthedRequest = Request & { user: TokenPayload };
@@ -732,7 +739,7 @@ async function recoverManualPrivyHash(privy:PrivySolanaSigner,referenceId:string
     return String(tx?.transaction_hash??tx?.hash??"")||null;
   }catch(e){console.warn("[manual-trade] Privy reference recovery unavailable",referenceId,e);return null}
 }
-app.post("/v1/me/trade/manual", auth, asyncRoute(async (req:AuthedRequest,res) => {
+app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:AuthedRequest,res) => {
   const chain=String(req.body?.chain??"SOLANA");
   const mint=String(req.body?.mint??"");
   const amountUsd=Number(req.body?.amountUsd??0);

@@ -431,6 +431,11 @@ model Position {
   mode              ExecutionMode  @default(SIMULATION)
   mint              String
   quoteMint         String
+  // Deliberately NOT @unique in the schema: Prisma's MongoDB connector does not make a bare
+  // @unique on a nullable field sparse (verified empirically — two null values collided under a
+  // plain unique index). The real uniqueness guarantee is a hand-created sparse index; see
+  // packages/db/scripts/ensure-indexes.mjs. Declaring it here too would fight `prisma db push`,
+  // which does not understand sparse indexes and would keep trying to "fix" it to non-sparse.
   entryTxHash       String?
   entryInputRaw     String
   entryTokenRaw     String

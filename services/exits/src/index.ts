@@ -12,19 +12,30 @@ import { getConfig } from "@memecloud/config";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
-const execCfg=await getConfig<any>("execution");
-const marketCfg=await getConfig<any>("marketData");
-const signerCfg=await getConfig<any>("signer");
-const riskCfg=await getConfig<any>("risk");
-const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
-const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
-const chain=rpc?new Connection(rpc,"confirmed"):null;
-const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
-const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
-const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
-const signer=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+
+// This worker signs and submits real SELL transactions for already-open real positions — it must
+// never keep operating on stale Jupiter/RPC/Privy/risk config after Admin changes it. Previously
+// read once at process startup and cached forever, the same bug already fixed elsewhere this
+// session. Reloaded on a slow timer, independent of the 3s position tick, so config staleness
+// can't exceed ~60s without adding an AppConfig read to every tick.
+let execCfg:any,riskCfg:any,jupiter:JupiterExecution,rpc:string|undefined,chain:Connection|null,signer:PrivySolanaSigner|null,maxSnapshotAge:number;
+async function reloadConfig(){
+  execCfg=await getConfig<any>("execution");
+  const marketCfg=await getConfig<any>("marketData");
+  const signerCfg=await getConfig<any>("signer");
+  riskCfg=await getConfig<any>("risk");
+  jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+  rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  chain=rpc?new Connection(rpc,"confirmed"):null;
+  const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
+  const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+  const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+  signer=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+  maxSnapshotAge=Math.max(5_000,Number(riskCfg?.maxIntelligenceAgeMs??30_000));
+}
+await reloadConfig();
+setInterval(()=>void reloadConfig().catch(e=>console.error("[exits] config reload failed, keeping previous clients",e)),60_000);
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const maxSnapshotAge=Math.max(5_000,Number(riskCfg?.maxIntelligenceAgeMs??30_000));
 let scanned=0,marked=0,stale=0,errors=0,profitEvents=0,liveSubmitted=0,liveConfirmed=0,ticking=false;
 
 async function userEvent(userId:string,type:string,title:string,body:string,data:Record<string,unknown>={}){

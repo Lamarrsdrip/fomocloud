@@ -12,18 +12,29 @@ import { getConfig, isLiveTradingEnabled } from "@memecloud/config";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection});
-const execCfg=await getConfig<any>("execution");
-const marketCfg=await getConfig<any>("marketData");
-const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
-const solanaRpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
-const solanaConnection=solanaRpc?new Connection(solanaRpc,"confirmed"):null;
 const decimalsCache=new Map<string,{decimals:number,at:number}>();
 const usdcSol=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const signerCfg=await getConfig<any>("signer");
-const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
-const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
-const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
-const privy=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+
+// This worker signs and submits real transactions — it must never keep operating on Jupiter/RPC/
+// Privy credentials that Admin has since changed or rotated. Previously read once at process
+// startup and cached forever, identically to the bug already fixed in listener/flow-worker/
+// market-worker this session. Reloaded on a timer (not per-job) so job latency doesn't pay an
+// AppConfig read on every signal.
+let jupiter:JupiterExecution,solanaRpc:string|undefined,solanaConnection:Connection|null,privy:PrivySolanaSigner|null;
+async function reloadConfig(){
+  const execCfg=await getConfig<any>("execution");
+  const marketCfg=await getConfig<any>("marketData");
+  jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+  solanaRpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  solanaConnection=solanaRpc?new Connection(solanaRpc,"confirmed"):null;
+  const signerCfg=await getConfig<any>("signer");
+  const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
+  const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+  const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+  privy=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+}
+await reloadConfig();
+setInterval(()=>void reloadConfig().catch(e=>console.error("[executor] config reload failed, keeping previous clients",e)),60_000);
 
 let processed=0,allowedCount=0,skippedCount=0,errors=0;
 

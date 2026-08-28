@@ -3,10 +3,17 @@ import {db} from "@memecloud/db";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
 
-const marketCfg=await getConfig<any>("marketData");
-const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
-if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
-const conn=new Connection(rpc,"confirmed");
+// Same startup-only-config bug already fixed elsewhere this session: reload each cycle (cycle()
+// already only runs every 60s, so this doesn't add extra AppConfig load).
+let conn:Connection,rpc:string;
+async function reloadConfig(){
+  const marketCfg=await getConfig<any>("marketData");
+  const freshRpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!freshRpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
+  rpc=freshRpc;
+  conn=new Connection(rpc,"confirmed");
+}
+await reloadConfig();
 const usdc=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 let walletsScanned=0,allocationsUpdated=0,errors=0,lastCycleMs=0;
 
@@ -50,6 +57,7 @@ async function batchUsdcBalances(addresses:string[]){
 async function cycle(){
   if(running)return; running=true; const started=Date.now();
   try{
+    await reloadConfig().catch(e=>console.error("[balance-worker] config reload failed, keeping previous connection",e));
     const wallets=await db.wallet.findMany({where:{chain:"SOLANA"},select:{userId:true,address:true},take:10_000});
     // A user may link multiple Solana wallets. Sum is handled by grouping before syncing.
     const byUser=new Map<string,string[]>();
