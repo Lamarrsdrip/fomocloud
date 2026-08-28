@@ -1495,10 +1495,24 @@ async function testX(cfg:any):Promise<TestResult>{
 async function testPrivy(cfg:any):Promise<TestResult>{
   if(!cfg?.privyAppId||!cfg?.privyAppSecret) return result(false,"Privy App ID and App Secret are both required.");
   const auth=Buffer.from(`${cfg.privyAppId}:${cfg.privyAppSecret}`).toString("base64");
-  const {r,latencyMs,error}=await timedFetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`}});
+  // Privy rejects every request with HTTP 400 unless privy-app-id is ALSO set as its own header,
+  // in addition to the Basic-auth credentials — Basic auth alone is not sufficient. This mirrors
+  // the header packages/providers already sends for the real signing calls (transactionByReferenceId);
+  // this test endpoint was the one place that omitted it, which is what actually produced the 400,
+  // not invalid App ID/Secret.
+  const {r,latencyMs,error}=await timedFetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`,"privy-app-id":cfg.privyAppId}});
   if(error) return result(false,error.message||"Privy request failed.",{latencyMs});
-  if(r!.ok) return result(true,"Privy accepted the App ID and Secret.",{httpStatus:r!.status,latencyMs});
-  return result(false,`Privy responded with HTTP ${r!.status}. Check the App ID/Secret.`,{httpStatus:r!.status,latencyMs});
+  if(r!.ok){
+    const missing=["privyAuthorizationPrivateKey","privySignerId","privyPolicyId"].filter(f=>!cfg?.[f]);
+    const note=missing.length?` Delegated signing also needs ${missing.join(", ")} — the signer ID and policy ID can only be fully verified once a real user connects a wallet and grants them, not from this app-level check.`:" Authorization key, signer ID, and policy ID are saved but can only be fully verified once a real user connects a wallet and grants them (they're scoped per-wallet, not per-app).";
+    return result(true,`Privy accepted the App ID and Secret.${note}`,{httpStatus:r!.status,latencyMs});
+  }
+  // Surface Privy's own sanitized reason instead of guessing "check App ID/Secret" for every 400 —
+  // Privy's error body describes what's actually wrong with the request (e.g. a missing header,
+  // a malformed key), which is frequently not a credential problem at all.
+  const body=await r!.json().catch(()=>null);
+  const reason=body?.error||body?.message||`HTTP ${r!.status}`;
+  return result(false,`Privy rejected the request: ${reason}`,{httpStatus:r!.status,latencyMs});
 }
 const EXPECTED_CHAIN_ID:Record<string,string>={BNB:"0x38",Ethereum:"0x1"};
 async function testWebSocket(url:string,label:string):Promise<TestResult>{
