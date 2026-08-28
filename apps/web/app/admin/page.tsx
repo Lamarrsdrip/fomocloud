@@ -20,7 +20,15 @@ const navGroups=[
 
 export default function Admin(){
  const[tab,setTab]=useState("overview");const[me,setMe]=useState<any>(null);const[data,setData]=useState<any>({});const[err,setErr]=useState("");const[loading,setLoading]=useState(true);
- async function load(which=tab){setLoading(true);setErr("");try{
+ // background:true is used for a reload triggered BY an action already inside a tab (Save, Test
+ // connection, promote/demote, ...) — it must never flip the full-page loading spinner, because
+ // that unmounts the active tab component entirely and resets its local navigation state (e.g.
+ // Settings falling back to its home screen on every single Save). It also must never hard-redirect
+ // on auth failure: that would silently blow away whatever the user was mid-edit on.
+ async function load(which=tab,opts:{background?:boolean}={}){
+  if(!opts.background) setLoading(true);
+  setErr("");
+  try{
   const m=me||((await apiFetch("/v1/me")).user);if(!me)setMe(m);if(m.role!=="OWNER"&&m.role!=="ADMIN"&&m.role!=="SUPPORT")throw Object.assign(new Error("ADMIN_FORBIDDEN"),{status:403});
   let r:any={};
   if(which==="overview")r=await apiFetch("/v1/admin/overview");
@@ -38,7 +46,11 @@ export default function Admin(){
   if(which==="audit")r=await apiFetch("/v1/admin/audit");
   if(which==="health")r=await apiFetch("/v1/admin/health");
   setData(r);
- }catch(e:any){if(e?.status===401){window.location.replace("/login/");return}if(e?.status===403){window.location.replace("/app/");return}setErr(plainError(e))}finally{setLoading(false)}}
+ }catch(e:any){
+  if(e?.status===401){if(opts.background){setErr(plainError(e))}else{window.location.replace("/login/")};return}
+  if(e?.status===403){if(opts.background){setErr(plainError(e))}else{window.location.replace("/app/")};return}
+  setErr(plainError(e));
+ }finally{if(!opts.background) setLoading(false)}}
  useEffect(()=>{void load("overview")},[]);
  function change(t:string){setTab(t);void load(t)}
  return <main className="admin-layout">
@@ -47,16 +59,16 @@ export default function Admin(){
    {err&&<div className="auth-error">{err}</div>}{loading&&!err?<div className="loading"><div><div className="spinner"/>Loading admin data…</div></div>:<>
     {tab==="overview"&&<Overview d={data}/>}
     {tab==="brain"&&<BrainAdmin d={data}/>}
-    {tab==="users"&&<UsersView d={data} reload={()=>load("users")}/>}
-    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders")} admin={me?.role==="OWNER"}/>}
+    {tab==="users"&&<UsersView d={data} reload={()=>load("users",{background:true})}/>}
+    {tab==="traders"&&<TradersAdmin d={data} reload={()=>load("traders",{background:true})} admin={me?.role==="OWNER"}/>}
     {tab==="signals"&&<Signals d={data}/>}
     {tab==="trades"&&<Trades d={data}/>}
     {tab==="positions"&&<AdminPositions d={data}/>}
     {tab==="failed"&&<FailedTrades d={data}/>}
     {tab==="tokens"&&<Tokens d={data}/>}
-    {tab==="whales"&&<Whales d={data} reload={()=>load("whales")} admin={me?.role==="OWNER"}/>}
-    {tab==="config"&&<Config d={data} reload={()=>load("config")} admin={me?.role==="OWNER"}/>}
-    {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts")} admin={me?.role==="OWNER"}/>}
+    {tab==="whales"&&<Whales d={data} reload={()=>load("whales",{background:true})} admin={me?.role==="OWNER"}/>}
+    {tab==="config"&&<Config d={data} reload={()=>load("config",{background:true})} admin={me?.role==="OWNER"}/>}
+    {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts",{background:true})} admin={me?.role==="OWNER"}/>}
     {tab==="audit"&&<Audit d={data}/>}
     {tab==="health"&&<Health d={data}/>}
    </>}
@@ -261,12 +273,13 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  const[activeCat,setActiveCat]=useState<string>("");
  const[key,setKey]=useState("email"),[form,setForm]=useState<any>({}),[msg,setMsg]=useState(""),[testEmail,setTestEmail]=useState(""),[testing,setTesting]=useState(false);
  const[sessionExpired,setSessionExpired]=useState(false);
+ const[saving,setSaving]=useState(false);
  // A 401 here means the token died mid-edit. Never silently redirect: that would wipe an
  // unsaved secret with no warning. Show it inline, keep the typed value on screen, and let the
  // operator choose when to leave for /login — nothing was saved, and this says so explicitly.
- function reportError(e:any){
+ function reportError(e:any,isSave=false){
   if(e?.status===401){setSessionExpired(true);setMsg("Your session ended before this could be saved — nothing was saved. Your typed values are still here; sign in again in another tab, or use the button below, then retry.")}
-  else setMsg(plainError(e));
+  else setMsg((isSave?"Save failed — configuration was not stored. ":"")+plainError(e));
  }
  const[secretMode,setSecretMode]=useState<Record<string,"view"|"edit">>({});
  const[removedFields,setRemovedFields]=useState<Set<string>>(new Set());
@@ -333,7 +346,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
   };
  }
  async function save(){
-  setMsg("");setSessionExpired(false);
+  setMsg("Saving…");setSessionExpired(false);setSaving(true);
   try{
    const secretFields=SECRET_FIELDS_FRONTEND[key]??[];
    const payload:any={...form};
@@ -349,9 +362,9 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
    const r=await apiFetch<any>(`/v1/admin/config/${key}`,{method:"PUT",body:JSON.stringify(payload)});
    const items=ITEM_SUMMARY[key];
    const summary=items?" — "+items.map(it=>`${it.name}: ${itemStatus(it,r.config,payload).label}`).join(", "):"";
-   setMsg(`${CFG_LABELS[key]||key} saved.`+(r.restartRequired?" Restart the affected VPS worker(s) to apply this change.":"")+summary);
-   reload();
-  }catch(e){reportError(e)}
+   setMsg(`Saved successfully. ${CFG_LABELS[key]||key} persisted.`+(r.restartRequired?" Restart the affected VPS worker(s) to apply this change.":"")+summary);
+   reload(); // background:true — refetches the real persisted record without unmounting this screen
+  }catch(e){reportError(e,true)}finally{setSaving(false)}
  }
  async function vapid(){setSessionExpired(false);try{if(form.subject)await apiFetch("/v1/admin/config/push",{method:"PUT",body:JSON.stringify({subject:form.subject})});const r=await apiFetch<any>("/v1/admin/push/generate",{method:"POST"});setMsg(`VAPID ready. Public key ${r.publicKey.slice(0,18)}…`);reload()}catch(e){reportError(e)}}
  async function testPush(){setSessionExpired(false);try{const r=await apiFetch<any>("/v1/admin/test-push",{method:"POST"});setMsg(r.result?.sent>0?`✓ Test push sent (${r.result.sent} sent, ${r.result.failed||0} failed).`:`✗ Test push failed to send (0 sent, ${r.result?.failed||0} failed).`);reload()}catch(e){reportError(e)}}
@@ -456,7 +469,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
     {key==="risk"&&<><label className="check-line"><input type="checkbox" checked={Boolean(form.emergencyNewEntriesPaused)} onChange={e=>field("emergencyNewEntriesPaused",e.target.checked)}/><span>Emergency pause new entries</span></label><Cfg label="Fresh meme base wallet chase %" type="number" value={form.freshMemeBaseChasePct} on={v=>field("freshMemeBaseChasePct",Math.max(0,Number(v)))}/><Cfg label="Hyper maximum wallet chase %" type="number" value={form.hyperMaxChasePct} on={v=>field("hyperMaxChasePct",Math.max(0,Number(v)))}/><Cfg label="Hard max executable price impact %" type="number" value={form.maxExecutablePriceImpactPct} on={v=>field("maxExecutablePriceImpactPct",Math.max(1,Math.min(75,Number(v))))}/><div className="notice">Sensible defaults are active. Chase is measured from the followed wallet's actual execution to each user's actual-size executable quote. The token's 24h move is never used as the chase value.</div></> }
     {key==="branding"&&<><Cfg label="App name" value={form.appName} on={v=>field("appName",v)}/><Cfg label="Support email" value={form.supportEmail} on={v=>field("supportEmail",v)}/><Cfg label="Public URL" value={form.publicUrl} on={v=>field("publicUrl",v)}/></>}
     {msg&&<div className="notice">{msg}</div>}
-    <button className="action-primary" disabled={!admin} onClick={save} style={{height:42,borderRadius:12}}>Save {CFG_LABELS[key]||key}</button>
+    <button className="action-primary" disabled={!admin||saving} onClick={save} style={{height:42,borderRadius:12}}>{saving?"Saving…":`Save ${CFG_LABELS[key]||key}`}</button>
     {admin&&key==="push"&&<div className="test-inline"><button className="soft-action" onClick={vapid}><Bell size={12}/> Generate VAPID if missing</button><button className="soft-action" onClick={testPush}><Bell size={12}/> Push test to my devices</button></div>}
     {admin&&key==="email"&&<div className="test-inline"><input value={testEmail} onChange={e=>setTestEmail(e.target.value)} type="email" placeholder="Test email recipient"/><button className="soft-action" onClick={emailTest}><Mail size={12}/> Send SMTP test</button></div>}
    </div>
