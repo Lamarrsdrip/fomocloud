@@ -427,7 +427,7 @@ const worker=new Worker("signals",async job=>{
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"LIVE_EXECUTION_NOT_ENABLED",explanation:"Live execution is intentionally disabled. The executable quote was verified, but no funds were moved."}});
           skippedCount++; continue;
         }
-        const permitted=await db.wallet.findFirst({where:{userId:follow.userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}});
+        const permitted=await db.wallet.findFirst({where:{userId:follow.userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
         if(!permitted){
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"TRADING_PERMISSION_REQUIRED",explanation:"This account has no active delegated trading permission for this chain."}});
           skippedCount++; continue;

@@ -144,7 +144,7 @@ async function executeLiveExit(p:any,instruction:any){
   // managing money that is already at risk. A position already in mode:"LIVE" here has real
   // funds on-chain regardless of the current toggle state, so its exits always run.
   if(p.chain!=="SOLANA"||!rpc||!signer)throw Object.assign(new Error("LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"),{code:"LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"});
-  const permitted=await db.wallet.findFirst({where:{userId:p.userId,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}});
+  const permitted=await db.wallet.findFirst({where:{userId:p.userId,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
   if(!permitted)throw Object.assign(new Error("TRADING_PERMISSION_REQUIRED"),{code:"TRADING_PERMISSION_REQUIRED"});
   const remaining=BigInt(p.remainingTokenRaw);if(remaining<=0n)return;
   const sellPct=instruction.action==="EXIT"?100:Number(instruction.sellPct??0);

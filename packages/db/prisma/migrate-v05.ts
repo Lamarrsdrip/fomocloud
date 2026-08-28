@@ -79,7 +79,7 @@ try{
 
   // v0.4 stored owner-entered provider secrets in AppConfig.valueJson. v0.5 never reads secret
   // plaintext from that field. Encrypt each legacy secret in place before the new services start.
-  const legacySecrets=await db.appConfig.findMany({where:{isSecret:true,encryptedValue:null}});
+  const legacySecrets=await db.appConfig.findMany({where:{isSecret:true,encryptedValue:{isSet:false}}});
   if(legacySecrets.length) encryptionKey(); // fail before changing anything if the master key is not ready.
   let encrypted=0;
   for(const row of legacySecrets){

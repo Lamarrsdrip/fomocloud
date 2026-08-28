@@ -307,7 +307,7 @@ app.post("/auth/refresh", asyncRoute(async (req,res) => {
   // token fail instead of allowing two replaying clients to keep the same long-lived credential.
   const nextRefresh=randomToken(48);
   const rotated=await db.refreshSession.updateMany({
-    where:{id:session.id,tokenHash:oldHash,revokedAt:null,expiresAt:{gt:new Date()}},
+    where:{id:session.id,tokenHash:oldHash,revokedAt:{isSet:false},expiresAt:{gt:new Date()}},
     data:{tokenHash:hashToken(nextRefresh),lastUsedAt:new Date()}
   });
   if(rotated.count!==1) return res.status(401).json({error:"REFRESH_REPLAYED"});
@@ -317,7 +317,7 @@ app.post("/auth/refresh", asyncRoute(async (req,res) => {
 
 app.post("/auth/logout", asyncRoute(async (req,res) => {
   const raw=parseCookies(req).fomo_refresh;
-  if(raw) await db.refreshSession.updateMany({where:{tokenHash:hashToken(raw),revokedAt:null},data:{revokedAt:new Date()}});
+  if(raw) await db.refreshSession.updateMany({where:{tokenHash:hashToken(raw),revokedAt:{isSet:false}},data:{revokedAt:new Date()}});
   res.clearCookie("fomo_refresh",{...refreshCookieOptions(),maxAge:0});
   res.json({ok:true});
 }));
@@ -367,7 +367,7 @@ app.post("/auth/reset-password", asyncRoute(async (req,res) => {
   await db.$transaction([
     db.verificationToken.update({where:{id:row.id},data:{usedAt:new Date()}}),
     db.user.update({where:{id:row.userId},data:{passwordHash}}),
-    db.refreshSession.updateMany({where:{userId:row.userId,revokedAt:null},data:{revokedAt:new Date()}})
+    db.refreshSession.updateMany({where:{userId:row.userId,revokedAt:{isSet:false}},data:{revokedAt:new Date()}})
   ]);
   res.json({ok:true});
 }));
@@ -402,7 +402,13 @@ app.post("/auth/wallet/verify", asyncRoute(async (req,res) => {
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   const ok=nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address));
   if(!ok) return res.status(400).json({error:"INVALID_SIGNATURE"});
-  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
+  // consumedAt is never explicitly written as null — it's simply absent on an unconsumed
+  // challenge. Prisma's MongoDB connector treats a bare `null` filter on an optional field as
+  // "equals null", which does NOT match a field that was never set — only `isSet:false` does.
+  // Using `consumedAt:null` here meant this atomic consume matched zero documents for every
+  // challenge, always, regardless of whether it was genuinely already used — confirmed against a
+  // real local MongoDB replica set (a fresh, unconsumed, unexpired challenge still got count:0).
+  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:{isSet:false},expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
   if(consumed.count!==1) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   let wallet=await db.wallet.findUnique({where:{chain_address:{chain:"SOLANA",address:row.address}}});
   let user;
@@ -443,7 +449,13 @@ app.post("/v1/me/wallets/verify", auth, asyncRoute(async (req:AuthedRequest,res)
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   if(!nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address)))
     return res.status(400).json({error:"INVALID_SIGNATURE"});
-  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
+  // consumedAt is never explicitly written as null — it's simply absent on an unconsumed
+  // challenge. Prisma's MongoDB connector treats a bare `null` filter on an optional field as
+  // "equals null", which does NOT match a field that was never set — only `isSet:false` does.
+  // Using `consumedAt:null` here meant this atomic consume matched zero documents for every
+  // challenge, always, regardless of whether it was genuinely already used — confirmed against a
+  // real local MongoDB replica set (a fresh, unconsumed, unexpired challenge still got count:0).
+  const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:{isSet:false},expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
   if(consumed.count!==1) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   const count=await db.wallet.count({where:{userId:req.user.sub}});
   const wallet=await db.wallet.upsert({
@@ -490,14 +502,14 @@ app.patch("/v1/me/profile", auth, asyncRoute(async (req:AuthedRequest,res) => {
 
 app.get("/v1/me/sessions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const sessions=await db.refreshSession.findMany({
-    where:{userId:req.user.sub,revokedAt:null,expiresAt:{gt:new Date()}},
+    where:{userId:req.user.sub,revokedAt:{isSet:false},expiresAt:{gt:new Date()}},
     select:{id:true,userAgent:true,ipAddress:true,createdAt:true,lastUsedAt:true,expiresAt:true},
     orderBy:{lastUsedAt:"desc"},take:50
   });
   res.json({sessions});
 }));
 app.delete("/v1/me/sessions/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  await db.refreshSession.updateMany({where:{id:routeParam(req.params.id),userId:req.user.sub,revokedAt:null},data:{revokedAt:new Date()}});
+  await db.refreshSession.updateMany({where:{id:routeParam(req.params.id),userId:req.user.sub,revokedAt:{isSet:false}},data:{revokedAt:new Date()}});
   await audit(req.user.sub,"USER","REVOKE_SESSION",routeParam(req.params.id));
   res.json({ok:true});
 }));
@@ -526,7 +538,7 @@ app.post("/v1/me/account/close", auth, asyncRoute(async (req:AuthedRequest,res) 
   await db.$transaction([
     db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}}),
     db.userFollow.updateMany({where:{userId:user.id,mode:"AUTO_COPY"},data:{mode:"PAUSED"}}),
-    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:null},data:{revokedAt:new Date()}}),
+    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:{isSet:false}},data:{revokedAt:new Date()}}),
     db.user.update({where:{id:user.id},data:{status:"CLOSED"}})
   ]);
   await audit(user.id,"USER","CLOSE_ACCOUNT");
@@ -771,7 +783,7 @@ app.get("/v1/me/notifications", auth, asyncRoute(async (req:AuthedRequest,res) =
 
 app.post("/v1/me/notifications/read", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const ids=Array.isArray(req.body?.ids)?req.body.ids.map(String):[];
-  await db.notification.updateMany({where:{userId:req.user.sub,...(ids.length?{id:{in:ids}}:{readAt:null})},data:{readAt:new Date()}});
+  await db.notification.updateMany({where:{userId:req.user.sub,...(ids.length?{id:{in:ids}}:{readAt:{isSet:false}})},data:{readAt:new Date()}});
   res.json({ok:true});
 }));
 
@@ -1172,7 +1184,7 @@ app.patch("/v1/admin/users/:id", adminOnly, asyncRoute(async (req:AuthedRequest,
   const user=await db.user.update({where:{id:routeParam(req.params.id)},data:{status:status as any}});
   if(status!=="ACTIVE") await Promise.all([
     db.globalTradingSettings.updateMany({where:{userId:user.id},data:{autoCopyEnabled:false}}),
-    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:null},data:{revokedAt:new Date()}})
+    db.refreshSession.updateMany({where:{userId:user.id,revokedAt:{isSet:false}},data:{revokedAt:new Date()}})
   ]);
   await audit(req.user.sub,"ADMIN","USER_STATUS_CHANGE",user.id,{status});
   res.json({user:safeUser(user)});
@@ -1712,7 +1724,7 @@ async function computeLiveReadiness(){
     getConfig<any>("marketData"),
     getConfig<any>("execution"),
     getConfig<any>("signer"),
-    db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:null},{permissionExpiry:{gt:new Date()}}]}}),
+    db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}),
     db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}}),
     isLiveTradingEnabled()
   ]);
