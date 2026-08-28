@@ -3,7 +3,7 @@ import {useEffect,useMemo,useState} from "react";
 import {
   Home,Users,Activity,WalletCards,UserRound,Bell,Power,Plus,Search,Settings2,
   ShieldCheck,LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
-  TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine
+  TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine,X
 } from "lucide-react";
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
 import {connectWallet,signWithWallet,type DetectedWallet} from "../../lib/wallet";
@@ -61,7 +61,14 @@ export default function AppPage(){
       setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
       apiFetch<any>("/v1/brain/feed").then(x=>setBrain(x.opportunities||[])).catch(()=>{});
     }catch(e:any){
-      if(e?.status===401){location.replace("/login/");return}
+      if(e?.status===401){
+        // A silent bounce back to a blank login form (no explanation) is exactly the Phantom
+        // in-app-browser failure mode reported in production: the access token or refresh cookie
+        // didn't survive the prior navigation, so every bootstrap call 401s. Never hide that --
+        // surface it on the login screen instead of pretending nothing happened.
+        try{sessionStorage.setItem("memecloud_login_notice","Your session could not be established. Please sign in again.")}catch{}
+        location.replace("/login/");return;
+      }
       setError(plainError(e));
     }finally{setLoading(false)}
   }
@@ -412,10 +419,24 @@ function PositionsView({positions,d}:{positions:any[];d:any}){const[filter,setFi
 
 function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reload,signOut,setView}:{me:any;setMe:any;settings:any;notifications:any[];sessions:any[];setSettings:any;reload:()=>Promise<void>;signOut:()=>void;setView:(v:View)=>void}){
  const[err,setErr]=useState(""); const[note,setNote]=useState(""); const[name,setName]=useState(me?.displayName||""); const[username,setUsername]=useState(me?.username||""); const[closeValue,setCloseValue]=useState("");
+ // Username save/validation state is deliberately separate from the shared `err` above -- that one
+ // is used by several unrelated actions on this same page (X link, wallet unlink, session revoke,
+ // trading/notification toggles), and a stale message from any of those must never be mistaken for
+ // a problem with the username the user is currently looking at.
+ const[usernameStatus,setUsernameStatus]=useState<"idle"|"saving"|"saved"|"error">("idle");
+ const[usernameMsg,setUsernameMsg]=useState("");
+ const[sessionsOpen,setSessionsOpen]=useState(false);
  const trading=settings?.trading||{}; const prefs=settings?.notifications||{};
  async function patchTrading(body:any){try{const r=await apiFetch("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setErr(plainError(e))}}
  async function patchNotifications(body:any){try{const r=await apiFetch("/v1/me/settings/notifications",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,notifications:r.notifications}))}catch(e){setErr(plainError(e))}}
- async function saveProfile(){try{const r=await apiFetch("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username})});setMe((x:any)=>({...x,...r.user}));setErr("")}catch(e){setErr(plainError(e))}}
+ async function saveProfile(){
+  setUsernameStatus("saving");setUsernameMsg("");
+  try{
+   const r=await apiFetch("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username})});
+   setMe((x:any)=>({...x,...r.user}));setUsernameStatus("saved");
+   setTimeout(()=>setUsernameStatus(s=>s==="saved"?"idle":s),2500);
+  }catch(e){setUsernameStatus("error");setUsernameMsg(plainError(e))}
+ }
  const[walletChooserOpen,setWalletChooserOpen]=useState(false);
  const[walletBusy,setWalletBusy]=useState(false);
  async function linkWallet(wallet:DetectedWallet){
@@ -479,7 +500,11 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
   {note&&<div className="auth-success">{note}</div>}
   <div className="settings-grid">
    <section className="settings-block"><h3>Account</h3><div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||"Wallet-created account"}</small></div></div>
-    <label className="field"><span>Display name</span><input value={name} onChange={e=>setName(e.target.value)} /></label><label className="field"><span>Public username</span><input value={username} onChange={e=>setUsername(e.target.value.toLowerCase())} placeholder="username" /></label><div className="switch-row"><div><b>Public community profile</b><small>Off by default. Financial details always stay private.</small></div><button className={`switch ${me?.publicProfileEnabled?"on":""}`} onClick={async()=>{try{const r=await apiFetch<any>("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username,publicProfileEnabled:!me?.publicProfileEnabled})});setMe((x:any)=>({...x,...r.user}))}catch(e){setErr(plainError(e))}}}><i/></button></div><button className="soft-action" onClick={saveProfile}>Save profile</button>
+    <label className="field"><span>Display name</span><input value={name} onChange={e=>setName(e.target.value)} /></label>
+    <label className="field"><span>Public username</span><input value={username} onChange={e=>{setUsername(e.target.value.toLowerCase());setUsernameStatus("idle");setUsernameMsg("")}} placeholder="username" /></label>
+    {usernameStatus==="error"&&<div className="auth-error" style={{margin:"0 0 8px"}}>{usernameMsg}</div>}
+    <div className="switch-row"><div><b>Public community profile</b><small>Off by default. Financial details always stay private.</small></div><button className={`switch ${me?.publicProfileEnabled?"on":""}`} onClick={async()=>{setUsernameStatus("saving");setUsernameMsg("");try{const r=await apiFetch<any>("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username,publicProfileEnabled:!me?.publicProfileEnabled})});setMe((x:any)=>({...x,...r.user}));setUsernameStatus("idle")}catch(e){setUsernameStatus("error");setUsernameMsg(plainError(e))}}}><i/></button></div>
+    <button className="soft-action" disabled={usernameStatus==="saving"} onClick={saveProfile}>{usernameStatus==="saving"?"Saving…":usernameStatus==="saved"?"Saved":"Save profile"}</button>
     <div className="switch-row"><div><b>Email</b><small>{me?.email?me.emailVerified?"Verified":"Not verified yet":"Wallet-only account"}</small></div>{me?.email?(me.emailVerified?<span className="status-badge">Verified</span>:<button className="soft-action" onClick={resendVerification}>Resend verification</button>):<span className="status-badge">Optional</span>}</div>
     <div className="switch-row"><div><b>Linked wallets</b><small>{me?.wallets?.length||0} wallet(s)</small></div><button className="soft-action" disabled={walletBusy} onClick={()=>setWalletChooserOpen(true)}><Link2 size={12}/> Add wallet</button></div>
     <WalletChooser open={walletChooserOpen} busy={walletBusy} onClose={()=>setWalletChooserOpen(false)} onPick={linkWallet}/>
@@ -516,11 +541,45 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
    <section className="settings-block"><h3>Security &amp; permission</h3>
     <div className="notice green">Account login and wallet connection are separate from unattended trading authorization. Live automatic execution remains off until a reviewed delegated/session signer is configured.</div>
     <div className="switch-row"><div><b>Auto Copy</b><small>Controls new automatic entries</small></div><button className={`switch ${trading.autoCopyEnabled?"on":""}`} onClick={()=>patchTrading({autoCopyEnabled:!trading.autoCopyEnabled})}><i/></button></div>
-    <div className="session-list"><b>Signed-in sessions</b>{sessions?.length?sessions.map((s:any)=><div className="wallet-line" key={s.id}><div><small>{s.userAgent?.slice(0,70)||"Unknown device"}</small><small>Last used {timeAgo(s.lastUsedAt)} · expires {new Date(s.expiresAt).toLocaleDateString()}</small></div><button className="soft-action" onClick={()=>revokeSession(s.id)}>Revoke</button></div>):<small>No active refresh sessions listed.</small>}</div>
+    <div className="switch-row"><div><b>Signed-in devices</b><small>{sessions?.length||0} active session{sessions?.length===1?"":"s"}</small></div><button className="soft-action" onClick={()=>setSessionsOpen(true)}>Manage</button></div>
+    <SessionsSheet open={sessionsOpen} sessions={sessions} onClose={()=>setSessionsOpen(false)} onRevoke={revokeSession} onRevokeOthers={async()=>{await apiFetch("/v1/me/sessions",{method:"DELETE"});await reload()}}/>
     <button className="soft-action" style={{width:"100%",marginTop:12}} onClick={signOut}><LogOut size={13}/> Sign out</button>
     <div className="danger-zone"><b>Close account</b><small>This disables Auto Copy and revokes signed-in sessions. Trading/audit records are preserved for financial integrity.</small><input type={me?.hasPassword?"password":"text"} value={closeValue} onChange={e=>setCloseValue(e.target.value)} placeholder={me?.hasPassword?"Enter your password":"Type CLOSE MY ACCOUNT"}/><button className="danger-action" onClick={closeAccount}>Close my account</button></div>
    </section>
   </div>
  </>;
+}
+// Best-effort, human-readable device/browser label from a raw User-Agent string. Never claims more
+// precision than UA parsing actually has -- unrecognized browsers fall back to "Browser" rather
+// than guessing, and the device family (iPhone/iPad/Android/Mac/Windows) is the part UA parsing
+// genuinely is reliable for.
+function deviceLabel(ua?:string|null){
+ if(!ua) return "Unknown device";
+ const device=/iPad/.test(ua)?"iPad":/iPhone|iPod/.test(ua)?"iPhone":/Android/.test(ua)?"Android":/Macintosh/.test(ua)?"Mac":/Windows/.test(ua)?"Windows":"Device";
+ const browser=/Phantom/i.test(ua)?"Phantom":/EdgiOS|Edg\//i.test(ua)?"Edge":/OPR\//i.test(ua)?"Opera":/FxiOS|Firefox/i.test(ua)?"Firefox":/CriOS|Chrome/i.test(ua)?"Chrome":/Safari/i.test(ua)?"Safari":"Browser";
+ return `${device} · ${browser}`;
+}
+function SessionsSheet({open,sessions,onClose,onRevoke,onRevokeOthers}:{open:boolean;sessions:any[];onClose:()=>void;onRevoke:(id:string)=>Promise<void>;onRevokeOthers:()=>Promise<void>}){
+ const[busyId,setBusyId]=useState<string|null>(null);
+ const[busyAll,setBusyAll]=useState(false);
+ if(!open) return null;
+ const hasOthers=(sessions||[]).some((s:any)=>!s.current);
+ return <div className="wallet-chooser-wrap" onClick={onClose}>
+  <div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
+   <div className="wallet-chooser-handle"/>
+   <div className="wallet-chooser-head"><b>Signed-in devices</b><button type="button" className="wallet-chooser-close" onClick={onClose} aria-label="Close"><X size={16}/></button></div>
+   <p>{sessions?.length||0} active session{sessions?.length===1?"":"s"}. Revoke any device you don't recognize.</p>
+   {hasOthers&&<button className="soft-action" style={{width:"100%",marginBottom:10}} disabled={busyAll} onClick={async()=>{setBusyAll(true);try{await onRevokeOthers()}finally{setBusyAll(false)}}}>{busyAll?"Revoking…":"Revoke all other sessions"}</button>}
+   {(sessions||[]).length?sessions.map((s:any)=>
+    <div className="wallet-line" key={s.id}>
+     <div>
+      <b>{deviceLabel(s.userAgent)}{s.current&&<span className="status-badge" style={{marginLeft:6}}>Current device</span>}</b>
+      <small>Last active {timeAgo(s.lastUsedAt)} · signed in {new Date(s.createdAt).toLocaleDateString()} · expires {new Date(s.expiresAt).toLocaleDateString()}</small>
+     </div>
+     {!s.current&&<button className="soft-action" disabled={busyId===s.id} onClick={async()=>{setBusyId(s.id);try{await onRevoke(s.id)}finally{setBusyId(null)}}}>{busyId===s.id?"Revoking…":"Revoke"}</button>}
+    </div>
+   ):<small>No active refresh sessions listed.</small>}
+  </div>
+ </div>;
 }
 function Empty({icon:Icon,title,body,action,onClick}:{icon:any;title:string;body:string;action?:string;onClick?:()=>void}){return <div className="empty"><Icon size={21}/><b>{title}</b><p>{body}</p>{action&&<button onClick={onClick}>{action}</button>}</div>}

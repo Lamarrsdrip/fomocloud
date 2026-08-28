@@ -127,6 +127,7 @@ function signAccess(user:any) {
     {expiresIn:accessTtl as any,issuer:"memecloud-api",audience:"memecloud-web"}
   );
 }
+const MAX_ACTIVE_SESSIONS_PER_USER=10;
 async function issueSession(req:Request,res:Response,user:any) {
   const refresh=randomToken(48);
   await db.refreshSession.create({
@@ -138,6 +139,15 @@ async function issueSession(req:Request,res:Response,user:any) {
       ipAddress:req.ip
     }
   });
+  // Bounds unlimited session growth (e.g. a client retry-looping through repeated failed logins,
+  // which is exactly what an embedded WebView dropping its session cookie produces) without ever
+  // touching a session that's still genuinely in use. Keeps the most recently used N, revokes only
+  // the older excess -- the session just created above always sorts first and is never touched.
+  const active=await db.refreshSession.findMany({where:{userId:user.id,revokedAt:{isSet:false},expiresAt:{gt:new Date()}},select:{id:true},orderBy:{lastUsedAt:"desc"}});
+  if(active.length>MAX_ACTIVE_SESSIONS_PER_USER){
+    const excess=active.slice(MAX_ACTIVE_SESSIONS_PER_USER).map(s=>s.id);
+    await db.refreshSession.updateMany({where:{id:{in:excess}},data:{revokedAt:new Date()}});
+  }
   res.cookie("fomo_refresh",refresh,refreshCookieOptions());
   return signAccess(user);
 }
@@ -514,12 +524,18 @@ app.patch("/v1/me/profile", auth, asyncRoute(async (req:AuthedRequest,res) => {
 }));
 
 app.get("/v1/me/sessions", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const currentHash=hashToken(parseCookies(req).fomo_refresh??"");
   const sessions=await db.refreshSession.findMany({
     where:{userId:req.user.sub,revokedAt:{isSet:false},expiresAt:{gt:new Date()}},
-    select:{id:true,userAgent:true,ipAddress:true,createdAt:true,lastUsedAt:true,expiresAt:true},
+    select:{id:true,userAgent:true,ipAddress:true,createdAt:true,lastUsedAt:true,expiresAt:true,tokenHash:true},
     orderBy:{lastUsedAt:"desc"},take:50
   });
-  res.json({sessions});
+  res.json({sessions:sessions.map(({tokenHash,...s})=>({...s,current:tokenHash===currentHash}))});
+}));
+app.delete("/v1/me/sessions", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const currentHash=hashToken(parseCookies(req).fomo_refresh??"");
+  await db.refreshSession.updateMany({where:{userId:req.user.sub,revokedAt:{isSet:false},tokenHash:{not:currentHash}},data:{revokedAt:new Date()}});
+  res.json({ok:true});
 }));
 app.delete("/v1/me/sessions/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
   await db.refreshSession.updateMany({where:{id:routeParam(req.params.id),userId:req.user.sub,revokedAt:{isSet:false}},data:{revokedAt:new Date()}});
@@ -1173,22 +1189,29 @@ app.get("/v1/me/social/x/start", auth, asyncRoute(async (req:AuthedRequest,res) 
 }));
 
 app.get("/auth/x/callback", asyncRoute(async (req,res) => {
+  // Every failure path here used to dead-end with a raw status/text response rendered on the API
+  // domain itself -- the user is left staring at meme-api.xaucloud.io with no way back into the
+  // app. Every path below must redirect back to the frontend's Account view with a safe, specific,
+  // non-raw reason instead, matching the same-shape success redirect at the bottom of this route.
+  const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"/";
+  const failRedirect=(reason:string)=>res.redirect(`${appUrl}/app/?view=profile&x=error&reason=${encodeURIComponent(reason)}`);
   const state=String(req.query.state??""), code=String(req.query.code??"");
+  if(req.query.error) return failRedirect("X connection cancelled");
   const row=await db.oAuthState.findUnique({where:{stateHash:hashToken(state)}});
-  if(!row||row.provider!=="X"||row.expiresAt<new Date()) return res.status(400).send("X authorization expired.");
+  if(!row||row.provider!=="X"||row.expiresAt<new Date()) return failRedirect("X authorization expired");
   const {verifier}=decryptJson<{verifier:string}>(row.verifierEnc);
   const socialCfg=await getConfig<any>("social");
   const clientId=socialCfg?.xOAuthClientId||process.env.X_OAUTH_CLIENT_ID, callback=socialCfg?.xOAuthCallbackUrl||process.env.X_OAUTH_CALLBACK_URL;
   const clientSecret=socialCfg?.xOAuthClientSecret||process.env.X_OAUTH_CLIENT_SECRET;
-  if(!clientId||!callback) return res.status(503).send("X OAuth is not configured.");
+  if(!clientId||!callback) return failRedirect("Unable to link X right now");
   const body=new URLSearchParams({code,grant_type:"authorization_code",redirect_uri:callback,code_verifier:verifier,client_id:clientId});
   const headers:Record<string,string>={"content-type":"application/x-www-form-urlencoded"};
   if(clientSecret) headers.authorization=`Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
   const tokenRes=await fetch("https://api.x.com/2/oauth2/token",{method:"POST",headers,body,signal:AbortSignal.timeout(8000)});
-  if(!tokenRes.ok) return res.status(502).send("X token exchange failed.");
+  if(!tokenRes.ok){ await db.oAuthState.delete({where:{id:row.id}}).catch(()=>{}); return failRedirect("Unable to link X right now"); }
   const tokens:any=await tokenRes.json();
   const meRes=await fetch("https://api.x.com/2/users/me?user.fields=profile_image_url,name,username",{headers:{authorization:`Bearer ${tokens.access_token}`},signal:AbortSignal.timeout(8000)});
-  if(!meRes.ok) return res.status(502).send("X profile lookup failed.");
+  if(!meRes.ok){ await db.oAuthState.delete({where:{id:row.id}}).catch(()=>{}); return failRedirect("Unable to link X right now"); }
   const me:any=await meRes.json();
   await db.linkedSocialAccount.upsert({
     where:{userId_provider:{userId:row.userId,provider:"X"}},
@@ -1204,7 +1227,6 @@ app.get("/auth/x/callback", asyncRoute(async (req,res) => {
     }
   });
   await db.oAuthState.delete({where:{id:row.id}});
-  const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"/";
   res.redirect(`${appUrl}/app/?view=profile&x=connected`);
 }));
 

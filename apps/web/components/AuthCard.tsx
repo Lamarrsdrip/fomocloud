@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { ArrowRight, WalletCards, CheckCircle2, ShieldCheck, Zap } from "lucide-react";
 import { apiFetch, login, signup, setAccessToken, plainError } from "../lib/api";
 import { connectWallet, signWithWallet, type DetectedWallet } from "../lib/wallet";
@@ -14,13 +14,34 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
   const [error,setError]=useState("");
   const [note,setNote]=useState("");
 
+  // Surfaces the reason if /app/ bounced back here after a bootstrap 401 (e.g. the session didn't
+  // survive the prior navigation in an embedded WebView) -- never leave that silent.
+  useEffect(()=>{
+    try{
+      const notice=sessionStorage.getItem("memecloud_login_notice");
+      if(notice){setError(notice);sessionStorage.removeItem("memecloud_login_notice")}
+    }catch{}
+  },[]);
+
   async function submit(e:React.FormEvent){
     e.preventDefault(); setBusy(true);setError("");setNote("");
     try{
       const data=mode==="signup"?await signup(email,password,displayName):await login(email,password);
       if(mode==="signup"&&data.emailDelivery==="NOT_CONFIGURED") setNote("Account created. Email verification will become available when SMTP is configured.");
+      // Confirm the session is actually usable (access token in memory AND, more importantly, the
+      // refresh cookie the WebView needs for persistence) before navigating away, instead of
+      // trusting sessionStorage blindly survived the upcoming full-page navigation. A WebView that
+      // silently dropped the cookie surfaces here, on the page that can still show the user why,
+      // rather than as an unexplained bounce back to a blank form after /app/ tries and fails.
+      try{
+        await apiFetch("/v1/me");
+      }catch(confirmErr:any){
+        setError("Signed in, but your session could not be confirmed. Please try again.");
+        setBusy(false);
+        return;
+      }
       location.replace(data.user?.onboardingCompleted?"/app/":"/onboarding/");
-    }catch(e){setError(plainError(e));}finally{setBusy(false)}
+    }catch(e){setError(plainError(e));setBusy(false);}
   }
   // A synchronous ref, not just the `busy` state: a rapid double-tap/duplicate touch event (a
   // known class of mobile WebView issue, including inside Phantom's in-app browser) can fire this
@@ -39,7 +60,15 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
       const c=await apiFetch<any>("/auth/wallet/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
       const signature=await signWithWallet(wallet.provider,c.message);
       const data=await apiFetch<any>("/auth/wallet/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature})},false);
-      setAccessToken(data.accessToken); location.replace(data.user?.onboardingCompleted?"/app/":"/onboarding/");
+      setAccessToken(data.accessToken);
+      try{
+        await apiFetch("/v1/me");
+      }catch{
+        setError("Signed in, but your session could not be confirmed. Please try again.");
+        setBusy(false);walletBusyRef.current=false;
+        return;
+      }
+      location.replace(data.user?.onboardingCompleted?"/app/":"/onboarding/");
     }catch(e:any){setError(plainError(e));}finally{setBusy(false);walletBusyRef.current=false}
   }
 

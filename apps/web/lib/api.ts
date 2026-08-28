@@ -1,6 +1,13 @@
+// This MUST be same-site with the frontend's own origin (meme.xaucloud.io). The prior fallback
+// pointed at fomocloud-api.173-212-249-202.sslip.io -- a genuinely cross-site host (different
+// registrable domain). WebKit-based in-app browsers (including Phantom's), unlike desktop Safari,
+// silently drop SameSite=None third-party cookies in embedded contexts, which broke the
+// fomo_refresh cookie and, with it, session persistence. meme-api.xaucloud.io is a sibling
+// subdomain of meme.xaucloud.io, so requests to it are same-site and this class of blocking does
+// not apply.
 const API = process.env.NEXT_PUBLIC_API_URL ??
   (process.env.NODE_ENV === "production"
-    ? "https://fomocloud-api.173-212-249-202.sslip.io"
+    ? "https://meme-api.xaucloud.io"
     : "http://localhost:4000");
 const TOKEN_KEY = "memecloud_access";
 
@@ -73,7 +80,10 @@ export function plainError(e:any){
     EXECUTION_PRICE_IMPACT_TOO_HIGH:"The real executable route would move the price too much, so the trade was skipped.",
     SOURCE_EXECUTION_PRICE_MISSING:"We detected the trader's buy, but cannot verify its real execution price yet.",
     MARKET_DATA_INCOMPLETE:"Critical market data is still being verified. No trade was invented.",
-    EXECUTION_ADAPTER_NOT_CONFIGURED:"That network is prepared but does not yet have a verified execution route."
+    EXECUTION_ADAPTER_NOT_CONFIGURED:"That network is prepared but does not yet have a verified execution route.",
+    INVALID_USERNAME:"Username must be 3–24 characters and use only lowercase letters, numbers or underscore.",
+    USERNAME_UNAVAILABLE:"That username is already taken. Try another.",
+    SESSION_COULD_NOT_BE_ESTABLISHED:"Your session could not be established. Please try again."
   };
   return map[code]??code.replaceAll("_"," ").toLowerCase();
 }
