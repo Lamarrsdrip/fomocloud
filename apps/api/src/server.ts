@@ -14,7 +14,7 @@ import { CopySettingsSchema } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, isLiveTradingEnabled, type ProviderRecord } from "@memecloud/config";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
 type TestResult = { ok: boolean; httpStatus?: number; latencyMs?: number; message: string; checkedAt: string };
-import { sendEmail, sendPush, ensureVapid, publicPushKey } from "@memecloud/notifications";
+import { sendEmail, sendPush, ensureVapid, publicPushKey, renderEmail } from "@memecloud/notifications";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { JupiterExecution } from "@memecloud/execution";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -237,9 +237,15 @@ app.post("/auth/signup", asyncRoute(async (req,res) => {
   const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
   let emailDelivery:"SENT"|"NOT_CONFIGURED"|"FAILED"="NOT_CONFIGURED";
   try {
-    await sendEmail(email,"Verify your MemeCloud email",
-      `<h2>Verify your email</h2><p>Open this link to verify your account:</p><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(verifyToken)}">Verify email</a></p>`,
-      user.id);
+    const verifyUrl=`${appUrl}/verify-email/?token=${encodeURIComponent(verifyToken)}`;
+    const {html,text}=renderEmail({
+      preheader:"Confirm your email to finish setting up MemeCloud.",
+      heading:"Verify your email",
+      bodyHtml:`Welcome to MemeCloud. Confirm <b style="color:#e2e4ee">${email}</b> to finish setting up your account.`,
+      ctaLabel:"Verify email",ctaUrl:verifyUrl,
+      footerNote:"You're receiving this because this email was used to create a MemeCloud account. If that wasn't you, no action is needed — the link expires automatically."
+    });
+    await sendEmail(email,"Verify your MemeCloud email",html,user.id,text);
     emailDelivery="SENT";
   } catch(e:any) {
     emailDelivery=e?.code==="EMAIL_NOT_CONFIGURED"?"NOT_CONFIGURED":"FAILED";
@@ -260,7 +266,15 @@ app.post("/auth/resend-verification", auth, asyncRoute(async (req:AuthedRequest,
   // outcome (unconfigured vs. genuine send failure vs. actually accepted by the SMTP provider),
   // not a blanket ok:true — see the resendVerification() UI fix in apps/web for why this matters.
   try {
-    await sendEmail(user.email,"Verify your MemeCloud email",`<h2>Verify your email</h2><p><a href="${appUrl}/verify-email/?token=${encodeURIComponent(token)}">Verify email</a></p>`,user.id);
+    const verifyUrl=`${appUrl}/verify-email/?token=${encodeURIComponent(token)}`;
+    const {html,text}=renderEmail({
+      preheader:"Confirm your email to finish setting up MemeCloud.",
+      heading:"Verify your email",
+      bodyHtml:`Confirm <b style="color:#e2e4ee">${user.email}</b> to finish setting up your MemeCloud account.`,
+      ctaLabel:"Verify email",ctaUrl:verifyUrl,
+      footerNote:"You're receiving this because this email is on a MemeCloud account. If that wasn't you, no action is needed — the link expires automatically."
+    });
+    await sendEmail(user.email,"Verify your MemeCloud email",html,user.id,text);
   } catch(e:any) {
     if(e?.code==="EMAIL_NOT_CONFIGURED") return res.status(503).json({error:"EMAIL_NOT_CONFIGURED"});
     return res.status(502).json({error:"EMAIL_SEND_FAILED"});
@@ -328,9 +342,15 @@ app.post("/auth/forgot-password", asyncRoute(async (req,res) => {
     const token=await createEmailToken(user.id,"RESET_PASSWORD",30);
     const appUrl=process.env.NEXT_PUBLIC_APP_URL??configuredOrigins[0]??"";
     try {
-      await sendEmail(user.email,"Reset your MemeCloud password",
-        `<h2>Reset your password</h2><p><a href="${appUrl}/reset-password/?token=${encodeURIComponent(token)}">Reset password</a></p>`,
-        user.id);
+      const resetUrl=`${appUrl}/reset-password/?token=${encodeURIComponent(token)}`;
+      const {html,text}=renderEmail({
+        preheader:"Reset your MemeCloud password.",
+        heading:"Reset your password",
+        bodyHtml:`We received a request to reset the password for <b style="color:#e2e4ee">${user.email}</b>. This link expires in 30 minutes.`,
+        ctaLabel:"Reset password",ctaUrl:resetUrl,
+        footerNote:"If you didn't request a password reset, you can safely ignore this email — your password won't change unless you click the link above and set a new one."
+      });
+      await sendEmail(user.email,"Reset your MemeCloud password",html,user.id,text);
     } catch {}
   }
   res.json({ok:true}); // never reveal whether an address exists
