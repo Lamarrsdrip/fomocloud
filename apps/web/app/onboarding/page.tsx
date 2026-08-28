@@ -2,14 +2,25 @@
 import {useEffect,useMemo,useState} from "react";
 import {ArrowRight,ArrowLeft,Check,Users,WalletCards,Bell,ShieldCheck,Zap} from "lucide-react";
 import {apiFetch,money,plainError} from "../../lib/api";
+import {connectWallet,signWithWallet,type DetectedWallet} from "../../lib/wallet";
 import {BrandGlyph} from "../../components/BrandGlyph";
+import WalletChooser from "../../components/WalletChooser";
 
-function toBase64(bytes:Uint8Array){let s="";bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 export default function Onboarding(){
  const[step,setStep]=useState(0),[data,setData]=useState<any>(null),[selected,setSelected]=useState<string[]>([]),[amount,setAmount]=useState(100),[auto,setAuto]=useState(false),[busy,setBusy]=useState(true),[err,setErr]=useState("");
+ const[walletChooserOpen,setWalletChooserOpen]=useState(false),[walletBusy,setWalletBusy]=useState(false);
  useEffect(()=>{apiFetch<any>("/v1/me/onboarding").then(x=>{if(x.completed){location.href="/app/";return}setData(x);setSelected((x.recommended||[]).filter((t:any)=>t.defaultSelected).map((t:any)=>t.id));setAmount(x.settings?.defaultAmountUsd||100)}).catch(e=>{if(e?.status===401)location.href="/login/";else setErr(plainError(e))}).finally(()=>setBusy(false))},[]);
  const wallet=data?.wallets?.[0]; const recommended=data?.recommended||[];
- async function linkWallet(){setErr("");try{const provider=(window as any).solana;if(!provider?.connect)throw new Error("No supported Solana wallet found in this browser.");const c0=await provider.connect();const address=c0.publicKey.toString();const c=await apiFetch<any>("/v1/me/wallets/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);const signed=await provider.signMessage(new TextEncoder().encode(c.message),"utf8");await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})},false);const x=await apiFetch<any>("/v1/me/onboarding");setData(x)}catch(e){setErr(plainError(e))}}
+ async function linkWallet(wallet:DetectedWallet){
+  setWalletChooserOpen(false);setWalletBusy(true);setErr("");
+  try{
+   const address=await connectWallet(wallet.provider);
+   const c=await apiFetch<any>("/v1/me/wallets/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
+   const signature=await signWithWallet(wallet.provider,c.message);
+   await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature})},false);
+   const x=await apiFetch<any>("/v1/me/onboarding");setData(x);
+  }catch(e){setErr(plainError(e))}finally{setWalletBusy(false)}
+ }
  async function finish(){setBusy(true);setErr("");try{await apiFetch("/v1/me/onboarding",{method:"POST",body:JSON.stringify({traderIds:selected,defaultAmountUsd:amount,autoCopyEnabled:auto})});location.href="/app/"}catch(e){setErr(plainError(e));setBusy(false)}}
  if(busy&&!data)return <main className="app-page"><div className="loading"><div><div className="spinner"/>Preparing your account…</div></div></main>;
  const steps=["Welcome","Wallet","Traders","Trading","Review"];
@@ -17,11 +28,13 @@ export default function Onboarding(){
   {err&&<div className="auth-error">{err}</div>}
   <section className="onboarding-card">
    {step===0&&<><span className="eyebrow">YOUR PRIVATE TRADING WORKSPACE</span><h1>Set up the account around you.</h1><p>Your traders, copy amounts, positions, history and notifications are private to this account. We monitor each source wallet once and make an independent decision for you.</p><div className="onboard-features"><div><Users/><b>Your traders</b><span>Follow, Watch or Auto Copy independently.</span></div><div><Zap/><b>24/7 engine</b><span>The VPS keeps monitoring after you close the app.</span></div><div><ShieldCheck/><b>You stay in control</b><span>Login is separate from trading authorization.</span></div></div></>}
-   {step===1&&<><span className="eyebrow">STEP 2</span><h1>Connect a trading wallet.</h1><p>This proves wallet ownership and lets the app read balances. It does not give the server your seed phrase or unrestricted signing power.</p>{wallet?<div className="connected-box"><Check size={18}/><div><b>Wallet linked</b><span>{wallet.chain} · {wallet.address.slice(0,8)}…{wallet.address.slice(-6)}</span></div></div>:<button className="action-primary big" onClick={linkWallet}><WalletCards size={17}/> Connect Solana wallet</button>}<div className="notice">You can skip this now and finish it from Profile. Live unattended trading stays disabled until a reviewed delegated/session authorization is configured.</div></>}
+   {step===1&&<><span className="eyebrow">STEP 2</span><h1>Connect a trading wallet.</h1><p>This proves wallet ownership and lets the app read balances. It does not give the server your seed phrase or unrestricted signing power.</p>{wallet?<div className="connected-box"><Check size={18}/><div><b>Wallet linked</b><span>{wallet.chain} · {wallet.address.slice(0,8)}…{wallet.address.slice(-6)}</span></div></div>:<button className="action-primary big" disabled={walletBusy} onClick={()=>setWalletChooserOpen(true)}><WalletCards size={17}/> Connect Solana wallet</button>}<div className="notice">You can skip this now and finish it from Profile. Live unattended trading stays disabled until a reviewed delegated/session authorization is configured.</div></>}
    {step===2&&<><span className="eyebrow">STEP 3</span><h1>Choose traders to watch.</h1><p>These are platform-curated source wallets. You can change the list later or add your own public trader wallets.</p>{recommended.length?<div className="onboard-traders">{recommended.map((t:any)=><button key={t.id} onClick={()=>setSelected(x=>x.includes(t.id)?x.filter(y=>y!==t.id):[...x,t.id])} className={selected.includes(t.id)?"selected":""}><div className="avatar">{(t.displayName||"T")[0]}</div><div><b>{t.displayName}</b><span>{t.xHandle?`@${t.xHandle}`:`@${t.handle}`} · {t._count?.signals||0} tracked signals</span></div><i>{selected.includes(t.id)&&<Check size={13}/>}</i></button>)}</div>:<div className="empty-inline">No recommended traders have been added by Admin yet. You can continue and add your own in the app.</div>}</>}
    {step===3&&<><span className="eyebrow">STEP 4</span><h1>Choose your default copy size.</h1><p>This is your default, not a promise to trade. Every source signal still passes your limits and market checks.</p><label className="amount-picker"><span>Amount per eligible copy</span><div><b>$</b><input type="number" min="1" value={amount} onChange={e=>setAmount(Math.max(1,Number(e.target.value)||1))}/></div></label><div className="switch-row"><div><b>Turn Auto Copy on after setup</b><small>Off means selected traders are Watch Only.</small></div><button className={`switch ${auto?"on":""}`} onClick={()=>setAuto(!auto)}><i/></button></div><div className="notice green">Simulation mode can exercise your personal decision pipeline without moving live money. The dashboard always labels simulated positions separately.</div></>}
    {step===4&&<><span className="eyebrow">READY</span><h1>Review your setup.</h1><div className="review-grid"><div><span>Wallet</span><b>{wallet?`${wallet.chain} linked`:"Finish later"}</b></div><div><span>Traders selected</span><b>{selected.length}</b></div><div><span>Default copy</span><b>{money(amount)}</b></div><div><span>Auto Copy</span><b>{auto?"On (simulation until live-ready)":"Off / Watch only"}</b></div></div><div className="notice">You can pause Auto Copy at any time. Platform-recommended traders never receive permission to risk funds until you explicitly enable trading and complete the real wallet authorization flow.</div></>}
   </section>
   <div className="onboard-actions">{step>0?<button className="soft-btn" onClick={()=>setStep(step-1)}><ArrowLeft size={15}/> Back</button>:<span/>}{step<4?<button className="action-primary" onClick={()=>setStep(step+1)}>Continue <ArrowRight size={15}/></button>:<button className="action-primary" disabled={busy} onClick={finish}>Open my dashboard <ArrowRight size={15}/></button>}</div>
- </div></main>
+ </div>
+ <WalletChooser open={walletChooserOpen} busy={walletBusy} onClose={()=>setWalletChooserOpen(false)} onPick={linkWallet}/>
+ </main>
 }

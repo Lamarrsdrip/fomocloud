@@ -6,7 +6,9 @@ import {
   TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine
 } from "lucide-react";
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
+import {connectWallet,signWithWallet,type DetectedWallet} from "../../lib/wallet";
 import {BrandGlyph} from "../../components/BrandGlyph";
+import WalletChooser from "../../components/WalletChooser";
 
 type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"activity";
 const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
@@ -22,7 +24,6 @@ function timeAgo(v:string){
   const s=Math.max(1,Math.floor((Date.now()-new Date(v).getTime())/1000));
   if(s<60)return `${s}s ago`; if(s<3600)return `${Math.floor(s/60)}m ago`; if(s<86400)return `${Math.floor(s/3600)}h ago`; return `${Math.floor(s/86400)}d ago`;
 }
-function toBase64(bytes:Uint8Array){let s="";bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function urlB64ToBytes(s:string){const pad="=".repeat((4-s.length%4)%4);const raw=atob((s+pad).replace(/-/g,"+").replace(/_/g,"/"));return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)))}
 function pushEnv(){
  const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
@@ -393,18 +394,19 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
  async function patchTrading(body:any){try{const r=await apiFetch("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setErr(plainError(e))}}
  async function patchNotifications(body:any){try{const r=await apiFetch("/v1/me/settings/notifications",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,notifications:r.notifications}))}catch(e){setErr(plainError(e))}}
  async function saveProfile(){try{const r=await apiFetch("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username})});setMe((x:any)=>({...x,...r.user}));setErr("")}catch(e){setErr(plainError(e))}}
- async function linkWallet(){
-  setErr("");try{
-   const provider=(window as any).solana;if(!provider?.connect)throw new Error("No supported Solana wallet found.");
-   const c0=await provider.connect();const address=c0.publicKey.toString();
+ const[walletChooserOpen,setWalletChooserOpen]=useState(false);
+ const[walletBusy,setWalletBusy]=useState(false);
+ async function linkWallet(wallet:DetectedWallet){
+  setWalletChooserOpen(false);setWalletBusy(true);setErr("");try{
+   const address=await connectWallet(wallet.provider);
    // retry:false is required here — these are one-time-use signed challenges. apiFetch's default
    // retry-on-401 behavior would silently resend the exact same challenge+signature a second time
    // whenever a near-expiry access token happened to trigger a refresh, which can only ever fail
    // as "already used" on the retry even when the first attempt genuinely succeeded.
    const c=await apiFetch<any>("/v1/me/wallets/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
-   const signed=await provider.signMessage(new TextEncoder().encode(c.message),"utf8");
-   await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})},false);await reload();
-  }catch(e){setErr(plainError(e))}
+   const signature=await signWithWallet(wallet.provider,c.message);
+   await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature})},false);await reload();
+  }catch(e){setErr(plainError(e))}finally{setWalletBusy(false)}
  }
  const[pushState,setPushState]=useState<"checking"|"ios-need-install"|"unsupported"|"need-permission"|"denied"|"on"|"error">("checking");
  const[pushBusy,setPushBusy]=useState(false);const[pushMsg,setPushMsg]=useState("");
@@ -457,7 +459,8 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
    <section className="settings-block"><h3>Account</h3><div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||"Wallet-created account"}</small></div></div>
     <label className="field"><span>Display name</span><input value={name} onChange={e=>setName(e.target.value)} /></label><label className="field"><span>Public username</span><input value={username} onChange={e=>setUsername(e.target.value.toLowerCase())} placeholder="username" /></label><div className="switch-row"><div><b>Public community profile</b><small>Off by default. Financial details always stay private.</small></div><button className={`switch ${me?.publicProfileEnabled?"on":""}`} onClick={async()=>{try{const r=await apiFetch<any>("/v1/me/profile",{method:"PATCH",body:JSON.stringify({displayName:name,username,publicProfileEnabled:!me?.publicProfileEnabled})});setMe((x:any)=>({...x,...r.user}))}catch(e){setErr(plainError(e))}}}><i/></button></div><button className="soft-action" onClick={saveProfile}>Save profile</button>
     <div className="switch-row"><div><b>Email</b><small>{me?.email?me.emailVerified?"Verified":"Not verified yet":"Wallet-only account"}</small></div>{me?.email?(me.emailVerified?<span className="status-badge">Verified</span>:<button className="soft-action" onClick={resendVerification}>Resend verification</button>):<span className="status-badge">Optional</span>}</div>
-    <div className="switch-row"><div><b>Linked wallets</b><small>{me?.wallets?.length||0} wallet(s)</small></div><button className="soft-action" onClick={linkWallet}><Link2 size={12}/> Add wallet</button></div>
+    <div className="switch-row"><div><b>Linked wallets</b><small>{me?.wallets?.length||0} wallet(s)</small></div><button className="soft-action" disabled={walletBusy} onClick={()=>setWalletChooserOpen(true)}><Link2 size={12}/> Add wallet</button></div>
+    <WalletChooser open={walletChooserOpen} busy={walletBusy} onClose={()=>setWalletChooserOpen(false)} onPick={linkWallet}/>
     {me?.wallets?.map((w:any)=><div className="wallet-line" key={w.id}><div><b>{w.chain} · {w.address.slice(0,7)}…{w.address.slice(-5)}</b><small>{w.isPrimary?"Primary · ":""}{w.tradingEnabled?"Trading permission active":"No unattended trading permission"}</small></div><button className="soft-action" disabled={w.tradingEnabled||Boolean(w.permissionRef)} onClick={()=>unlinkWallet(w.id)}>Unlink</button></div>)}
     <div className="switch-row"><div><b>X account</b><small>{me?.linkedSocialAccounts?.find((x:any)=>x.provider==="X")?.username?`@${me.linkedSocialAccounts.find((x:any)=>x.provider==="X").username}`:"Optional"}</small></div><button className="soft-action" onClick={linkX}>Link X</button></div>
     {me?.role==="OWNER"&&<div className="switch-row"><div><b>Admin Command Center</b><small>Owner platform controls</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}

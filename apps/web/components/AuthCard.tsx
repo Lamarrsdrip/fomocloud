@@ -2,11 +2,9 @@
 import { useState, useRef } from "react";
 import { ArrowRight, WalletCards, CheckCircle2, ShieldCheck, Zap } from "lucide-react";
 import { apiFetch, login, signup, setAccessToken, plainError } from "../lib/api";
+import { connectWallet, signWithWallet, type DetectedWallet } from "../lib/wallet";
 import {BrandGlyph} from "./BrandGlyph";
-
-function toBase64(bytes:Uint8Array){
-  let s=""; bytes.forEach(b=>s+=String.fromCharCode(b)); return btoa(s);
-}
+import WalletChooser from "./WalletChooser";
 
 export default function AuthCard({mode}:{mode:"login"|"signup"}){
   const [email,setEmail]=useState("");
@@ -31,18 +29,16 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
   // verify call lands second can only ever fail as "challenge already used" — masking the first
   // call's real success. This ref closes that gap; `disabled={busy}` alone does not.
   const walletBusyRef=useRef(false);
-  async function walletLogin(){
+  const [chooserOpen,setChooserOpen]=useState(false);
+  async function walletLogin(wallet:DetectedWallet){
     if(walletBusyRef.current) return;
     walletBusyRef.current=true;
-    setBusy(true);setError("");
+    setChooserOpen(false);setBusy(true);setError("");
     try{
-      const provider=(window as any).solana;
-      if(!provider?.isPhantom && !provider?.connect) throw new Error("No supported Solana wallet was found in this browser.");
-      const connected=await provider.connect();
-      const address=connected.publicKey.toString();
+      const address=await connectWallet(wallet.provider);
       const c=await apiFetch<any>("/auth/wallet/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
-      const signed=await provider.signMessage(new TextEncoder().encode(c.message),"utf8");
-      const data=await apiFetch<any>("/auth/wallet/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})},false);
+      const signature=await signWithWallet(wallet.provider,c.message);
+      const data=await apiFetch<any>("/auth/wallet/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature})},false);
       setAccessToken(data.accessToken); location.href=data.user?.onboardingCompleted?"/app/":"/onboarding/";
     }catch(e:any){setError(plainError(e));}finally{setBusy(false);walletBusyRef.current=false}
   }
@@ -70,10 +66,11 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
           <button className="action-primary" disabled={busy}>{busy?"Working…":mode==="signup"?"Create account":"Sign in"} <ArrowRight size={16}/></button>
           {mode==="login"&&<a style={{fontSize:10,color:"#8d92a2",textAlign:"right"}} href="/forgot-password/">Forgot password?</a>}
           <div className="auth-divider">OR</div>
-          <button className="wallet-auth" type="button" onClick={walletLogin} disabled={busy}><WalletCards size={16} style={{verticalAlign:"middle",marginRight:7}}/> Continue with Solana wallet</button>
+          <button className="wallet-auth" type="button" onClick={()=>setChooserOpen(true)} disabled={busy}><WalletCards size={16} style={{verticalAlign:"middle",marginRight:7}}/> Continue with Solana wallet</button>
         </form>
         <div className="form-foot">{mode==="signup"?<>Already have an account? <a href="/login/">Sign in</a></>:<>New here? <a href="/signup/">Create account</a></>}</div>
       </div>
     </section>
+    <WalletChooser open={chooserOpen} busy={busy} onClose={()=>setChooserOpen(false)} onPick={walletLogin}/>
   </div>
 }
