@@ -448,8 +448,17 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
       <span>{liveReadiness.liveTradingEnabled?"Executor and exits will sign and submit real transactions for any user with an active delegated permission.":"Executor and exits currently skip every live decision — this is the real switch, checked fresh on every trade, no VPS restart needed either way."}</span>
       {admin&&(liveReadiness.liveTradingEnabled
        ?<button type="button" className="action-primary" style={{background:"#c0392b"}} disabled={liveTradingBusy} onClick={disableLiveTrading}>Turn OFF</button>
-       :<button type="button" className="action-primary" disabled={liveTradingBusy||!liveReadiness.ready} onClick={enableLiveTrading} title={!liveReadiness.ready?"All dependencies above must be Connected first":""}>Turn ON</button>)}
+       :<button type="button" className="action-primary" disabled={liveTradingBusy||!liveReadiness.ready} onClick={enableLiveTrading} title={!liveReadiness.ready?liveReadiness.reasons.join(" "):""}>{liveReadiness.ready?"Turn ON":"Not ready yet"}</button>)}
      </div>
+     {/* A disabled button with only a hover title explains nothing on a touch device — this is
+         the same information as the reasons list above, repeated right next to the control it
+         actually blocks, since that's the one place an owner will look when "Turn ON" doesn't
+         seem to do anything. */}
+     {!liveReadiness.liveTradingEnabled&&!liveReadiness.ready&&liveReadiness.reasons.length>0&&
+      <div className="notice" style={{borderColor:"rgba(247,185,95,.25)"}}>
+       <b style={{display:"block",marginBottom:4,fontSize:11}}>Turn ON is disabled until these are resolved:</b>
+       {liveReadiness.reasons.map((r:string)=><div key={r}>{r}</div>)}
+      </div>}
      {liveTradingMsg&&<div className="notice">{liveTradingMsg}</div>}
     </>}
    </section>
