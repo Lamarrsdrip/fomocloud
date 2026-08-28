@@ -397,9 +397,13 @@ function ProfileView({me,setMe,settings,notifications,sessions,setSettings,reloa
   setErr("");try{
    const provider=(window as any).solana;if(!provider?.connect)throw new Error("No supported Solana wallet found.");
    const c0=await provider.connect();const address=c0.publicKey.toString();
-   const c=await apiFetch<any>("/v1/me/wallets/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})});
+   // retry:false is required here — these are one-time-use signed challenges. apiFetch's default
+   // retry-on-401 behavior would silently resend the exact same challenge+signature a second time
+   // whenever a near-expiry access token happened to trigger a refresh, which can only ever fail
+   // as "already used" on the retry even when the first attempt genuinely succeeded.
+   const c=await apiFetch<any>("/v1/me/wallets/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
    const signed=await provider.signMessage(new TextEncoder().encode(c.message),"utf8");
-   await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})});await reload();
+   await apiFetch("/v1/me/wallets/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})},false);await reload();
   }catch(e){setErr(plainError(e))}
  }
  const[pushState,setPushState]=useState<"checking"|"ios-need-install"|"unsupported"|"need-permission"|"denied"|"on"|"error">("checking");

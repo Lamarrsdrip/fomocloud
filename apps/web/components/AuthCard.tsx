@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { ArrowRight, WalletCards, CheckCircle2, ShieldCheck, Zap } from "lucide-react";
 import { apiFetch, login, signup, setAccessToken, plainError } from "../lib/api";
 import {BrandGlyph} from "./BrandGlyph";
@@ -24,7 +24,16 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
       location.href=data.user?.onboardingCompleted?"/app/":"/onboarding/";
     }catch(e){setError(plainError(e));}finally{setBusy(false)}
   }
+  // A synchronous ref, not just the `busy` state: a rapid double-tap/duplicate touch event (a
+  // known class of mobile WebView issue, including inside Phantom's in-app browser) can fire this
+  // handler twice before React re-renders the disabled button. Two concurrent runs would each
+  // request their own one-time-use challenge and each call provider.signMessage, and whichever
+  // verify call lands second can only ever fail as "challenge already used" — masking the first
+  // call's real success. This ref closes that gap; `disabled={busy}` alone does not.
+  const walletBusyRef=useRef(false);
   async function walletLogin(){
+    if(walletBusyRef.current) return;
+    walletBusyRef.current=true;
     setBusy(true);setError("");
     try{
       const provider=(window as any).solana;
@@ -35,7 +44,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
       const signed=await provider.signMessage(new TextEncoder().encode(c.message),"utf8");
       const data=await apiFetch<any>("/auth/wallet/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature:`base64:${toBase64(signed.signature)}`})},false);
       setAccessToken(data.accessToken); location.href=data.user?.onboardingCompleted?"/app/":"/onboarding/";
-    }catch(e:any){setError(plainError(e));}finally{setBusy(false)}
+    }catch(e:any){setError(plainError(e));}finally{setBusy(false);walletBusyRef.current=false}
   }
 
   return <div className="auth-page">

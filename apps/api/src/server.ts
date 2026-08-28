@@ -361,14 +361,20 @@ app.post("/auth/wallet/verify", asyncRoute(async (req,res) => {
   const challengeId=String(req.body?.challengeId??"");
   const signature=String(req.body?.signature??"");
   const row=await db.walletChallenge.findUnique({where:{id:challengeId}});
-  if(!row||row.chain!=="SOLANA"||row.consumedAt||row.expiresAt<new Date()) return res.status(401).json({error:"CHALLENGE_EXPIRED"});
+  // These are never "you need to authenticate" (401) — this endpoint requires no prior auth at
+  // all. Returning 401 here made the shared apiFetch client auto-retry this exact one-time-use
+  // signed challenge whenever a stale refresh cookie happened to be present (see apps/web/lib/
+  // api.ts), which can only ever fail as "already used" on the retry — masking a real first
+  // success. 400/409/410 never trigger that retry path.
+  if(!row||row.chain!=="SOLANA"||row.expiresAt<new Date()) return res.status(410).json({error:"CHALLENGE_EXPIRED"});
+  if(row.consumedAt) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   let sigBytes:Uint8Array;
   try { sigBytes=signature.startsWith("base64:") ? Buffer.from(signature.slice(7),"base64") : bs58.decode(signature); }
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   const ok=nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address));
-  if(!ok) return res.status(401).json({error:"INVALID_SIGNATURE"});
+  if(!ok) return res.status(400).json({error:"INVALID_SIGNATURE"});
   const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
-  if(consumed.count!==1) return res.status(401).json({error:"CHALLENGE_ALREADY_USED"});
+  if(consumed.count!==1) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   let wallet=await db.wallet.findUnique({where:{chain_address:{chain:"SOLANA",address:row.address}}});
   let user;
   if(wallet) user=await db.user.findUnique({where:{id:wallet.userId}});
@@ -396,15 +402,20 @@ app.post("/v1/me/wallets/challenge", auth, asyncRoute(async (req:AuthedRequest,r
 
 app.post("/v1/me/wallets/verify", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const row=await db.walletChallenge.findUnique({where:{id:String(req.body?.challengeId??"")}});
-  if(!row||row.userId!==req.user.sub||row.purpose!=="LINK"||row.consumedAt||row.expiresAt<new Date()) return res.status(401).json({error:"CHALLENGE_EXPIRED"});
+  // Same fix as /auth/wallet/verify: never 401 for a business-logic state (expired/already used/
+  // bad signature) — this endpoint is behind `auth`, so a near-expiry access token makes the
+  // shared apiFetch client's 401-triggers-refresh-then-retry path even more likely to fire here,
+  // silently re-submitting the same one-time-use signed challenge a second time.
+  if(!row||row.userId!==req.user.sub||row.purpose!=="LINK"||row.expiresAt<new Date()) return res.status(410).json({error:"CHALLENGE_EXPIRED"});
+  if(row.consumedAt) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   const signature=String(req.body?.signature??"");
   let sigBytes:Uint8Array;
   try { sigBytes=signature.startsWith("base64:")?Buffer.from(signature.slice(7),"base64"):bs58.decode(signature); }
   catch { return res.status(400).json({error:"INVALID_SIGNATURE_ENCODING"}); }
   if(!nacl.sign.detached.verify(new TextEncoder().encode(row.message),sigBytes,bs58.decode(row.address)))
-    return res.status(401).json({error:"INVALID_SIGNATURE"});
+    return res.status(400).json({error:"INVALID_SIGNATURE"});
   const consumed=await db.walletChallenge.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:new Date()}},data:{consumedAt:new Date()}});
-  if(consumed.count!==1) return res.status(401).json({error:"CHALLENGE_ALREADY_USED"});
+  if(consumed.count!==1) return res.status(409).json({error:"CHALLENGE_ALREADY_USED"});
   const count=await db.wallet.count({where:{userId:req.user.sub}});
   const wallet=await db.wallet.upsert({
     where:{chain_address:{chain:row.chain,address:row.address}},
@@ -1198,14 +1209,18 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 }));
 
 
-app.get("/v1/brain/feed", auth, asyncRoute(async (_req,res) => {
+// Deliberately public — platform-wide market intelligence, not per-user data (no req.user is
+// ever read here). Requiring login just to SEE what the Global Brain is watching was blocking
+// the entire discovery experience for anyone without an account; wallet/login should only ever
+// gate EXECUTION, never observation.
+app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const opportunities=await db.globalBrainOpportunity.findMany({
     where:{lastEvaluatedAt:{gte:new Date(Date.now()-6*60*60_000)}},
     orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:120
   });
   res.json({watching:true,opportunities});
 }));
-app.get("/v1/brain/token/:chain/:mint", auth, asyncRoute(async (req:AuthedRequest,res) => {
+app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   const chain=routeParam(req.params.chain) as Chain;
   const mint=routeParam(req.params.mint);
   const [opportunity,flows,catalyst]=await Promise.all([
