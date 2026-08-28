@@ -17,10 +17,10 @@ The production split is **Hostinger static frontend + Windows VPS backend**. Hos
 ## Environment
 
 ```env
-NEXT_PUBLIC_API_URL=https://fomocloud-api.173-212-249-202.sslip.io
+NEXT_PUBLIC_API_URL=https://meme-api.xaucloud.io
 ```
 
-The API hostname remains a legacy infrastructure identifier until a first-party MemeCloud domain is available. Do not point the production frontend at localhost.
+`meme-api.xaucloud.io` is a first-party sibling subdomain of the frontend's own `meme.xaucloud.io` (Caddy site block added and TLS verified 2026-08-29). This env var **overrides** the fallback baked into `apps/web/lib/api.ts` at build time -- setting it here is what actually takes effect in production, regardless of the source fallback. Do not revert this to the legacy `*.sslip.io` host: that domain is cross-site relative to the frontend, and WebKit-based in-app browsers (including Phantom's) silently drop the SameSite=None session cookie in that configuration, which was the confirmed root cause of Phantom login sessions failing to persist. Do not point the production frontend at localhost.
 
 The VPS `CORS_ALLOWED_ORIGINS` value must include both the legacy Hostinger origin and `https://palegreen-hippopotamus-562267.hostingersite.com` as separate comma-delimited origins. Verify the browser preflight returns `204` before releasing account features.
 
