@@ -19,7 +19,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
     try{
       const data=mode==="signup"?await signup(email,password,displayName):await login(email,password);
       if(mode==="signup"&&data.emailDelivery==="NOT_CONFIGURED") setNote("Account created. Email verification will become available when SMTP is configured.");
-      location.href=data.user?.onboardingCompleted?"/app/":"/onboarding/";
+      location.replace(data.user?.onboardingCompleted?"/app/":"/onboarding/");
     }catch(e){setError(plainError(e));}finally{setBusy(false)}
   }
   // A synchronous ref, not just the `busy` state: a rapid double-tap/duplicate touch event (a
@@ -39,7 +39,7 @@ export default function AuthCard({mode}:{mode:"login"|"signup"}){
       const c=await apiFetch<any>("/auth/wallet/challenge",{method:"POST",body:JSON.stringify({chain:"SOLANA",address})},false);
       const signature=await signWithWallet(wallet.provider,c.message);
       const data=await apiFetch<any>("/auth/wallet/verify",{method:"POST",body:JSON.stringify({challengeId:c.challengeId,signature})},false);
-      setAccessToken(data.accessToken); location.href=data.user?.onboardingCompleted?"/app/":"/onboarding/";
+      setAccessToken(data.accessToken); location.replace(data.user?.onboardingCompleted?"/app/":"/onboarding/");
     }catch(e:any){setError(plainError(e));}finally{setBusy(false);walletBusyRef.current=false}
   }
 

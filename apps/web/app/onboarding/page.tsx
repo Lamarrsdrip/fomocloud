@@ -9,7 +9,7 @@ import WalletChooser from "../../components/WalletChooser";
 export default function Onboarding(){
  const[step,setStep]=useState(0),[data,setData]=useState<any>(null),[selected,setSelected]=useState<string[]>([]),[amount,setAmount]=useState(100),[auto,setAuto]=useState(false),[busy,setBusy]=useState(true),[err,setErr]=useState("");
  const[walletChooserOpen,setWalletChooserOpen]=useState(false),[walletBusy,setWalletBusy]=useState(false);
- useEffect(()=>{apiFetch<any>("/v1/me/onboarding").then(x=>{if(x.completed){location.href="/app/";return}setData(x);setSelected((x.recommended||[]).filter((t:any)=>t.defaultSelected).map((t:any)=>t.id));setAmount(x.settings?.defaultAmountUsd||100)}).catch(e=>{if(e?.status===401)location.href="/login/";else setErr(plainError(e))}).finally(()=>setBusy(false))},[]);
+ useEffect(()=>{apiFetch<any>("/v1/me/onboarding").then(x=>{if(x.completed){location.replace("/app/");return}setData(x);setSelected((x.recommended||[]).filter((t:any)=>t.defaultSelected).map((t:any)=>t.id));setAmount(x.settings?.defaultAmountUsd||100)}).catch(e=>{if(e?.status===401)location.replace("/login/");else setErr(plainError(e))}).finally(()=>setBusy(false))},[]);
  const wallet=data?.wallets?.[0]; const recommended=data?.recommended||[];
  async function linkWallet(wallet:DetectedWallet){
   setWalletChooserOpen(false);setWalletBusy(true);setErr("");
@@ -21,7 +21,7 @@ export default function Onboarding(){
    const x=await apiFetch<any>("/v1/me/onboarding");setData(x);
   }catch(e){setErr(plainError(e))}finally{setWalletBusy(false)}
  }
- async function finish(){setBusy(true);setErr("");try{await apiFetch("/v1/me/onboarding",{method:"POST",body:JSON.stringify({traderIds:selected,defaultAmountUsd:amount,autoCopyEnabled:auto})});location.href="/app/"}catch(e){setErr(plainError(e));setBusy(false)}}
+ async function finish(){setBusy(true);setErr("");try{await apiFetch("/v1/me/onboarding",{method:"POST",body:JSON.stringify({traderIds:selected,defaultAmountUsd:amount,autoCopyEnabled:auto})});location.replace("/app/")}catch(e){setErr(plainError(e));setBusy(false)}}
  if(busy&&!data)return <main className="app-page"><div className="loading"><div><div className="spinner"/>Preparing your account…</div></div></main>;
  const steps=["Welcome","Wallet","Traders","Trading","Review"];
  return <main className="onboarding-page"><div className="onboarding-shell"><a className="brand" href="/"><span className="brandmark small"><BrandGlyph size={18}/></span><b>MemeCloud</b></a><div className="onboarding-progress">{steps.map((s,i)=><div key={s} className={i<=step?"active":""}><i>{i<step?<Check size={12}/>:i+1}</i><span>{s}</span></div>)}</div>

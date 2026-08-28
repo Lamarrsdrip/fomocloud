@@ -61,7 +61,7 @@ export default function AppPage(){
       setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
       apiFetch<any>("/v1/brain/feed").then(x=>setBrain(x.opportunities||[])).catch(()=>{});
     }catch(e:any){
-      if(e?.status===401){location.href="/login/";return}
+      if(e?.status===401){location.replace("/login/");return}
       setError(plainError(e));
     }finally{setLoading(false)}
   }
@@ -73,7 +73,7 @@ export default function AppPage(){
       try{
         const[d,a,pos,t,n,b]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications"),apiFetch<any>("/v1/brain/feed")]);
         if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[])}
-      }catch(e:any){if(e?.status===401&&!stopped)location.href="/login/"}
+      }catch(e:any){if(e?.status===401&&!stopped)location.replace("/login/")}
     };
     const timer=setInterval(()=>void refreshLive(),8000);
     const onVisible=()=>{if(document.visibilityState==="visible")void refreshLive()};
@@ -96,7 +96,7 @@ export default function AppPage(){
       await apiFetch(`/v1/me/traders/${id}`,{method:"PUT",body:JSON.stringify({mode})}); await load();
     }catch(e){setError(plainError(e))}
   }
-  async function signOut(){await logout();location.href="/login/"}
+  async function signOut(){await logout();location.replace("/login/")}
 
   if(loading&&!me)return <main className="app-page"><div className="loading"><div><div className="spinner"/>Loading your account…</div></div></main>;
 
@@ -104,14 +104,14 @@ export default function AppPage(){
     <div className="app-layout">
       <aside className="app-sidebar">
         <a className="brand" href="/"><span className="brandmark small"><BrandGlyph size={18}/></span><b>MemeCloud</b></a>
-        <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
+        <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
         <div className="sidebar-bottom">
           <div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||me?.wallets?.[0]?.address?.slice(0,10)||"Wallet account"}</small></div></div>
         </div>
       </aside>
 
       <section className="app-main">
-        {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
+        {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
           <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
@@ -131,7 +131,7 @@ export default function AppPage(){
         </>}
       </section>
     </div>
-    <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
+    <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
   </main>
 }
 
@@ -208,17 +208,32 @@ function DiscoverView({brain,setView,openToken}:{brain:any[];setView:(v:View)=>v
  </>
 }
 
-function TokenDetail({sel,opp,close,onTraded}:{sel:{chain:string;mint:string};opp:any;close:()=>void;onTraded:()=>void}){
+function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string};opp:any;me:any;close:()=>void;onTraded:()=>void}){
  const[data,setData]=useState<any>(null);
  const[amount,setAmount]=useState(25);
  const[busy,setBusy]=useState(false);
  const[msg,setMsg]=useState("");
+ const[refused,setRefused]=useState<{message:string}|null>(null);
+ const[liveExecutionEnabled,setLiveExecutionEnabled]=useState(false);
  const o=data?.opportunity||opp;
  useEffect(()=>{let live=true;apiFetch<any>(`/v1/brain/token/${sel.chain}/${sel.mint}`).then(x=>{if(live)setData(x)}).catch(()=>{});return()=>{live=false}},[sel.chain,sel.mint]);
- async function buy(){
-  setBusy(true);setMsg("");
-  try{const r=await apiFetch<any>("/v1/me/trade/manual",{method:"POST",body:JSON.stringify({chain:sel.chain,mint:sel.mint,amountUsd:amount})});setMsg(`Bought ${money(amount)} in simulation at ${money(r.position.avgEntryPriceUsd)}/token.`);onTraded()}
-  catch(e){setMsg(plainError(e))}finally{setBusy(false)}
+ useEffect(()=>{let live=true;apiFetch<any>("/v1/public/config",{},false).then(x=>{if(live)setLiveExecutionEnabled(Boolean(x?.liveExecutionEnabled))}).catch(()=>{});return()=>{live=false}},[]);
+ const walletEligible=Boolean((me?.wallets||[]).some((w:any)=>w.chain==="SOLANA"&&w.tradingEnabled&&w.permissionRef&&(!w.permissionExpiry||new Date(w.permissionExpiry)>new Date())));
+ const canTradeLive=liveExecutionEnabled&&walletEligible;
+ // clientRequestId is generated once per tap and reused across a retry of THIS SAME attempt (e.g.
+ // after a transient network error) so the backend's idempotency key stays stable — a genuinely
+ // new buy (new amount, or pressing Buy again later) always gets a fresh one.
+ async function buy(forceSimulation=false){
+  setBusy(true);setMsg("");setRefused(null);
+  const clientRequestId=(crypto as any).randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try{
+   const r=await apiFetch<any>("/v1/me/trade/manual",{method:"POST",body:JSON.stringify({chain:sel.chain,mint:sel.mint,amountUsd:amount,clientRequestId,...(forceSimulation?{mode:"SIMULATION"}:{})})});
+   setMsg(r.mode==="LIVE"?`Live buy confirmed: ${money(amount)} at ${money(r.position.avgEntryPriceUsd)}/token on-chain.`:`Simulated ${money(amount)} at ${money(r.position.avgEntryPriceUsd)}/token. No live funds moved.`);
+   onTraded();
+  }catch(e:any){
+   if(e?.body?.simulationAvailable)setRefused({message:e.body.message||plainError(e)});
+   else setMsg(plainError(e));
+  }finally{setBusy(false)}
  }
  return <div className="token-detail">
   <button className="soft-action" onClick={close}><ArrowLeft size={13}/> Back</button>
@@ -230,11 +245,15 @@ function TokenDetail({sel,opp,close,onTraded}:{sel:{chain:string;mint:string};op
    <div><span>Whales buying</span><b>{o?whaleCount(o):0}</b></div>
   </div>
   {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud likes this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
-  <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade — simulation</h2></div></div>
+  <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade{canTradeLive?"":" — simulation"}</h2></div></div>
    <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
-   <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={buy}>{busy?"Buying…":`Buy ${money(amount)}`}</button>
+   <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={()=>buy(false)}>{busy?"Buying…":canTradeLive?`Buy ${money(amount)} (live)`:`Buy ${money(amount)} (simulation)`}</button>
    {msg&&<div className="notice" style={{marginTop:10}}>{msg}</div>}
-   <div className="notice" style={{marginTop:10}}>Uses a real executable quote. Runs in simulation until a reviewed live signer is configured — no live funds move.</div>
+   {refused&&<div className="notice" style={{marginTop:10,borderColor:"rgba(247,185,95,.25)"}}>
+    <div>{refused.message}</div>
+    <button className="soft-action" style={{marginTop:8}} disabled={busy} onClick={()=>buy(true)}>Run as simulation instead</button>
+   </div>}
+   <div className="notice" style={{marginTop:10}}>{canTradeLive?"Live Solana trading is on and this wallet has an active delegated permission — this button submits a real on-chain transaction.":"Uses a real executable quote. Runs in simulation until live trading is on and a wallet has active delegated permission — no live funds move."}</div>
   </section>
   <section className="app-card"><div className="card-title"><div><span>ON-CHAIN</span><h2>Recent wallet activity</h2></div></div>
    {data?.flows?.length?<div className="list">{data.flows.slice(0,10).map((f:any)=><div className="list-row" key={f.id}><div><b>{f.side} · {f.walletTier||"FLOW"}</b><small>{f.walletAddress.slice(0,6)}…{f.walletAddress.slice(-4)}</small></div><span>{money(f.amountUsd||0)}</span><span>{timeAgo(f.observedAt)}</span></div>)}</div>:<div className="pnl-empty">No recorded wallet activity yet for this token.</div>}

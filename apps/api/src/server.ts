@@ -714,22 +714,67 @@ async function manualTradeTrader(){
   if(existing) return existing;
   return db.trader.create({data:{handle,displayName:"Manual trade",bio:"Trades a user places directly from Discover.",category:"MANUAL",verification:"VERIFIED",kind:"PLATFORM",enabled:true,trackingStatus:"TRACKING"}});
 }
+async function reconcileConfirmedManualSwap(rpc:string,signature:string,owner:string,inputMint:string,outputMint:string){
+  const conn=new Connection(rpc,"confirmed");
+  const tx=await conn.getParsedTransaction(signature,{commitment:"confirmed",maxSupportedTransactionVersion:0});
+  if(!tx||tx.meta?.err)throw Object.assign(new Error("CONFIRMED_TRANSACTION_UNAVAILABLE"),{code:"RECONCILIATION_FAILED"});
+  const bal=(side:"pre"|"post",mint:string)=>((side==="pre"?tx.meta?.preTokenBalances:tx.meta?.postTokenBalances)??[]).filter((x:any)=>x.owner===owner&&x.mint===mint).reduce((a:bigint,x:any)=>a+BigInt(x.uiTokenAmount?.amount??"0"),0n);
+  const inPre=bal("pre",inputMint),inPost=bal("post",inputMint),outPre=bal("pre",outputMint),outPost=bal("post",outputMint);
+  const actualInput=inPre>inPost?inPre-inPost:0n, actualOutput=outPost>outPre?outPost-outPre:0n;
+  if(actualInput<=0n||actualOutput<=0n)throw Object.assign(new Error("CONFIRMED_SWAP_DELTAS_INVALID"),{code:"RECONCILIATION_FAILED"});
+  return {actualInputRaw:actualInput.toString(),actualOutputRaw:actualOutput.toString()};
+}
+async function recoverManualPrivyHash(privy:PrivySolanaSigner,referenceId:string){
+  try{
+    const tx:any=await privy.transactionByReferenceId(referenceId);
+    const status=String(tx?.status??"").toLowerCase();
+    if(["failed","reverted","provider_error"].includes(status))return null;
+    return String(tx?.transaction_hash??tx?.hash??"")||null;
+  }catch(e){console.warn("[manual-trade] Privy reference recovery unavailable",referenceId,e);return null}
+}
 app.post("/v1/me/trade/manual", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const chain=String(req.body?.chain??"SOLANA");
   const mint=String(req.body?.mint??"");
   const amountUsd=Number(req.body?.amountUsd??0);
+  // Required from the client so a network retry of the exact same tap reuses the same
+  // idempotency key instead of the server minting a fresh one per HTTP request (which would
+  // make a real double-tap or client retry indistinguishable from two separate real buys).
+  const clientRequestId=String(req.body?.clientRequestId??"").trim();
   if(!mint) return res.status(400).json({error:"MINT_REQUIRED"});
   if(!Number.isFinite(amountUsd)||amountUsd<=0) return res.status(400).json({error:"INVALID_AMOUNT"});
+  if(!clientRequestId||!/^[a-zA-Z0-9-]{8,64}$/.test(clientRequestId)) return res.status(400).json({error:"CLIENT_REQUEST_ID_REQUIRED"});
   if(chain!=="SOLANA") return res.status(409).json({error:"EXECUTION_ADAPTER_NOT_CONFIGURED",message:"Manual buying only has a verified route on Solana right now."});
-  const allocation=await db.tradingCashAllocation.findFirst({where:{userId:req.user.sub,chain:"SOLANA"}});
-  const available=allocation?.availableUsd??0;
-  if(amountUsd>available) return res.status(400).json({error:"INSUFFICIENT_BALANCE",message:`Only $${available.toFixed(2)} is available on Solana.`});
   const marketCfg=await getConfig<any>("marketData");
-  const rpc=marketCfg?.solanaRpc||marketCfg?.heliusRpc||process.env.SOLANA_RPC_HTTP;
+  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
   if(!rpc) return res.status(409).json({error:"SOLANA_RPC_REQUIRED",message:"No Solana RPC is configured yet."});
   const execCfg=await getConfig<any>("execution");
   const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   const amountRaw=String(Math.round(amountUsd*1_000_000));
+
+  // Server-side authority on eligibility — never trust a client-sent "I'm live" flag. Same check
+  // executor/exits use for every automated decision.
+  const liveEnabled=await isLiveTradingEnabled();
+  const permitted=liveEnabled?await db.wallet.findFirst({where:{userId:req.user.sub,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}):null;
+  const signerCfg=liveEnabled&&permitted?await getConfig<any>("signer"):null;
+  const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID, privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+  const privyAuthKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+  const privy=permitted&&privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+  const willTradeLive=Boolean(liveEnabled&&permitted&&privy);
+
+  if(!willTradeLive && String(req.body?.mode??"")!=="SIMULATION"){
+    // Never silently fall back to a fake fill. The caller must explicitly opt into simulation
+    // (mode:"SIMULATION") once they've been shown this refusal — matching "Live trading is off" /
+    // "Connect and authorize a wallet to trade" as an explicit choice, not a hidden default.
+    const reason=!liveEnabled?"LIVE_TRADING_OFF":"TRADING_PERMISSION_REQUIRED";
+    return res.status(409).json({
+      error:reason,
+      message:!liveEnabled
+        ?"Live Solana trading is currently off. Ask the owner to enable it, or explicitly run this as a simulation."
+        :"No wallet has an active delegated trading permission yet. Link and authorize a wallet in Account, or explicitly run this as a simulation.",
+      simulationAvailable:true
+    });
+  }
+
   try{
     const quote=await jupiter.quote({inputMint:USDC_SOL,outputMint:mint,amountRaw,slippageBps:300});
     const conn=new Connection(rpc,"confirmed");
@@ -742,16 +787,90 @@ app.post("/v1/me/trade/manual", auth, asyncRoute(async (req:AuthedRequest,res) =
     if(!reverse) return res.status(409).json({error:"NO_EXECUTABLE_SELL_ROUTE",message:"MemeCloud could not verify a route back to USDC for this token, so no buy was placed."});
     const trader=await manualTradeTrader();
     const now=new Date();
-    const key=`manual:${req.user.sub}:${mint}:${now.getTime()}`;
-    const signal=await db.signal.create({data:{idempotencyKey:key,chain:"SOLANA",traderId:trader.id,sourceWallet:"MANUAL_USER_TRADE",sourceTx:key,action:"BUY",inputMint:USDC_SOL,outputMint:mint,inputRaw:amountRaw,outputRaw:quote.outAmount,sourcePriceUsd:executablePriceUsd,sourcePriceMethod:"MANUAL_EXECUTABLE_QUOTE",observedAt:now,status:"COMPLETED"}});
-    const decision=await db.copyDecision.create({data:{signalId:signal.id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual buy from Discover."}});
-    const [order,position]=await db.$transaction([
-      db.order.create({data:{idempotencyKey:key,decisionId:decision.id,userId:req.user.sub,chain:"SOLANA",mode:"SIMULATION",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:now,venue:"JUPITER_QUOTE",quoteJson:{simulation:true,realQuote:true,manual:true,priceImpactPct:quote.priceImpactPct} as any}}),
-      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsd:amountUsd,avgEntryPriceUsd:executablePriceUsd,currentPriceUsd:executablePriceUsd,peakPriceUsd:executablePriceUsd,takeProfitPct:200,status:"OPEN",lastMarkedAt:now}})
+    const key=`manual:${req.user.sub}:${clientRequestId}`;
+
+    if(!willTradeLive){
+      const signal=await db.signal.create({data:{idempotencyKey:key,chain:"SOLANA",traderId:trader.id,sourceWallet:"MANUAL_USER_TRADE",sourceTx:key,action:"BUY",inputMint:USDC_SOL,outputMint:mint,inputRaw:amountRaw,outputRaw:quote.outAmount,sourcePriceUsd:executablePriceUsd,sourcePriceMethod:"MANUAL_EXECUTABLE_QUOTE",observedAt:now,status:"COMPLETED"}});
+      const decision=await db.copyDecision.create({data:{signalId:signal.id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual simulation buy from Discover."}});
+      const [order,position]=await db.$transaction([
+        db.order.create({data:{idempotencyKey:key,decisionId:decision.id,userId:req.user.sub,chain:"SOLANA",mode:"SIMULATION",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:now,venue:"JUPITER_QUOTE",quoteJson:{simulation:true,realQuote:true,manual:true,priceImpactPct:quote.priceImpactPct} as any}}),
+        db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsd:amountUsd,avgEntryPriceUsd:executablePriceUsd,currentPriceUsd:executablePriceUsd,peakPriceUsd:executablePriceUsd,takeProfitPct:200,status:"OPEN",lastMarkedAt:now}})
+      ]);
+      await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual simulation buy placed",body:`$${amountUsd.toFixed(2)} simulation buy from a real executable quote. No live funds moved.`,data:{orderId:order.id,positionId:position.id,mint} as any}});
+      await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd,mode:"SIMULATION"});
+      return res.status(201).json({ok:true,mode:"SIMULATION",order,position});
+    }
+
+    // LIVE path — mirrors executor's automated buy exactly: SIGNING -> SUBMITTED -> CONFIRMED,
+    // a durable LiveExecutionAttempt row for provider-reference reconciliation, and never a blind
+    // retry of an ambiguous prior attempt.
+    let order=await db.order.findUnique({where:{idempotencyKey:key}});
+    if(order){
+      if(order.status==="CONFIRMED"){
+        const existingPosition=await db.position.findFirst({where:{userId:req.user.sub,mode:"LIVE",entryTxHash:order.txHash??undefined}});
+        return res.status(200).json({ok:true,mode:"LIVE",order,position:existingPosition});
+      }
+      const attempt=await db.liveExecutionAttempt.findFirst({where:{orderId:order.id,purpose:"BUY"},orderBy:{createdAt:"desc"}});
+      if(!attempt) throw Object.assign(new Error("LIVE_BUY_ATTEMPT_MISSING"),{code:"LIVE_BUY_ATTEMPT_MISSING"});
+      const ref=attempt.idempotencyKey.slice(0,64);
+      const hash=attempt.txHash||order.txHash||await recoverManualPrivyHash(privy!,ref);
+      if(!hash){
+        return res.status(409).json({error:"AMBIGUOUS_PRIOR_BUY_ATTEMPT",message:"A previous attempt for this exact request has no confirmed result yet and cannot be safely resubmitted. Try again shortly."});
+      }
+      await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:order.submittedAt??new Date()}});
+      await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"SUBMITTED",txHash:hash}});
+      await jupiter.waitConfirmed(rpc,hash,60_000);
+      const fill=await reconcileConfirmedManualSwap(rpc,hash,permitted!.address,USDC_SOL,mint);
+      const actualUsd=Number(BigInt(fill.actualInputRaw))/1_000_000, actualTokens=Number(BigInt(fill.actualOutputRaw))/(10**decimals);
+      const actualEntry=actualUsd/actualTokens;
+      let position=await db.position.findFirst({where:{userId:req.user.sub,mode:"LIVE",entryTxHash:hash}});
+      if(!position){
+        [,position]=await db.$transaction([
+          db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
+          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsd:actualUsd,avgEntryPriceUsd:actualEntry,currentPriceUsd:actualEntry,peakPriceUsd:actualEntry,takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
+        ]);
+      }
+      await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"CONFIRMED",txHash:hash}});
+      order=await db.order.findUnique({where:{id:order.id}});
+      return res.status(200).json({ok:true,mode:"LIVE",order,position});
+    }
+
+    const liveDecision=await db.copyDecision.create({data:{signalId:(await db.signal.create({data:{idempotencyKey:key,chain:"SOLANA",traderId:trader.id,sourceWallet:"MANUAL_USER_TRADE",sourceTx:key,action:"BUY",inputMint:USDC_SOL,outputMint:mint,inputRaw:amountRaw,outputRaw:quote.outAmount,sourcePriceUsd:executablePriceUsd,sourcePriceMethod:"MANUAL_EXECUTABLE_QUOTE",observedAt:now,status:"COMPLETED"}})).id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual live buy from Discover."}});
+    order=await db.order.create({data:{idempotencyKey:key,decisionId:liveDecision.id,userId:req.user.sub,chain:"SOLANA",mode:"LIVE",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{manual:true,priceImpactPct:quote.priceImpactPct,quote:quote.raw} as any}});
+    const built=await jupiter.buildSwap(quote,permitted!.address);
+    const attemptKey=crypto.createHash("sha256").update(`MANUAL_BUY:${order.id}`).digest("hex");
+    await db.liveExecutionAttempt.create({data:{idempotencyKey:attemptKey,userId:req.user.sub,orderId:order.id,purpose:"BUY",chain:"SOLANA",walletAddress:permitted!.address,provider:"PRIVY",providerRef:permitted!.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
+    let hash:string;
+    try{
+      const sent=await privy!.signAndSend(permitted!.permissionRef!,built,attemptKey.slice(0,64));
+      hash=sent.hash;
+      await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:new Date()}});
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:hash}});
+    }catch(e:any){
+      const recovered=await recoverManualPrivyHash(privy!,attemptKey.slice(0,64));
+      if(!recovered){
+        await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT")}}).catch(()=>{});
+        await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT"),errorMessage:String(e?.message??e)}}).catch(()=>{});
+        await db.riskIncident.create({data:{severity:"CRITICAL",scope:"LIVE_EXECUTION",userId:req.user.sub,chain:"SOLANA",mint,code:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT"),detail:{orderId:order.id,message:String(e?.message??e),referenceId:attemptKey.slice(0,64)}}}).catch(()=>{});
+        return res.status(502).json({error:"LIVE_BUY_SUBMIT_FAILED",message:"MemeCloud could not confirm whether this buy reached Solana. It has not been retried automatically — check Portfolio shortly; support can reconcile it if needed."});
+      }
+      hash=recovered;
+      await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:new Date()}}).catch(()=>{});
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:hash}}).catch(()=>{});
+    }
+    await jupiter.waitConfirmed(rpc,hash,60_000);
+    const fill=await reconcileConfirmedManualSwap(rpc,hash,permitted!.address,USDC_SOL,mint);
+    const actualUsd=Number(BigInt(fill.actualInputRaw))/1_000_000, actualTokens=Number(BigInt(fill.actualOutputRaw))/(10**decimals);
+    const actualEntry=actualUsd/actualTokens;
+    const [,position]=await db.$transaction([
+      db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
+      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsd:actualUsd,avgEntryPriceUsd:actualEntry,currentPriceUsd:actualEntry,peakPriceUsd:actualEntry,takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
     ]);
-    await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual buy placed",body:`$${amountUsd.toFixed(2)} simulation buy from a real executable quote. No live funds moved.`,data:{orderId:order.id,positionId:position.id,mint} as any}});
-    await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd,mode:"SIMULATION"});
-    res.status(201).json({ok:true,order,position});
+    await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash:hash}});
+    order=await db.order.findUnique({where:{id:order.id}});
+    await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual buy confirmed",body:`Bought $${actualUsd.toFixed(2)} of the token. The transaction is confirmed on Solana.`,data:{orderId:order!.id,positionId:position.id,mint,txHash:hash} as any}});
+    await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd:actualUsd,mode:"LIVE",txHash:hash});
+    res.status(201).json({ok:true,mode:"LIVE",order,position});
   }catch(e:any){
     res.status(409).json({error:e?.code||"QUOTE_UNAVAILABLE",message:e?.message||"A genuine executable quote could not be verified, so MemeCloud did not fabricate a fill."});
   }
