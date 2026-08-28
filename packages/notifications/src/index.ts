@@ -63,7 +63,9 @@ export async function sendPush(userId:string, payload:{title:string;body:string;
       if(e?.statusCode===404||e?.statusCode===410) await db.pushSubscription.delete({where:{id:s.id}});
     }
   }
-  return {sent,failed};
+  // subscriptions:0 means the backend/VAPID validated fine but there was nothing to deliver to —
+  // that's a real, distinct outcome from "delivery failed," never conflate the two.
+  return {sent,failed,subscriptions:subs.length};
 }
 
 export async function sendEmail(to:string, subject:string, html:string, userId?:string){

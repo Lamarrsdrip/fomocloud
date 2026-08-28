@@ -1308,15 +1308,18 @@ const SECRET_FIELDS:Record<string,string[]>={
   execution:["jupiterApiKey","zeroXApiKey"],
   signer:["privyAppSecret","privyAuthorizationPrivateKey"],
   social:["xBearerToken","xOAuthClientSecret"],
-  marketData:["heliusApiKey","birdeyeApiKey"],
+  // RPC URLs are treated as secrets too — a paid RPC URL commonly embeds the provider's API key
+  // as a query param (as MemeCloud's own Helius auto-derivation does), so returning it in the
+  // clear would leak that key right back out through a field that isn't literally named "*Key".
+  marketData:["heliusApiKey","birdeyeApiKey","solanaRpc","heliusRpc","fallbackRpc"],
   email:["pass"]
 };
 app.use("/v1/admin/config", (_req,res,next)=>{res.set("Cache-Control","no-store");next()});
+// heliusRpc/solanaRpc/fallbackRpc are now listed in SECRET_FIELDS.marketData (a paid RPC URL
+// commonly embeds the provider's API key in its query string), so redactedConfig already strips
+// them before this runs. Kept as an explicit hook rather than removed outright, in case another
+// field-shaped leak like this shows up again.
 function sanitizeForClient(cfg:any){
-  // The auto-derived Helius RPC URL embeds the raw API key as a query param — even though
-  // heliusRpc itself isn't a listed secret field, this specific value must never reach the
-  // browser, or saving just a Helius key would leak it back out through a "plain" field.
-  if(cfg.key==="marketData" && cfg.value?.heliusRpcAutoManaged) cfg.value={...cfg.value,heliusRpc:""};
   return cfg;
 }
 app.get("/v1/admin/config", requireAdmin, asyncRoute(async (_req,res) => {
@@ -1361,9 +1364,11 @@ app.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,
       } else if(value.heliusApiKey && (value.heliusRpcAutoManaged || !value.heliusRpc)){
         value.heliusRpc=`https://mainnet.helius-rpc.com/?api-key=${value.heliusApiKey}`;
         value.heliusRpcAutoManaged=true;
+        secretHints!.heliusRpc=maskHint(value.heliusRpc); // programmatic write, bypasses the loop above
       } else if(!value.heliusApiKey && value.heliusRpcAutoManaged){
         delete value.heliusRpc;
         value.heliusRpcAutoManaged=false;
+        delete secretHints!.heliusRpc;
       }
     }
   }
@@ -1387,8 +1392,13 @@ app.post("/v1/admin/test-push", adminOnly, asyncRoute(async (req:AuthedRequest,r
   const target=String(req.body?.userId??req.user.sub);
   const started=Date.now();
   const pushResult=await sendPush(target,{title:"MemeCloud push test",body:"Push notifications are working.",url:"/app/"});
-  const ok=Boolean(pushResult?.sent>0);
-  await recordTestResults("push",{push:{ok,message:ok?`Sent to ${pushResult.sent} subscription(s).`:`0 sent, ${pushResult?.failed||0} failed.`,latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
+  // subscriptions:0 proves the VAPID/backend path itself is genuinely working (sendPush would have
+  // thrown PUSH_NOT_CONFIGURED otherwise) — there's simply nothing to deliver to yet. That's a real,
+  // distinct outcome, not a "Connection failed."
+  const noRecipients=pushResult?.subscriptions===0;
+  const ok=noRecipients||Boolean(pushResult?.sent>0);
+  const message=noRecipients?"Push backend ready — no subscribed devices":(ok?`Sent to ${pushResult.sent} subscription(s).`:`0 sent, ${pushResult?.failed||0} failed out of ${pushResult?.subscriptions??0} subscription(s).`);
+  await recordTestResults("push",{push:{ok,message,latencyMs:Date.now()-started,checkedAt:new Date().toISOString()}});
   res.json({ok:true,result:pushResult});
 }));
 app.post("/v1/admin/test-email", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
