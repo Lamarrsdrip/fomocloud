@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PrivyProvider, usePrivy, useLoginWithEmail, useSigners } from "@privy-io/react-auth";
+import { PrivyProvider, usePrivy, useLoginWithEmail, useSigners, useUser } from "@privy-io/react-auth";
 import { useWallets, useCreateWallet } from "@privy-io/react-auth/solana";
 import { apiFetch, plainError } from "../lib/api";
 import { Wallet as WalletIcon, Copy } from "lucide-react";
@@ -51,7 +51,8 @@ export default function EmbeddedWalletPanel(props: { me: any; reload: () => Prom
 // (see verifyPrivyDelegation in apps/api/src/server.ts) before ever marking the wallet trading-
 // enabled, so nothing here is trusted blindly server-side.
 function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: () => Promise<void>; pubConfig: any }) {
-  const { ready, authenticated, user } = usePrivy();
+  const { ready, authenticated } = usePrivy();
+  const { user, refreshUser } = useUser();
   const { sendCode, loginWithCode, state: emailState } = useLoginWithEmail();
   const { createWallet } = useCreateWallet();
   const { addSigners } = useSigners();
@@ -80,6 +81,13 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
         setStep("creating");
         const { wallet } = await createWallet({ createAdditional: false });
         walletId = wallet.id!; address = wallet.address;
+        // Confirmed by real testing against the live Privy account: addSigners immediately after
+        // createWallet fails with "address to add signers too is not associated with current
+        // user" -- the client's cached user object/identity token doesn't yet reflect the wallet
+        // Privy's backend just created. refreshUser() is Privy's own documented fix for exactly
+        // this ("update the user object and identity token in the client... in response to any
+        // backend change"), not a guessed timing workaround.
+        await refreshUser();
       }
 
       if (!existing?.delegated) {
