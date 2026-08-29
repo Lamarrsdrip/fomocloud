@@ -6,7 +6,7 @@ import {JupiterExecution} from "@memecloud/execution";
 import {evaluateEntry,evaluateExit,type MarketSnapshot} from "@memecloud/strategy";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {cachedTokenDecimals} from "@memecloud/shared";
+import {cachedTokenDecimals,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 // Same startup-only-config bug fixed elsewhere this session. Reloaded on a slow independent
@@ -14,8 +14,7 @@ const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetrie
 let connection:Connection,jupiter:JupiterExecution,snapshotAge:number;
 async function reloadConfig(){
   const marketCfg=await getConfig<any>("marketData"),execCfg=await getConfig<any>("execution"),riskCfg=await getConfig<any>("risk");
-  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
-  if(!rpc)throw new Error("SOLANA_RPC_REQUIRED");
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[paper-worker]");
   connection=new Connection(rpc,"confirmed");
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   snapshotAge=Math.max(5_000,Number(riskCfg?.maxIntelligenceAgeMs??30_000));

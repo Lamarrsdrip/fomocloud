@@ -5,7 +5,7 @@ import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {JupiterExecution} from "@memecloud/execution";
 import {walletTier} from "@memecloud/brain";
-import {RpcBudget} from "@memecloud/shared";
+import {RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
 
 // Shared, cross-process RPC budget: this worker's own token bucket below only bounds ITS OWN
 // outbound rate, so five independently-rate-limited processes (this one, market-worker,
@@ -124,37 +124,9 @@ async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,
 // startup, silently ignoring later Admin config changes without a manual restart.
 let conn:Connection,jupiter:JupiterExecution,dedupe=new Set<string>(),MAX=12,subs:number[]=[],enabled=true,currentRpcHost="";
 
-// Real failover, not just retry-the-same-host: probes each distinct configured RPC candidate with
-// a cheap getHealth call (short timeout) and uses the first one that actually responds healthy.
-// Currently a no-op in practice whenever heliusRpc/solanaRpc/SOLANA_RPC_HTTP all resolve to the
-// same account (they do as of this writing -- see the production evidence in this session's
-// report), but it activates automatically the moment a genuinely independent second RPC provider
-// is configured, with zero further code changes needed.
-async function pickHealthyRpc(cfg:any):Promise<string>{
-  const candidates=[cfg?.heliusRpc,cfg?.solanaRpc,process.env.SOLANA_RPC_HTTP,process.env.SOLANA_RPC_FALLBACK_HTTP]
-    .filter((u):u is string=>Boolean(u));
-  const seen=new Set<string>();
-  const unique=candidates.filter(u=>{const h=(()=>{try{return new URL(u).host}catch{return u}})();if(seen.has(h))return false;seen.add(h);return true});
-  if(unique.length===0)throw new Error("SOLANA_RPC_REQUIRED");
-  for(const url of unique){
-    try{
-      const r=await Promise.race([
-        fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"getHealth"})}),
-        new Promise<never>((_,rej)=>setTimeout(()=>rej(new Error("Timed out")),5000))
-      ]);
-      if(r.ok){const body=await r.json().catch(()=>null);if(body?.result==="ok")return url}
-      console.warn("[flow-worker] RPC candidate unhealthy, trying next if available",new URL(url).host,r.status);
-    }catch(e:any){
-      console.warn("[flow-worker] RPC candidate unreachable, trying next if available",(()=>{try{return new URL(url).host}catch{return url}})(),e?.message);
-    }
-  }
-  // Every candidate failed its health probe -- use the first one anyway rather than refusing to
-  // start entirely; the watchdog's normal reconnect cycle will keep retrying.
-  return unique[0];
-}
 async function connectAndSubscribe(){
   const cfg=await getConfig<any>("marketData"),brainCfg=await getConfig<any>("brain"),execCfg=await getConfig<any>("execution");
-  const rpc=await pickHealthyRpc(cfg);
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(cfg),"[flow-worker]");
   conn=new Connection(rpc,"confirmed");
   currentRpcHost=new URL(rpc).host;
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);

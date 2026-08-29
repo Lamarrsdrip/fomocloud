@@ -248,3 +248,64 @@ export {
   type TokenBucketState,
   type TokenBucketResult,
 } from "./rpcBudget.js";
+
+// Real bug found by audit: every Solana-RPC-consuming service (market-worker, exits, balance-
+// worker, listener, paper-worker, executor, apps/api) independently did `heliusRpc||solanaRpc||
+// process.env.SOLANA_RPC_HTTP` -- a plain fallback CHAIN, not a health CHECK, so an exhausted/dead
+// primary (confirmed live: Helius returning 429 "max usage reached") was used anyway rather than
+// skipped, and `fallbackRpc` -- already a real, admin-configurable field the Settings UI's own help
+// text claims is used ("then MemeCloud's public default") -- was silently never read by any of
+// them. Only services/flow-worker had real health-probing (pickHealthyRpc), and only for its own
+// two candidates. Generalized here so every consumer gets the same real failover, plus two verified
+// (curl-tested against the live network, both getSlot and getHealth) genuinely public, no-signup
+// Solana RPC endpoints as a last-resort safety net below whatever the admin has configured.
+export const FREE_PUBLIC_SOLANA_RPC_FALLBACKS = [
+  "https://api.mainnet-beta.solana.com",
+  "https://solana-rpc.publicnode.com",
+];
+
+export function solanaRpcCandidates(cfg: { heliusRpc?: string; solanaRpc?: string; fallbackRpc?: string } | null | undefined): string[] {
+  const raw = [
+    cfg?.heliusRpc,
+    cfg?.solanaRpc,
+    cfg?.fallbackRpc,
+    process.env.SOLANA_RPC_HTTP,
+    process.env.SOLANA_RPC_FALLBACK_HTTP,
+    ...FREE_PUBLIC_SOLANA_RPC_FALLBACKS,
+  ].filter((u): u is string => Boolean(u));
+  const seen = new Set<string>();
+  return raw.filter(u => {
+    const host = (() => { try { return new URL(u).host } catch { return u } })();
+    if (seen.has(host)) return false;
+    seen.add(host);
+    return true;
+  });
+}
+
+// Probes each candidate in priority order with a real getHealth call (short timeout, so a dead
+// endpoint can't stall startup/reload) and returns the first one that actually responds healthy.
+// Falls back to the first candidate (never throws for a non-empty list) so a transient probe
+// failure never blocks startup outright -- the caller's own real usage will surface a genuine
+// failure if the chosen candidate turns out not to work after all.
+export async function pickHealthyRpc(candidates: string[], logPrefix = "[rpc]"): Promise<string> {
+  if (candidates.length === 0) throw new Error("SOLANA_RPC_REQUIRED");
+  for (const url of candidates) {
+    const host = (() => { try { return new URL(url).host } catch { return url } })();
+    try {
+      const res = await Promise.race([
+        fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }) }),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Timed out")), 5000)),
+      ]);
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        if (body?.result === "ok") return url;
+        console.warn(`${logPrefix} RPC candidate unhealthy body, trying next if available`, host, body);
+      } else {
+        console.warn(`${logPrefix} RPC candidate unhealthy, trying next if available`, host, res.status);
+      }
+    } catch (e: any) {
+      console.warn(`${logPrefix} RPC candidate unreachable, trying next if available`, host, e?.message);
+    }
+  }
+  return candidates[0];
+}

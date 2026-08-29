@@ -5,7 +5,7 @@ import {JupiterExecution} from "@memecloud/execution";
 import {BirdeyeClient} from "@memecloud/providers";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {cachedTokenDecimals,RpcBudget} from "@memecloud/shared";
+import {cachedTokenDecimals,RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
 
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
@@ -29,8 +29,7 @@ let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=f
 let conn:Connection,jupiter:JupiterExecution,birdeye:BirdeyeClient|null;
 async function reloadConfig(){
   const marketCfg=await getConfig<any>("marketData"),execCfg=await getConfig<any>("execution");
-  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
-  if(!rpc)throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[market-worker]");
   conn=new Connection(rpc,"confirmed");
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   const birdeyeKey=marketCfg?.birdeyeApiKey||process.env.BIRDEYE_API_KEY;

@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
-import { CopySettingsSchema } from "@memecloud/shared";
+import { CopySettingsSchema, solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, readExecutionState, type ProviderRecord } from "@memecloud/config";
 import { classifyLifecycle } from "@memecloud/brain";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
@@ -808,7 +808,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
   if(!clientRequestId||!/^[a-zA-Z0-9-]{8,64}$/.test(clientRequestId)) return res.status(400).json({error:"CLIENT_REQUEST_ID_REQUIRED"});
   if(chain!=="SOLANA") return res.status(409).json({error:"EXECUTION_ADAPTER_NOT_CONFIGURED",message:"Manual buying only has a verified route on Solana right now."});
   const marketCfg=await getConfig<any>("marketData");
-  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[api]");
   if(!rpc) return res.status(409).json({error:"SOLANA_RPC_REQUIRED",message:"No Solana RPC is configured yet."});
   const execCfg=await getConfig<any>("execution");
   const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
@@ -1068,7 +1068,7 @@ app.get("/v1/me/wallets/:id/history", auth, asyncRoute(async (req:AuthedRequest,
   const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub,chain:"SOLANA"}});
   if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
   const marketCfg=await getConfig<any>("marketData");
-  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[api]");
   if(!rpc)return res.json({transactions:[],rpcConfigured:false});
   const conn=new Connection(rpc,"confirmed");
   const usdcMint=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -1122,7 +1122,7 @@ app.post("/v1/me/wallets/:id/send", auth, tradeLimiter, asyncRoute(async (req:Au
   try{toPubkey=new PublicKey(toAddressRaw)}catch{return res.status(400).json({error:"INVALID_DESTINATION_ADDRESS"})}
 
   const marketCfg=await getConfig<any>("marketData");
-  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[api]");
   if(!rpc)return res.status(409).json({error:"SOLANA_RPC_REQUIRED"});
   const signerCfg=await getConfig<any>("signer");
   const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID,privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
@@ -1679,7 +1679,15 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const [opportunities,mostRecentlyEvaluated]=await Promise.all([
     db.globalBrainOpportunity.findMany({
       where:{
-        lastEvaluatedAt:{gte:new Date(now-6*60*60_000)},
+        // Real bug found by audit, surfaced by a live 20+ hour outage (Helius RPC quota exhausted
+        // -> market-worker stalled -> brain-worker had nothing fresh to evaluate): every row's
+        // lastEvaluatedAt is touched on every 750ms tick regardless of whether it currently has
+        // live evidence, so in healthy operation this filter is close to a no-op -- it only
+        // actually excludes data during an extended pipeline outage exactly like this one, which is
+        // precisely when a user most needs to still see the last real, meaningful evidence instead
+        // of a bare empty list. Widened so genuine outages don't erase the feed entirely;
+        // pipelineDegraded below is what actually tells the client this isn't live right now.
+        lastEvaluatedAt:{gte:new Date(now-48*60*60_000)},
         OR:[
           {inflow60sUsd:{gt:0}},
           {buyers60s:{gt:0}},

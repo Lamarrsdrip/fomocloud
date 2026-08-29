@@ -3,7 +3,7 @@ import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {RpcBudget} from "@memecloud/shared";
+import {RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
 import {depositStatus,extractInboundDeposits,rawToDecimalString,SOL_NATIVE_MINT} from "./deposits.js";
 
 const rpcRedis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
@@ -23,9 +23,7 @@ let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null;
 let conn:Connection,rpc:string;
 async function reloadConfig(){
   const marketCfg=await getConfig<any>("marketData");
-  const freshRpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
-  if(!freshRpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required");
-  rpc=freshRpc;
+  rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[balance-worker]");
   conn=new Connection(rpc,"confirmed");
 }
 await reloadConfig();

@@ -5,10 +5,10 @@ import crypto from "node:crypto";
 import { db } from "@memecloud/db";
 import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
+import { solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 
 const marketCfg=await getConfig<any>("marketData");
-const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
-if(!rpc) throw new Error("SOLANA_RPC_HTTP / Admin marketData.solanaRpc is required for listener");
+const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[listener]");
 // Rebuilt on every refreshWatchlist() cycle (see below) so an Admin RPC change takes effect
 // without a manual restart — this was previously read once at process startup and cached forever.
 let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
@@ -139,11 +139,13 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
 let currentRpcHost=new URL(rpc).host;
 async function reconnectIfConfigChanged(){
   const fresh=await getConfig<any>("marketData");
-  const freshRpc=fresh?.heliusRpc||fresh?.solanaRpc||process.env.SOLANA_RPC_HTTP;
-  if(!freshRpc)return;
+  // Re-running the real health probe here (not just re-reading the raw config) means this also
+  // self-heals: once a failed-over primary (e.g. Helius) recovers, the next check picks it again
+  // automatically, same as reconnecting to a genuine Admin-edited RPC URL.
+  const freshRpc=await pickHealthyRpc(solanaRpcCandidates(fresh),"[listener]");
   const freshHost=new URL(freshRpc).host;
   if(freshHost===currentRpcHost)return;
-  console.log("[listener] Admin RPC config changed",currentRpcHost,"->",freshHost,"— reconnecting");
+  console.log("[listener] RPC changed (Admin edit or automatic failover)",currentRpcHost,"->",freshHost,"— reconnecting");
   for(const [,id] of subscriptions)await conn.removeOnLogsListener(id).catch(()=>{});
   subscriptions.clear();
   conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");

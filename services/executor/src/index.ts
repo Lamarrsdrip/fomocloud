@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals } from "@memecloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
@@ -26,7 +26,7 @@ async function reloadConfig(){
   const marketCfg=await getConfig<any>("marketData");
   const riskCfg=await getConfig<any>("risk");
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
-  solanaRpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  solanaRpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[executor]");
   solanaConnection=solanaRpc?new Connection(solanaRpc,"confirmed"):null;
   exitSlippageBps=Number(execCfg?.exitSlippageBps??700);
   maxExecutablePriceImpactPct=Math.max(1,Math.min(50,Number(riskCfg?.maxExecutablePriceImpactPct??35)));
