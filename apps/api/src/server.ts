@@ -1624,20 +1624,35 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 // gate EXECUTION, never observation.
 app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const now=Date.now();
-  const opportunities=await db.globalBrainOpportunity.findMany({
-    where:{
-      lastEvaluatedAt:{gte:new Date(now-6*60*60_000)},
-      OR:[
-        {inflow60sUsd:{gt:0}},
-        {buyers60s:{gt:0}},
-        {whaleBuyers60s:{gt:0}},
-        {knownWhaleBuyers60s:{gt:0}},
-        {firstSeenAt:{gte:new Date(now-10*60_000)}}
-      ]
-    },
-    orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
-  });
-  res.json({watching:true,opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)}))});
+  const [opportunities,mostRecentlyEvaluated]=await Promise.all([
+    db.globalBrainOpportunity.findMany({
+      where:{
+        lastEvaluatedAt:{gte:new Date(now-6*60*60_000)},
+        OR:[
+          {inflow60sUsd:{gt:0}},
+          {buyers60s:{gt:0}},
+          {whaleBuyers60s:{gt:0}},
+          {knownWhaleBuyers60s:{gt:0}},
+          {firstSeenAt:{gte:new Date(now-10*60_000)}}
+        ]
+      },
+      orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
+    }),
+    // Deliberately unfiltered by the 6h window above -- this is the real signal of whether the
+    // Brain's scoring loop is actually running at all right now, independent of whether any
+    // individual token happened to qualify. An empty `opportunities` array is ambiguous on its
+    // own (it could mean "pipeline dead" or "genuinely nothing interesting right now"); this
+    // resolves that ambiguity so the client can tell users the real reason instead of a bare,
+    // unexplained empty state.
+    db.globalBrainOpportunity.findFirst({orderBy:{lastEvaluatedAt:"desc"},select:{lastEvaluatedAt:true}})
+  ]);
+  const dataFreshnessSec=mostRecentlyEvaluated?Math.round((now-mostRecentlyEvaluated.lastEvaluatedAt.getTime())/1000):null;
+  // 5 minutes matches the same chain-data-freshness bar already used for live-trading readiness
+  // elsewhere in this file -- the Brain loop runs every 750ms when healthy, so anything idle this
+  // long means its upstream data (MemeMarketSnapshot, itself dependent on the Solana RPC) has
+  // stalled, not that the loop is just between ticks.
+  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
+  res.json({watching:true,opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),pipelineDegraded,dataFreshnessSec});
 }));
 app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   const chain=routeParam(req.params.chain) as Chain;
