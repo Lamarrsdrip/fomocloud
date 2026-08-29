@@ -15,7 +15,7 @@ async function reloadConfig(){
 }
 await reloadConfig();
 const usdc=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-let walletsScanned=0,allocationsUpdated=0,errors=0,lastCycleMs=0;
+let walletsScanned=0,allocationsUpdated=0,errors=0,lastCycleMs=0,rateLimited=false,lastRateLimitAt:number|null=null,fallbackSkippedForRateLimit=0;
 
 let running=false;
 
@@ -27,7 +27,9 @@ async function batchUsdcBalances(addresses:string[]){
     try{
       const requests=chunk.map((address,i)=>({jsonrpc:"2.0",id:i+1,method:"getTokenAccountsByOwner",params:[address,{mint:usdc.toBase58()},{encoding:"jsonParsed",commitment:"confirmed"}]}));
       const response=await fetch(rpc,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(requests),signal:AbortSignal.timeout(12_000)});
+      if(response.status===429){rateLimited=true;lastRateLimitAt=Date.now();throw Object.assign(new Error("RPC_BATCH_429"),{rateLimited:true})}
       if(!response.ok)throw new Error(`RPC_BATCH_${response.status}`);
+      rateLimited=false;
       const body:any=await response.json();
       if(!Array.isArray(body))throw new Error("RPC_BATCH_UNSUPPORTED");
       const byId=new Map(body.map((x:any)=>[Number(x.id),x]));
@@ -36,17 +38,32 @@ async function batchUsdcBalances(addresses:string[]){
         for(const item of row?.result?.value??[]){const amount=item?.account?.data?.parsed?.info?.tokenAmount?.amount;if(typeof amount==="string")raw+=BigInt(amount)}
         balances.set(chunk[i],raw);
       }
-    }catch(batchError){
-      // Some free RPC providers reject JSON-RPC batching. Fall back only for this chunk, with
-      // bounded parallelism, rather than failing the entire account sync.
-      console.warn("[balance-worker] RPC batch fallback",String((batchError as any)?.message??batchError));
+    }catch(batchError:any){
+      // A 429 on the batch call must NEVER fall back to per-wallet requests -- that turns one
+      // rate-limited call into up to 40 individual RPC calls per chunk, every single 60s cycle,
+      // which is exactly the retry-storm-during-an-outage anti-pattern that (confirmed in
+      // production) was amplifying load precisely when the provider was already exhausted. Only
+      // fall back for a genuine non-rate-limit failure (e.g. a provider that plain rejects JSON-RPC
+      // batching, which is what this fallback was originally built for).
+      if(batchError?.rateLimited){
+        fallbackSkippedForRateLimit+=chunk.length;
+        errors+=chunk.length;
+        for(const address of chunk)balances.set(address,0n);
+        continue;
+      }
+      console.warn("[balance-worker] RPC batch fallback (non-rate-limit failure)",String(batchError?.message??batchError));
       for(let i=0;i<chunk.length;i+=8){
         await Promise.all(chunk.slice(i,i+8).map(async address=>{
           try{
             const accounts=await conn.getParsedTokenAccountsByOwner(new PublicKey(address),{mint:usdc},"confirmed");
             let raw=0n; for(const a of accounts.value){const amt=(a.account.data as any)?.parsed?.info?.tokenAmount?.amount;if(typeof amt==="string")raw+=BigInt(amt)}
             balances.set(address,raw);
-          }catch(e){errors++;console.error("[balance-worker] wallet",address,e);balances.set(address,0n)}
+          }catch(e:any){
+            errors++;
+            if(isRateLimitErr(e)){rateLimited=true;lastRateLimitAt=Date.now()}
+            else console.error("[balance-worker] wallet",address,e);
+            balances.set(address,0n);
+          }
         }));
       }
     }
@@ -54,6 +71,7 @@ async function batchUsdcBalances(addresses:string[]){
   }
   return balances;
 }
+function isRateLimitErr(e:any):boolean{return /429|too many requests|rate.?limit/i.test(String(e?.message??e??""))}
 async function cycle(){
   if(running)return; running=true; const started=Date.now();
   try{
@@ -81,6 +99,6 @@ async function cycle(){
     }
   }finally{lastCycleMs=Date.now()-started;running=false}
 }
-startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,errors,lastCycleMs,chain:"SOLANA",asset:"USDC"}));
+startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,errors,lastCycleMs,rateLimited,lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,fallbackSkippedForRateLimit,chain:"SOLANA",asset:"USDC"}));
 setInterval(()=>void cycle(),60_000); void cycle();
 console.log("[balance-worker] syncing genuine Solana USDC balances");
