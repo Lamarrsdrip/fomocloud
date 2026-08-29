@@ -201,7 +201,38 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 ---
 
 ## Fixes applied so far
-(none yet — audit forks in flight; this section will be populated with commit hashes as real fixes land)
+| # | Fix | Commit | Requirement(s) closed |
+|---|---|---|---|
+| 1 | Forward-proof contamination: PROVEN scoring now uses only CLOSED paper trades, not OPEN/PARTIAL unrealized P&L | 0828d7b | M-9, C-4, Fork D #6 |
+| 2 | Admin PROVEN-decision route now enforces server-side shouldProve() evidence gate | 0828d7b | M-13, Fork D #5 |
+| 3 | discoverySubscribers() base pool now ORs all 6 discovery prefs (was 3); discoveryWhaleActivity + discoveryNewToken implemented (previously wired to nothing) | 0828d7b | M-18, C-6, Fork D #7 |
+| 4 | services/exits executeLiveExit Order creation now has P2002 race handler mirroring executor.ts | 0828d7b | M-27, Fork B |
+| 5 | pickHealthyRpc now validates an indexed method (getTokenSupply), not just getHealth | dbad0b0 | M-25, Fork E |
+| 6 | New CHAIN_CAPABILITY_REGISTRY in packages/shared; fixed brain-worker writing literal "USDC" as inputMint for non-Solana chains; executor/exits now read from the shared registry | dbad0b0 | M-20, Fork E |
+| 7 | UNKNOWN risk evidence (insiderRiskPct/rugExposurePct) no longer collapses to 0/"safe"; new evidenceCompleteness field gates PROVEN independently | 1089163 | M-10, Fork D #8 |
+| 8 | True wallet-first/convergence-first discovery: scanWalletFirst() profiles addresses by repeated early entry across independently-qualifying tokens, not just pre-selected token trader lists | 6db89f9 | M-7, C-3, PC-B, Fork D #3 |
+| 9 | EVM flow-worker WebSocket reconnect + 90s silence watchdog, mirroring Solana flow-worker's proven pattern | 21f78ed | M-21, C-1, Fork E |
+
+## Still open (not yet fixed, real remaining work)
+| ID | Item | Size | Notes |
+|---|---|---|---|
+| M-31/C-9 | Immutable financial ledger | LARGE | No Ledger model exists; requires new Prisma model + wiring every money-mutating path (deposit/withdrawal/buy/sell/fee/adjustment) to also write ledger entries |
+| M-30 | Float→Decimal/integer-micro-USD migration for canonical USD fields | LARGE, RISKY | Not an active bug at current trade sizes but architecturally exactly what's flagged; needs careful schema migration + every read/write site updated |
+| M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
+| M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
+| M-5/PC-E | Tighten Discover feed WHERE clause | SMALL-MEDIUM | Currently admits any row with any recent inflow/buyer, just ranked low -- not literally random but looser than "only meaningful intelligence" |
+| M-11/PC-C | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected UI) | LARGE | Frontend build |
+| M-12/PC-D | Persistent, continuously-monitoring admin watchlist | MEDIUM-LARGE | Backend + frontend |
+| M-15/PC-H | Weighted convergence (proven > paper > unknown wallet quality) | MEDIUM | Convergence currently counts wallets, doesn't weight by proven-ness |
+| M-16/C-8 | Brain decision split into Momentum/SmartMoney/Execution/Risk/Evidence (not one opaque score) | MEDIUM-LARGE | |
+| M-17/PC-I | "Why found this" explanation surfaced per-opportunity in UI | MEDIUM | Reasons array exists in evidence; needs UI surfacing |
+| M-33 through M-48, C-12 through C-23 | Full UX/product redesign (Home, Discover, Wallet, Smart Money, Token Detail, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Frontend-heavy, not started |
+| M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
+| M-51/M-52/M-53/C-25 | Test-script audit, chaos testing, process-crash testing | LARGE | Not started |
+| M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
+| M-59 | Real-money live execution verification | BLOCKED | Requires owner-approved funded test |
+| M-60/C-22 | Full mobile/viewport UX QA | LARGE | Not started |
+| M-65/C-27 | Repeat 7-pass audit after fixes | ONGOING | This is pass 1; more passes needed once larger items land |
 
 ## Blockers (genuine external only)
 | ID | Blocker | Reason |
