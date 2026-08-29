@@ -76,23 +76,17 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
         (a: any) => a.type === "wallet" && a.chainType === "solana" && a.walletClientType === "privy"
       ) as any | undefined;
 
-      // Real bug found from a live report AFTER the first fix for this shipped: the earlier fix
-      // only guarded the "already authenticated, click the button" entry point (in start() below).
-      // But the far more common real path is "not yet authenticated -> type email -> verify code",
-      // and the moment `authenticated` flips true, the effect below calls afterAuthenticated()
-      // directly -- completely bypassing that guard. This check now lives here instead, at the one
-      // place both paths actually funnel through, so it can't be bypassed by either entry point.
-      // Privy's own login session persists in the browser independent of MemeCloud's sign-in/out;
-      // if it already has a wallet that isn't one of THIS account's own wallets, it belongs to a
-      // different MemeCloud account (or a stray earlier attempt) -- start over with a clean Privy
-      // session rather than trying to register someone else's wallet to this account.
-      if (existing && !(me?.wallets || []).some((w: any) => w.address === existing.address)) {
-        await logout().catch(() => {});
-        setStep("email");
-        setErr("That email already has a MemeCloud wallet linked to a different account. Sign in to that account to use it, or enter a different email below to create a new one here.");
-        return;
-      }
-
+      // A real, live report from the actual user showed the previous "fix" here was itself wrong,
+      // not just incomplete: it treated "this Privy wallet isn't in me.wallets yet" as proof the
+      // wallet belongs to a DIFFERENT account, and logged the user out before ever attempting
+      // registration. But that's also exactly what a wallet from THIS SAME account's own earlier
+      // attempt looks like the moment before its registration completes (the very case the comment
+      // above is about) -- me.wallets only reflects wallets ALREADY registered, so a legitimate
+      // resume-in-progress always looked identical to a cross-account collision, permanently
+      // locking a user out of their own email. There is no reliable way to tell these two cases
+      // apart client-side; the backend already can (it knows every account a given address is
+      // actually linked to) via the WALLET_ALREADY_LINKED_TO_ANOTHER_ACCOUNT check below, which is
+      // where this must be decided -- removed the incorrect proactive guess entirely.
       let walletId: string, address: string;
       if (existing) {
         walletId = existing.id; address = existing.address;
