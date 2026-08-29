@@ -15,6 +15,7 @@
     "lint": "echo db lint",
     "test": "echo db tests",
     "prisma": "prisma",
+    "ensure-indexes": "node scripts/ensure-indexes.mjs",
     "seed": "tsx prisma/seed.ts",
     "migrate:v05": "tsx prisma/migrate-v05.ts",
     "owner:promote": "tsx prisma/promote-owner.ts"

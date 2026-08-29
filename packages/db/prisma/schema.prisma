@@ -101,6 +101,8 @@ model User {
   lastLoginAt           DateTime?
   onboardingCompletedAt DateTime?
   wallets               Wallet[]
+  walletAssetBalances   WalletAssetBalance[]
+  deposits              Deposit[]
   follows               UserFollow[]
   positions             Position[]
   orders                Order[]
@@ -181,69 +183,149 @@ model WalletChallenge {
 }
 
 model Wallet {
-  id               String    @id @default(auto()) @map("_id") @db.ObjectId
-  userId           String    @db.ObjectId
+  id               String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String               @db.ObjectId
   chain            Chain
   address          String
   label            String?
-  isPrimary        Boolean   @default(false)
-  tradingEnabled   Boolean   @default(false)
+  custodyType      String?
+  isPrimary        Boolean              @default(false)
+  tradingEnabled   Boolean              @default(false)
   permissionRef    String?
   permissionExpiry DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetBalances    WalletAssetBalance[]
+  deposits         Deposit[]
+  syncState        WalletSyncState?
 
   @@unique([chain, address])
   @@index([userId])
 }
 
+enum DepositStatus {
+  CONFIRMED
+  FINALIZED
+}
+
+// Exact on-chain wallet balances. Raw integer amounts are authoritative; display conversion is
+// performed only at the API/UI boundary so large token quantities never lose precision in Mongo.
+model WalletAssetBalance {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  walletId     String   @db.ObjectId
+  userId       String   @db.ObjectId
+  chain        Chain
+  assetMint    String
+  symbol       String?
+  decimals     Int
+  rawBalance   String
+  supported    Boolean  @default(false)
+  source       String
+  lastSyncedAt DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  wallet       Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([walletId, assetMint])
+  @@index([userId, chain])
+}
+
+// A positive, externally-originated on-chain delta for one asset. The compound unique key and
+// idempotencyKey make retries, overlapping worker cycles and restarts unable to credit/notify the
+// same transfer twice. TradingCashAllocation is reconciled from the full current USDC balance,
+// never incremented from this event, which prevents event + polling double-credit.
+model Deposit {
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey  String        @unique
+  userId          String        @db.ObjectId
+  walletId        String        @db.ObjectId
+  chain           Chain
+  walletAddress   String
+  txHash          String
+  slot            BigInt?
+  blockTime       DateTime?
+  assetMint       String
+  symbol          String?
+  decimals        Int
+  amountRaw       String
+  supported       Boolean       @default(false)
+  status          DepositStatus @default(CONFIRMED)
+  confirmations   Int           @default(1)
+  firstDetectedAt DateTime      @default(now())
+  confirmedAt     DateTime      @default(now())
+  finalizedAt     DateTime?
+  lastCheckedAt   DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet          Wallet        @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, txHash, walletAddress, assetMint])
+  @@index([userId, createdAt])
+  @@index([walletId, status, createdAt])
+}
+
+model WalletSyncState {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  walletId             String    @unique @db.ObjectId
+  lastScannedSignature String?
+  lastScannedSlot      BigInt?
+  lastSuccessfulAt     DateTime?
+  lastError            String?
+  lastErrorAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  wallet               Wallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
 model GlobalTradingSettings {
-  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId                 String   @unique @db.ObjectId
-  autoCopyEnabled        Boolean  @default(false)
-  globalBrainEnabled     Boolean  @default(true)
-  sizingMode             String   @default("PERCENT")
-  percentBalance         Float    @default(2)
-  defaultAmountUsd       Float    @default(100)
-  maxAmountPerTradeUsd   Float    @default(0) // 0 = user chose no platform cap
-  maxTotalExposureUsd    Float    @default(0) // 0 = user chose no platform cap
-  maxConcurrentPositions Int      @default(0) // 0 = unlimited by platform
-  adaptiveChase          Boolean  @default(false) // evidence only unless user sets a chase ceiling
-  capitalRecoveryEnabled Boolean  @default(true)
-  capitalRecoveryMultiple Float   @default(3)
-  freshMemeMode          Boolean  @default(true)
-  runnerMode             Boolean  @default(true)
-  allowedChains          Chain[]  @default([SOLANA])
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                      String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId                  String   @unique @db.ObjectId
+  autoCopyEnabled         Boolean  @default(false)
+  globalBrainEnabled      Boolean  @default(true)
+  sizingMode              String   @default("PERCENT")
+  percentBalance          Float    @default(2)
+  defaultAmountUsd        Float    @default(100)
+  maxAmountPerTradeUsd    Float    @default(0) // 0 = user chose no platform cap
+  maxTotalExposureUsd     Float    @default(0) // 0 = user chose no platform cap
+  maxConcurrentPositions  Int      @default(0) // 0 = unlimited by platform
+  adaptiveChase           Boolean  @default(false) // evidence only unless user sets a chase ceiling
+  capitalRecoveryEnabled  Boolean  @default(true)
+  capitalRecoveryMultiple Float    @default(3)
+  freshMemeMode           Boolean  @default(true)
+  runnerMode              Boolean  @default(true)
+  allowedChains           Chain[]  @default([SOLANA])
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model NotificationPreference {
-  id                String  @id @default(auto()) @map("_id") @db.ObjectId
-  userId            String  @unique @db.ObjectId
-  pushEnabled       Boolean @default(true)
-  emailEnabled      Boolean @default(true)
-  traderBought      Boolean @default(true)
-  tradeCopied       Boolean @default(true)
-  skippedTrade      Boolean @default(true)
-  profitTaken       Boolean @default(true)
-  positionClosed    Boolean @default(true)
-  securityAlerts    Boolean @default(true)
-  platformBroadcast Boolean @default(true)
+  id                      String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId                  String  @unique @db.ObjectId
+  pushEnabled             Boolean @default(true)
+  emailEnabled            Boolean @default(true)
+  traderBought            Boolean @default(true)
+  tradeCopied             Boolean @default(true)
+  skippedTrade            Boolean @default(true)
+  profitTaken             Boolean @default(true)
+  positionClosed          Boolean @default(true)
+  securityAlerts          Boolean @default(true)
+  platformBroadcast       Boolean @default(true)
   // Global Brain discovery notifications -- deliberately independent of trading wallets/Live
   // Trading. A user with zero wallets and auto-copy off must still be able to get these; the old
   // notifyUsers() path was gated behind autoCopyEnabled+globalBrainEnabled, contradicting that.
   // Off-by-default for the noisier/lower-severity tiers so the default experience isn't a spam
   // firehose; on-by-default for genuinely strong signals.
-  discoveryNewToken      Boolean @default(false)
-  discoverySmartWallet   Boolean @default(true)
-  discoveryWhaleActivity Boolean @default(true)
-  discoveryHeatingUp     Boolean @default(false)
-  discoveryStrong        Boolean @default(true)
+  discoveryNewToken       Boolean @default(false)
+  discoverySmartWallet    Boolean @default(true)
+  discoveryWhaleActivity  Boolean @default(true)
+  discoveryHeatingUp      Boolean @default(false)
+  discoveryStrong         Boolean @default(true)
   discoveryHighConviction Boolean @default(true)
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model TradingCashAllocation {
@@ -915,21 +997,20 @@ model PaperCopyTrade {
   @@index([status, lastMarkedAt])
 }
 
-
 model ChainFlowObservation {
-  id              String   @id @default(auto()) @map("_id") @db.ObjectId
-  chain           Chain
-  mint            String
-  walletAddress   String
-  txHash          String
-  side            SignalAction
-  amountUsd       Float?
+  id               String       @id @default(auto()) @map("_id") @db.ObjectId
+  chain            Chain
+  mint             String
+  walletAddress    String
+  txHash           String
+  side             SignalAction
+  amountUsd        Float?
   walletBalanceUsd Float?
-  walletTier      String?
-  knownWallet     Boolean  @default(false)
-  source          String
-  observedAt      DateTime
-  createdAt       DateTime @default(now())
+  walletTier       String?
+  knownWallet      Boolean      @default(false)
+  source           String
+  observedAt       DateTime
+  createdAt        DateTime     @default(now())
 
   @@unique([chain, txHash, walletAddress, mint])
   @@index([chain, mint, observedAt])
@@ -937,42 +1018,42 @@ model ChainFlowObservation {
 }
 
 model GlobalBrainOpportunity {
-  id                    String   @id @default(auto()) @map("_id") @db.ObjectId
-  chain                 Chain
-  mint                  String
-  symbol                String?
-  name                  String?
-  state                 String   @default("WATCHING")
-  score                 Float    @default(0)
-  action                String   @default("WATCH")
-  marketCapUsd          Float?
-  liquidityUsd          Float?
-  inflow10sUsd          Float    @default(0)
-  inflow60sUsd          Float    @default(0)
-  buyers10s             Int      @default(0)
-  buyers60s             Int      @default(0)
-  whaleBuyers60s        Int      @default(0)
-  knownWhaleBuyers60s   Int      @default(0)
-  smartMoneyNetFlow5mUsd Float?
-  volumeAcceleration1m  Float?
-  holderGrowth5mPct     Float?
-  socialVelocity        Float?
+  id                        String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain                     Chain
+  mint                      String
+  symbol                    String?
+  name                      String?
+  state                     String    @default("WATCHING")
+  score                     Float     @default(0)
+  action                    String    @default("WATCH")
+  marketCapUsd              Float?
+  liquidityUsd              Float?
+  inflow10sUsd              Float     @default(0)
+  inflow60sUsd              Float     @default(0)
+  buyers10s                 Int       @default(0)
+  buyers60s                 Int       @default(0)
+  whaleBuyers60s            Int       @default(0)
+  knownWhaleBuyers60s       Int       @default(0)
+  smartMoneyNetFlow5mUsd    Float?
+  volumeAcceleration1m      Float?
+  holderGrowth5mPct         Float?
+  socialVelocity            Float?
   drawdownFromRecentPeakPct Float?
-  survivorScore         Float?
-  reasons               Json?
-  evidence              Json?
+  survivorScore             Float?
+  reasons                   Json?
+  evidence                  Json?
   // The highest state a discovery notification has already been sent for. Lets brain-worker fire
   // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
   // 750ms tick a token happens to still be in that state.
-  lastNotifiedState     String?
+  lastNotifiedState         String?
   // The observedAt of the actual MemeMarketSnapshot this score was computed from -- distinct from
   // lastEvaluatedAt, which only proves the Brain loop ran, not that it had fresh chain data to
   // work with. Lets the UI show real evidence age instead of implying every score is live.
-  evidenceObservedAt    DateTime?
-  firstSeenAt           DateTime @default(now())
-  lastEvaluatedAt       DateTime @default(now())
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  evidenceObservedAt        DateTime?
+  firstSeenAt               DateTime  @default(now())
+  lastEvaluatedAt           DateTime  @default(now())
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   @@unique([chain, mint])
   @@index([action, score, lastEvaluatedAt])
@@ -980,19 +1061,19 @@ model GlobalBrainOpportunity {
 }
 
 model BrainOutcomeSample {
-  id             String   @id @default(auto()) @map("_id") @db.ObjectId
-  opportunityId  String   @db.ObjectId
-  chain          Chain
-  mint           String
-  horizonSeconds Int
-  entryPriceUsd  Float?
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  opportunityId    String   @db.ObjectId
+  chain            Chain
+  mint             String
+  horizonSeconds   Int
+  entryPriceUsd    Float?
   observedPriceUsd Float?
-  returnPct      Float?
-  maxRunPct      Float?
-  maxDrawdownPct Float?
-  evidence       Json?
-  observedAt     DateTime
-  createdAt      DateTime @default(now())
+  returnPct        Float?
+  maxRunPct        Float?
+  maxDrawdownPct   Float?
+  evidence         Json?
+  observedAt       DateTime
+  createdAt        DateTime @default(now())
 
   @@unique([opportunityId, horizonSeconds])
   @@index([chain, mint, observedAt])
