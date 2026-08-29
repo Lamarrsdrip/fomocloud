@@ -158,7 +158,7 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
     return <>
       <div className="wallet-line">
         <div><b>MemeCloud wallet · {embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
-          <small>Created and custodied by MemeCloud (Privy) · Trading permission active{embeddedWallet.permissionExpiry ? ` until ${new Date(embeddedWallet.permissionExpiry).toLocaleDateString()}` : ""}</small></div>
+          <small>Your wallet · MemeCloud has a revocable trading permission{embeddedWallet.permissionExpiry ? ` until ${new Date(embeddedWallet.permissionExpiry).toLocaleDateString()}` : ""} · exportable anytime (Send / Receive / History → Security)</small></div>
         <button className="soft-action" onClick={() => setDetailOpen(true)}><WalletIcon size={12} /> Send / Receive / History</button>
       </div>
       {detailOpen && <WalletDetailSheet wallet={embeddedWallet} onClose={() => setDetailOpen(false)} onSent={reload} />}

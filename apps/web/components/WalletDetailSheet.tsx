@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { X, Copy, ExternalLink, ShieldOff } from "lucide-react";
+import { X, Copy, ExternalLink, ShieldOff, KeyRound } from "lucide-react";
+import { useExportWallet } from "@privy-io/react-auth/solana";
 import { apiFetch, plainError } from "../lib/api";
 
-type Tab = "receive" | "send" | "history" | "access";
+type Tab = "receive" | "send" | "history" | "access" | "security";
 
 // Deliberately no client-side balance display here: the only real balance sources available
 // client-side are USD-denominated (TradingCashAllocation), not native SOL/USDC on-chain amounts,
@@ -29,11 +30,13 @@ export function WalletDetailSheet({ wallet, onClose, onSent }: { wallet: { id: s
           <button className={tab === "send" ? "active" : ""} onClick={() => setTab("send")}>Send</button>
           <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>History</button>
           <button className={tab === "access" ? "active" : ""} onClick={() => setTab("access")}>Access</button>
+          <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>Security</button>
         </div>
         {tab === "receive" && <ReceiveTab address={wallet.address} />}
         {tab === "send" && <SendTab walletId={wallet.id} onSent={onSent} />}
         {tab === "history" && <HistoryTab walletId={wallet.id} />}
         {tab === "access" && <AccessTab walletId={wallet.id} onRevoked={() => { onSent?.(); onClose(); }} />}
+        {tab === "security" && <SecurityTab address={wallet.address} />}
       </div>
     </div>
   );
@@ -71,6 +74,49 @@ function AccessTab({ walletId, onRevoked }: { walletId: string; onRevoked: () =>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="soft-action" style={{ flex: 1 }} disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
             <button className="action-primary" style={{ flex: 1, background: "linear-gradient(135deg,#ee6673,#c73f4e)" }} disabled={busy} onClick={revoke}>{busy ? "Revoking…" : "Yes, revoke access"}</button>
+          </div>
+        </div>}
+  </div>;
+}
+
+// Real capability, verified directly against the installed SDK (@privy-io/react-auth@3.38.0,
+// node_modules/@privy-io/react-auth/dist/dts/solana.d.ts): useExportWallet()'s own doc comment --
+// "The private key is loaded on an iframe running on a separate domain from your app, meaning your
+// app cannot access it" -- is Privy's own security guarantee, not something MemeCloud implements or
+// could weaken even if it wanted to. This code only ever triggers Privy's modal and awaits its
+// close; the private key itself never enters MemeCloud's JS context, API, logs, or database at any
+// point. This is the real ownership model: the user's key is exportable to any standard wallet
+// (Phantom, Backpack, etc.) at any time -- MemeCloud holds only a revocable, policy-scoped trading
+// permission on top of a wallet the user genuinely owns and can walk away with.
+function SecurityTab({ address }: { address: string }) {
+  const { exportWallet } = useExportWallet();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function doExport() {
+    setBusy(true); setErr("");
+    try {
+      await exportWallet({ address });
+    } catch (e: any) {
+      setErr(plainError(e));
+    } finally {
+      setBusy(false); setConfirming(false);
+    }
+  }
+
+  return <div>
+    <p style={{ fontSize: 12, color: "#9a9fb0", lineHeight: 1.6, marginBottom: 14 }}>
+      This wallet is genuinely yours. MemeCloud never holds your private key -- it only has a revocable, policy-scoped permission to trade on your behalf (see the Access tab). You can export your private key to a standard wallet like Phantom or Backpack at any time, and MemeCloud's own systems never see it: the key is shown inside Privy's own secure interface, on a domain MemeCloud's app has no access to.
+    </p>
+    {!confirming
+      ? <button className="soft-action" style={{ width: "100%" }} onClick={() => setConfirming(true)}><KeyRound size={14} /> Export private key</button>
+      : <div>
+          <p style={{ fontSize: 11, color: "#e8b96d", marginBottom: 10 }}>Anyone who sees your private key can move every asset in this wallet, permanently and irreversibly. Only continue somewhere private, and never share it with anyone -- including someone claiming to be MemeCloud support.</p>
+          {err && <div className="auth-error" style={{ marginBottom: 10 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="soft-action" style={{ flex: 1 }} disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+            <button className="action-primary" style={{ flex: 1 }} disabled={busy} onClick={doExport}>{busy ? "Opening…" : "Continue"}</button>
           </div>
         </div>}
   </div>;
