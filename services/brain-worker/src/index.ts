@@ -74,10 +74,37 @@ async function maybeSignal(opp:any,trader:any,users:any[]){
   await signalQueue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:250},removeOnComplete:1000});signals++;
   await notifyUsers(opp,users);
 }
+// Real bug found by audit: the observed-price lookup had no upper bound -- `observedAt:{gte:targetAt}`
+// picks up the FIRST MarketPrice row at or after the horizon target, however far after. If
+// market-worker had stopped tracking this mint for a while (it caps at 350 tracked mints), a 60s
+// horizon could silently be backed by a price observed 8+ minutes later and stored as if it were
+// precise, genuine 60s-later evidence. Every horizon now has a bounded tolerance window; a price
+// found outside it is not used, and once genuinely no fresh-enough price can still arrive, the
+// horizon is recorded as status:"MISSING" (not silently skipped forever, not backfilled from stale
+// data) so it stops being retried and is honestly visible as missing rather than looking like every
+// other row.
+function horizonToleranceMs(h:number){return Math.min(5*60_000,Math.max(15_000,h*1000*0.25))}
 async function sampleOutcomes(){
   const horizons=[5,30,60,300,3600];
   const rows=await db.globalBrainOpportunity.findMany({where:{createdAt:{gte:new Date(Date.now()-2*60*60_000)}},take:300});
-  for(const o of rows){for(const h of horizons){if(Date.now()-o.firstSeenAt.getTime()<h*1000)continue;const prior=await db.brainOutcomeSample.findUnique({where:{opportunityId_horizonSeconds:{opportunityId:o.id,horizonSeconds:h}}});if(prior)continue;const entry=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:o.firstSeenAt}},orderBy:{observedAt:"asc"}}),obs=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:new Date(o.firstSeenAt.getTime()+h*1000)}},orderBy:{observedAt:"asc"}});if(!entry||!obs)continue;const ret=(obs.priceUsd-entry.priceUsd)/entry.priceUsd*100;await db.brainOutcomeSample.create({data:{opportunityId:o.id,chain:o.chain,mint:o.mint,horizonSeconds:h,entryPriceUsd:entry.priceUsd,observedPriceUsd:obs.priceUsd,returnPct:ret,observedAt:obs.observedAt,evidence:{score:o.score,state:o.state,action:o.action} as any}}).catch(()=>{});}}
+  for(const o of rows){for(const h of horizons){
+    const targetAt=new Date(o.firstSeenAt.getTime()+h*1000);
+    if(Date.now()<targetAt.getTime())continue;
+    const prior=await db.brainOutcomeSample.findUnique({where:{opportunityId_horizonSeconds:{opportunityId:o.id,horizonSeconds:h}}});if(prior)continue;
+    const tolerance=horizonToleranceMs(h);
+    const entry=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:o.firstSeenAt}},orderBy:{observedAt:"asc"}});
+    const obs=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:targetAt,lte:new Date(targetAt.getTime()+tolerance)}},orderBy:{observedAt:"asc"}});
+    if(entry&&obs){
+      const ret=(obs.priceUsd-entry.priceUsd)/entry.priceUsd*100;
+      await db.brainOutcomeSample.create({data:{opportunityId:o.id,chain:o.chain,mint:o.mint,horizonSeconds:h,status:"OK",targetAt,delayMs:obs.observedAt.getTime()-targetAt.getTime(),priceSource:"MARKET_PRICE",entryPriceUsd:entry.priceUsd,observedPriceUsd:obs.priceUsd,returnPct:ret,observedAt:obs.observedAt,evidence:{score:o.score,state:o.state,action:o.action} as any}}).catch(()=>{});
+      continue;
+    }
+    // No sufficiently fresh price yet -- only give up (mark MISSING) once we're past the tolerance
+    // window entirely; otherwise a fresh enough price may still land on a later tick.
+    if(Date.now()>=targetAt.getTime()+tolerance){
+      await db.brainOutcomeSample.create({data:{opportunityId:o.id,chain:o.chain,mint:o.mint,horizonSeconds:h,status:"MISSING",targetAt,priceSource:"MARKET_PRICE",observedAt:targetAt,evidence:{score:o.score,state:o.state,action:o.action,reason:!entry?"NO_ENTRY_PRICE":"NO_PRICE_WITHIN_TOLERANCE"} as any}}).catch(()=>{});
+    }
+  }}
 }
 // Discovery notifications, deliberately independent of trading. maybeSignal()/notifyUsers() below
 // only ever reaches users with autoCopyEnabled+globalBrainEnabled -- that's correct for the

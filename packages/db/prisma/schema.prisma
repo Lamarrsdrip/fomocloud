@@ -1060,12 +1060,21 @@ model GlobalBrainOpportunity {
   @@index([chain, lastEvaluatedAt])
 }
 
+// status:"OK" means observedAt genuinely landed within tolerance of targetAt (see delayMs);
+// status:"MISSING" means the horizon passed but no sufficiently fresh price ever arrived within
+// tolerance, so this row exists (and is never retried) purely to record that honestly, with every
+// price/return field left null rather than silently backfilled from a stale, out-of-tolerance
+// price. A 60s horizon must never silently use a price observed 8 minutes later.
 model BrainOutcomeSample {
   id               String   @id @default(auto()) @map("_id") @db.ObjectId
   opportunityId    String   @db.ObjectId
   chain            Chain
   mint             String
   horizonSeconds   Int
+  status           String   @default("OK")
+  targetAt         DateTime?
+  delayMs          Int?
+  priceSource      String?
   entryPriceUsd    Float?
   observedPriceUsd Float?
   returnPct        Float?
