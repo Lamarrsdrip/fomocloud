@@ -56,6 +56,26 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   return {score,action,state,reasons,warnings,survivorScore};
 }
 
+// DISCOVERY != AUTO-TRADE QUALIFICATION. action:"IGNORE" (score<56) is the trading-decision
+// threshold and must gate execution, not visibility -- a token with real, non-zero evidence below
+// that bar is still a genuine discovery worth showing. lastEvaluatedAt alone is never sufficient
+// evidence on its own (a worker touches it every tick regardless of real flow); a genuinely-recent
+// firstSeenAt covers a just-discovered token that hasn't accumulated scored evidence yet.
+export type LifecycleRow={score:number;lastEvaluatedAt:Date;firstSeenAt:Date;inflow60sUsd:number;buyers60s:number;whaleBuyers60s:number;knownWhaleBuyers60s:number};
+export function classifyLifecycle(row:LifecycleRow,now:number):string{
+  // A worker stopped evaluating this token (dropped out of the snapshot pipeline) -- never let it
+  // keep looking "live" just because the row still exists in the database.
+  if(now-row.lastEvaluatedAt.getTime()>15*60_000)return "STALE";
+  if(row.score>=86)return "HIGH_CONVICTION";
+  if(row.score>=76)return "STRONG";
+  if(row.score>=64)return "HEATING_UP";
+  if(row.score>=56)return "INTERESTING";
+  const hasEvidence=row.inflow60sUsd>0||row.buyers60s>0||row.whaleBuyers60s>0||row.knownWhaleBuyers60s>0;
+  if(hasEvidence)return "WATCHING";
+  if(now-row.firstSeenAt.getTime()<10*60_000)return "FOUND";
+  return "COOLING";
+}
+
 export function walletTier(balanceUsd?:number){
   const b=Number(balanceUsd??0);
   if(b>=10_000_000)return "WHALE_10M";

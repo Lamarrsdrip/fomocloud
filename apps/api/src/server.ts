@@ -12,6 +12,7 @@ import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, isLiveTradingEnabled, type ProviderRecord } from "@memecloud/config";
+import { classifyLifecycle } from "@memecloud/brain";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
 // `state` is the honest classification of WHY a check failed -- HTTP 429 must never be reported
 // the same way as an actually-invalid key. `ok` remains for backward compat (ok === state==="CONNECTED").
@@ -1411,27 +1412,6 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 // ever read here). Requiring login just to SEE what the Global Brain is watching was blocking
 // the entire discovery experience for anyone without an account; wallet/login should only ever
 // gate EXECUTION, never observation.
-// DISCOVERY != AUTO-TRADE QUALIFICATION. action:"IGNORE" is the Brain's own trading-decision
-// threshold (score<56) -- it must gate execution, not visibility. A token with real, non-zero
-// inflow/buyers/whale evidence below that threshold is still a genuine discovery worth showing;
-// hiding it just because it isn't good enough to auto-trade was over-strict. lastEvaluatedAt alone
-// is still never sufficient evidence on its own (brain-worker touches it every tick regardless of
-// real flow), so real evidence (or a genuinely-recent firstSeenAt, for a just-discovered token that
-// hasn't accumulated scored evidence yet) remains required -- this broadens WHEN something is
-// visible, not WHETHER it has to be real.
-function classifyLifecycle(row:{score:number;lastEvaluatedAt:Date;firstSeenAt:Date;inflow60sUsd:number;buyers60s:number;whaleBuyers60s:number;knownWhaleBuyers60s:number},now:number):string{
-  // brain-worker stopped evaluating this token (dropped out of the snapshot pipeline) -- never
-  // let it keep looking "live" just because the row still exists.
-  if(now-row.lastEvaluatedAt.getTime()>15*60_000)return "STALE";
-  if(row.score>=86)return "HIGH_CONVICTION";
-  if(row.score>=76)return "STRONG";
-  if(row.score>=64)return "HEATING_UP";
-  if(row.score>=56)return "INTERESTING";
-  const hasEvidence=row.inflow60sUsd>0||row.buyers60s>0||row.whaleBuyers60s>0||row.knownWhaleBuyers60s>0;
-  if(hasEvidence)return "WATCHING";
-  if(now-row.firstSeenAt.getTime()<10*60_000)return "FOUND";
-  return "COOLING";
-}
 app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const now=Date.now();
   const opportunities=await db.globalBrainOpportunity.findMany({

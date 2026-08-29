@@ -24,10 +24,11 @@ async function ensureBrainFollowers(traderId:string){
   return users;
 }
 async function context(chain:Chain,mint:string,s:any){
-  const now=Date.now(),since10=new Date(now-10_000),since60=new Date(now-60_000);
-  const [f10,f60,known,token,catalyst,peak]=await Promise.all([
+  const now=Date.now(),since10=new Date(now-10_000),since60=new Date(now-60_000),since10m=new Date(now-10*60_000);
+  const [f10,f60,f10m,known,token,catalyst,peak]=await Promise.all([
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since60}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
+    db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10m}},select:{walletAddress:true}}),
     db.signal.count({where:{chain,action:"BUY",outputMint:mint,observedAt:{gte:since60}}}),
     db.discoveryToken.findUnique({where:{chain_mint:{chain,mint}}}).catch(()=>null),
     db.catalystEvent.findFirst({where:{chain,mint,announcedAt:{gte:new Date(now-72*60*60_000)}},orderBy:{announcedAt:"desc"}}),
@@ -36,8 +37,15 @@ async function context(chain:Chain,mint:string,s:any){
   const sum=(x:any[])=>x.reduce((a,v)=>a+Number(v.amountUsd??0),0),uniq=(x:any[])=>new Set(x.map(v=>v.walletAddress)).size;
   const whale=(x:any[])=>x.filter(v=>String(v.walletTier??"").startsWith("WHALE_")).length;
   const peakPrice=Number(peak[0]?.priceUsd??s.priceUsd),dd=peakPrice>0?Math.max(0,(peakPrice-s.priceUsd)/peakPrice*100):0;
+  // Convergence: how many of the wallets that bought this mint in the last 10 minutes are
+  // wallets MemeCloud itself has already built real evidence on (PAPER_TRACKING/PROVEN -- never
+  // DISCOVERED-only, which hasn't cleared the sample-size bar yet). This is reported as a real
+  // reason string, not folded into the scoring formula, so it can't silently change trading
+  // decisions -- it's explanatory evidence per the "why was this found" requirement.
+  const recentAddresses=[...new Set(f10m.map(v=>v.walletAddress))];
+  const convergentWallets=recentAddresses.length?await db.smartWalletCandidate.findMany({where:{chain,address:{in:recentAddresses},stage:{in:["PAPER_TRACKING","PROVEN"]}},select:{address:true,stage:true}}):[];
   const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:f60.filter(v=>v.knownWallet).length+known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd??undefined,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0};
-  return {evidence,token,catalyst};
+  return {evidence,token,catalyst,convergentWallets};
 }
 async function notifyUsers(opp:any,users:any[]){
   if(opp.score<65)return;
@@ -93,6 +101,17 @@ async function notifyDiscoveryUpgrade(row:any,newState:string){
     if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
   }
 }
+async function notifyConvergence(row:any,count:number){
+  const subs=await discoverySubscribers();
+  const title=`${count} tracked smart wallets entered ${row.symbol||"a token"}`;
+  const body=`${count} wallets MemeCloud has already built real evidence on bought this within 10 minutes · ${row.chain} · ${row.mint}`;
+  for(const u of subs){
+    if(!(u.notificationPrefs as any)?.discoverySmartWallet)continue;
+    const key=`convergence:${row.id}:${u.id}`;
+    const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,convergentWallets:count} as any}}).catch(()=>null);
+    if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
+  }
+}
 async function tick(){
   if(running)return;running=true;
   try{
@@ -106,11 +125,18 @@ async function tick(){
       const priorNotifiedRank=STATE_RANK[existing?.lastNotifiedState??"SCANNING"]??0;
       const newRank=STATE_RANK[d.state]??0;
       const upgraded=newRank>priorNotifiedRank&&newRank>0;
-      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:d.reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type} as any,lastEvaluatedAt:new Date(),...(upgraded?{lastNotifiedState:d.state}:{})};
+      const convergentCount=c.convergentWallets.length;
+      const priorConvergentCount=Number((existing?.evidence as any)?.convergentCount??0);
+      const newConvergence=convergentCount>=2&&convergentCount>priorConvergentCount;
+      // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
+      // can't silently change a trading decision. "Why was this found" per the audit's requirement.
+      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount} as any,lastEvaluatedAt:new Date(),...(upgraded?{lastNotifiedState:d.state}:{})};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
       scans++;if(d.action!=="IGNORE")opportunities++;
       if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
       if(upgraded)await notifyDiscoveryUpgrade(row,d.state).catch(e=>console.error("[brain-worker] discovery notify failed",row.mint,e));
+      if(newConvergence)await notifyConvergence(row,convergentCount).catch(e=>console.error("[brain-worker] convergence notify failed",row.mint,e));
       await maybeSignal(row,trader,users);
     }
     await sampleOutcomes();
