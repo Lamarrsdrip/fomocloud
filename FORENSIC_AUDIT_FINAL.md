@@ -212,21 +212,20 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 7 | UNKNOWN risk evidence (insiderRiskPct/rugExposurePct) no longer collapses to 0/"safe"; new evidenceCompleteness field gates PROVEN independently | 1089163 | M-10, Fork D #8 |
 | 8 | True wallet-first/convergence-first discovery: scanWalletFirst() profiles addresses by repeated early entry across independently-qualifying tokens, not just pre-selected token trader lists | 6db89f9 | M-7, C-3, PC-B, Fork D #3 |
 | 9 | EVM flow-worker WebSocket reconnect + 90s silence watchdog, mirroring Solana flow-worker's proven pattern | 21f78ed | M-21, C-1, Fork E |
+| 10 | Immutable LedgerEntry model + wired into all 3 real-money confirmation points (buy spend, 2x sell proceeds) and USDC deposits | 45babde | M-31, C-9, Fork A |
+| 11 | Brain score split into Momentum/SmartMoney/Execution/Risk/Evidence breakdown (additive, doesn't change trading decision), persisted + surfaced in Token Detail UI | 820591b, 93209a9 | M-16, M-17, M-44, C-8 |
+| 12 | Convergence weighted by wallet quality (PROVEN=2x, PAPER_TRACKING=1x) instead of raw uniform count | 2dd184b | M-15, PC-H |
+| 13 | Discover main feed tightened to score>=56 (was: any nonzero activity); explicit separate New Token Radar added to API + UI | 7947dc8 | M-5, PC-E, PC-J, M-42 (partial) |
 
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
 |---|---|---|---|
-| M-31/C-9 | Immutable financial ledger | LARGE | No Ledger model exists; requires new Prisma model + wiring every money-mutating path (deposit/withdrawal/buy/sell/fee/adjustment) to also write ledger entries |
 | M-30 | Float→Decimal/integer-micro-USD migration for canonical USD fields | LARGE, RISKY | Not an active bug at current trade sizes but architecturally exactly what's flagged; needs careful schema migration + every read/write site updated |
 | M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
 | M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
-| M-5/PC-E | Tighten Discover feed WHERE clause | SMALL-MEDIUM | Currently admits any row with any recent inflow/buyer, just ranked low -- not literally random but looser than "only meaningful intelligence" |
 | M-11/PC-C | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected UI) | LARGE | Frontend build |
 | M-12/PC-D | Persistent, continuously-monitoring admin watchlist | MEDIUM-LARGE | Backend + frontend |
-| M-15/PC-H | Weighted convergence (proven > paper > unknown wallet quality) | MEDIUM | Convergence currently counts wallets, doesn't weight by proven-ness |
-| M-16/C-8 | Brain decision split into Momentum/SmartMoney/Execution/Risk/Evidence (not one opaque score) | MEDIUM-LARGE | |
-| M-17/PC-I | "Why found this" explanation surfaced per-opportunity in UI | MEDIUM | Reasons array exists in evidence; needs UI surfacing |
-| M-33 through M-48, C-12 through C-23 | Full UX/product redesign (Home, Discover, Wallet, Smart Money, Token Detail, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Frontend-heavy, not started |
+| M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); rest not started |
 | M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
 | M-51/M-52/M-53/C-25 | Test-script audit, chaos testing, process-crash testing | LARGE | Not started |
 | M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
