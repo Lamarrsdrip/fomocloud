@@ -344,6 +344,18 @@ function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string}
    <div><span>Volume acceleration</span><b>{o?.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"Unknown"}</b></div>
    <div><span>MemeCloud confidence</span><b>{o?.score!=null?`${Math.round(o.score)}%`:"Unknown"}</b></div>
   </div>
+  {/* MemeCloud Verdict: the same evidence as "MemeCloud confidence" above, broken into named
+      dimensions instead of one opaque number -- computed by packages/brain's evaluateOpportunity,
+      never client-guessed. Purely explanatory; it cannot itself change any trading decision. */}
+  {o?.evidence?.breakdown&&<section className="app-card"><div className="card-title"><div><span>MEMECLOUD VERDICT</span><h2>Why the confidence score is what it is</h2></div></div>
+   <div className="review-grid">
+    <div><span>Momentum</span><b>{o.evidence.breakdown.momentum}</b></div>
+    <div><span>Smart money</span><b>{o.evidence.breakdown.smartMoney}</b></div>
+    <div><span>Execution quality</span><b>{o.evidence.breakdown.executionQuality}</b></div>
+    <div><span>Risk</span><b>{o.evidence.breakdown.risk}</b></div>
+    <div><span>Evidence completeness</span><b>{o.evidence.breakdown.evidenceCompleteness}%</b></div>
+   </div>
+  </section>}
   {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud found this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
   <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade{canTradeLive?"":" — simulation"}</h2></div></div>
    <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
