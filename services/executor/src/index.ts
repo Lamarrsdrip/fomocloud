@@ -222,9 +222,15 @@ async function handleSourceSell(signal:any){
           if(rawToExit<=0n)continue;
 
           const positionOrderKey=crypto.createHash("sha256").update(`SOURCE_SELL:${signal.id}:${p.id}`).digest("hex");
-          let order=await db.order.findUnique({where:{idempotencyKey:positionOrderKey}});
-          if(order){
-            if(order.status==="CONFIRMED"){continue}
+          // Shared by both the normal "order already exists" path below and the concurrent-race
+          // recovery further down -- executor runs with concurrency:20, and BullMQ can redeliver a
+          // stalled job (this handler makes slow RPC/Privy calls) to a second worker slot while the
+          // first is still running. Two slots can both pass the findUnique check below before
+          // either has created the order, race on db.order.create with the SAME idempotencyKey, and
+          // the loser used to fall into the generic catch and get counted as a genuine failure --
+          // even though the winner's execution was the real one and would finalize the sell fine.
+          const reconcileExisting=async(order:any)=>{
+            if(order.status==="CONFIRMED")return;
             const attempt=await db.liveExecutionAttempt.findFirst({where:{orderId:order.id,purpose:"SOURCE_SELL"},orderBy:{createdAt:"desc"}});
             if(!attempt)throw Object.assign(new Error("LIVE_SOURCE_SELL_ATTEMPT_MISSING"),{code:"LIVE_SOURCE_SELL_ATTEMPT_MISSING"});
             const ref=attempt.idempotencyKey.slice(0,64);
@@ -239,8 +245,9 @@ async function handleSourceSell(signal:any){
               // real sell; leave it for reconciliation exactly like the BUY path does.
               liveSkipped++;
             }
-            continue;
-          }
+          };
+          let order=await db.order.findUnique({where:{idempotencyKey:positionOrderKey}});
+          if(order){await reconcileExisting(order);continue}
 
           const quote=await jupiter.quote({inputMint:p.mint,outputMint:usdcSol,amountRaw:rawToExit.toString(),slippageBps:exitSlippageBps});
           const impact=Math.abs(Number(quote.priceImpactPct??0));
@@ -248,7 +255,16 @@ async function handleSourceSell(signal:any){
             liveSkipped++;continue;
           }
           const built=await jupiter.buildSwap(quote,permitted.address);
-          order=await db.order.create({data:{idempotencyKey:positionOrderKey,decisionId:liveDecision.id,userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdcSol,requestedInputRaw:rawToExit.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,sourceSoldPct:soldPct} as any}});
+          try{
+            order=await db.order.create({data:{idempotencyKey:positionOrderKey,decisionId:liveDecision.id,userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdcSol,requestedInputRaw:rawToExit.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,sourceSoldPct:soldPct} as any}});
+          }catch(e:any){
+            if(e?.code!=="P2002"){throw e}
+            // Lost the race: the other concurrent execution's order already exists. Reconcile
+            // against it instead of treating this as a real failure.
+            const winner=await db.order.findUnique({where:{idempotencyKey:positionOrderKey}});
+            if(!winner)throw e;
+            await reconcileExisting(winner);continue;
+          }
           const attemptKey=crypto.createHash("sha256").update(`SOURCE_SELL:${order.id}`).digest("hex");
           await db.liveExecutionAttempt.create({data:{idempotencyKey:attemptKey,userId,orderId:order.id,positionId:p.id,purpose:"SOURCE_SELL",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
           try{

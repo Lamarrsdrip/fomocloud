@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
-import {evaluateOpportunity,didStateUpgrade,isNewConvergence} from "@memecloud/brain";
+import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK} from "@memecloud/brain";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const signalQueue=new Queue("signals",{connection:redis});
@@ -146,6 +146,14 @@ async function tick(){
         await notifyDiscoveryUpgrade(row,d.state)
           .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:d.state}}))
           .catch(e=>console.error("[brain-worker] discovery notify failed, will retry next tick",row.mint,e));
+      }else if((STATE_RANK[d.state]??0)===0&&existing?.lastNotifiedState&&(STATE_RANK[existing.lastNotifiedState]??0)>0){
+        // Real bug found by audit: lastNotifiedState only ever ratchets up (see didStateUpgrade),
+        // so a token that once reached MONEY_RUSH would never notify again -- even after a genuine
+        // full cool-down and a real re-heat months later, since 750ms ticks mean nothing here is
+        // noise-tolerant enough to reset on a partial dip. Only reset on a return to the true
+        // SCANNING baseline, an unambiguous "this cooled off for real" signal, so a later genuine
+        // climb notifies again without spamming on ordinary score flapping near a rank boundary.
+        await db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:null}}).catch(()=>{});
       }
       if(newConvergence){
         await notifyConvergence(row,convergentCount)

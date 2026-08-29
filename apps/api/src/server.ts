@@ -750,7 +750,19 @@ app.get("/v1/me/positions", auth, asyncRoute(async (req:AuthedRequest,res) => {
     include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},exits:{orderBy:{createdAt:"desc"}}},
     orderBy:{openedAt:"desc"},take:250
   });
-  res.json({positions});
+  // Same pattern as /v1/brain/feed and /v1/smart-wallets: freshness measured against the most
+  // recently marked-to-market position across the WHOLE table (not just this user's), so a
+  // genuinely stalled exits mark loop is visible even to a user whose own positions haven't
+  // updated in a while for an unrelated reason (e.g. all closed, or all on illiquid mints).
+  // exits ticks every 3s and requires a MarketPrice observed within the last 60s to mark at all,
+  // so 120s of total silence is real degradation, not a missed tick.
+  const mostRecentlyMarked=await db.position.findFirst({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},orderBy:{lastMarkedAt:"desc"},select:{lastMarkedAt:true}});
+  // Unlike Discover/Smart Wallets, "nothing found" here just means no one has an open position
+  // right now -- that's a quiet pipeline, not a degraded one, so it must not be flagged the same
+  // way a genuinely stalled mark loop (positions exist but stopped updating) is.
+  const dataFreshnessSec=mostRecentlyMarked?.lastMarkedAt?Math.round((Date.now()-mostRecentlyMarked.lastMarkedAt.getTime())/1000):null;
+  const pipelineDegraded=mostRecentlyMarked!==null&&(dataFreshnessSec===null||dataFreshnessSec>120);
+  res.json({positions,pipelineDegraded,dataFreshnessSec});
 }));
 
 const USDC_SOL="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

@@ -54,6 +54,7 @@ export default function AppPage(){
   const[customOpen,setCustomOpen]=useState(false);
   const[brain,setBrain]=useState<any[]>([]);
   const[brainDegraded,setBrainDegraded]=useState(false);
+  const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
@@ -64,7 +65,7 @@ export default function AppPage(){
         apiFetch("/v1/me"),apiFetch("/v1/me/dashboard"),apiFetch("/v1/traders"),apiFetch("/v1/me/traders"),
         apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/settings"),apiFetch("/v1/me/notifications"),apiFetch("/v1/me/sessions")
       ]);
-      setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
+      setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
       apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
     }catch(e:any){
       if(e?.status===401){
@@ -85,7 +86,7 @@ export default function AppPage(){
       if(stopped||document.visibilityState!=="visible")return;
       try{
         const[d,a,pos,t,n,b]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications"),apiFetch<any>("/v1/brain/feed")]);
-        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
+        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
       }catch(e:any){if(e?.status===401&&!stopped)location.replace("/login/")}
     };
     const timer=setInterval(()=>void refreshLive(),8000);
@@ -140,7 +141,7 @@ export default function AppPage(){
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
-        {view==="positions"&&<PositionsView positions={positions} d={dashboard} me={me} reload={load}/>}
+        {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard} me={me} reload={load}/>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView}/>}
         </>}
       </section>
@@ -487,11 +488,12 @@ function PositionRow({p}:{p:any}){
  const m=positionMath(p);
  const recovered=(p.profitTakenUsd||0)>=(p.costUsd||0)&&(p.costUsd||0)>0;
  return <div className="position-row"><div className="position-main"><div className="position-token"><b>{p.mint?.slice(0,8)}…</b><span className="sim-badge">{p.mode}</span><span className="status-badge">{String(p.status).replaceAll("_"," ")}</span></div><small>{p.sourceTrader?.displayName||"Source trader"} · {p.chain} · opened {timeAgo(p.openedAt)}</small>{p.status!=="CLOSED"&&<small className={recovered?"positive":""}>{recovered?"✓ Principal recovered · runner active":"Principal not recovered"}</small>}</div><div><span>Invested remaining</span><b>{money(m.remainingCost)}</b></div><div><span>Current value</span><b>{p.currentPriceUsd?money(m.currentValue):"Awaiting mark"}</b></div><div><span>Unrealized</span><b className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)} <small>({pct(m.pnlPct)})</small></b></div><div><span>Realized</span><b className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</b></div><div><span>Profit taken</span><b>{money(p.profitTakenUsd)}</b></div></div>}
-function PositionsView({positions,d,me,reload}:{positions:any[];d:any;me:any;reload:()=>Promise<void>}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");const s=d?.summary||{};return <>
+function PositionsView({positions,degraded,d,me,reload}:{positions:any[];degraded:boolean;d:any;me:any;reload:()=>Promise<void>}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");const s=d?.summary||{};return <>
  {/* User-reported UX gap: wallet creation was only reachable buried in Account settings. This is
      the primary Portfolio surface, where a wallet is actually most relevant, so it's shown here
      first now -- Account keeps its own copy too (harmless, matches where people also expect it). */}
  <section className="app-card" style={{marginBottom:10}}><div className="card-title"><div><span>YOUR WALLET</span><h2>Solana wallet</h2></div></div><EmbeddedWalletPanel me={me} reload={reload}/></section>
+ {degraded&&<div className="notice" style={{marginBottom:10,borderColor:"rgba(247,185,95,.3)"}}>Live pricing is temporarily degraded -- open positions haven't been marked to market recently. Values below may be stale; this isn't a real P&amp;L swing, and will resume automatically once the pricing pipeline recovers.</div>}
  <div className="app-grid-4" style={{marginBottom:10}}>
   <div className="stat-card"><span>Portfolio value</span><b>{money((s.tradingCashUsd||0))}</b></div>
   <div className="stat-card"><span>Total P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b></div>
