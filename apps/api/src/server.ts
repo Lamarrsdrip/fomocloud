@@ -1520,6 +1520,11 @@ app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest
     db.workerHeartbeat.findMany({orderBy:{name:"asc"}})
   ]);
   const now=Date.now();
+  // Same authoritative status computeLiveReadiness/Settings uses -- the overview hero must never
+  // show its own separately-derived guess of execution state again (that's exactly how "Execution:
+  // SIMULATION" / "Live trading enabled" ended up contradicting each other in production: two
+  // different endpoints each doing their own partial read of the underlying gates).
+  const liveReadiness=await computeLiveReadiness();
   res.json({
     metrics:{
       users:{registered:registeredUsers,active:activeUsers,newToday,newWeek,verified:verifiedUsers,walletConnected:walletUsers,autoCopyEnabled:autoCopyUsers},
@@ -1530,6 +1535,7 @@ app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest
     },
     executionMode:process.env.EXECUTION_MODE??"simulation",
     liveExecutionEnabled:await isLiveTradingEnabled(),
+    liveReadiness,
     broadcasts,
     health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
   });
@@ -2232,7 +2238,7 @@ app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
 // governs the synthetic RPC ping) -- this is real operational evidence, not a ping result.
 const CHAIN_DATA_FRESHNESS_MS=5*60_000;
 async function computeLiveReadiness(){
-  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats,liveTradingEnabled,latestChainEvent]=await Promise.all([
+  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats,liveTradingEnabled,latestChainEvent,openLivePositions]=await Promise.all([
     db.appConfig.findUnique({where:{key:"marketData"}}),
     db.appConfig.findUnique({where:{key:"execution"}}),
     db.appConfig.findUnique({where:{key:"signer"}}),
@@ -2242,7 +2248,8 @@ async function computeLiveReadiness(){
     db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}),
     db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}}),
     isLiveTradingEnabled(),
-    db.chainFlowObservation.findFirst({orderBy:{observedAt:"desc"},select:{observedAt:true}})
+    db.chainFlowObservation.findFirst({orderBy:{observedAt:"desc"},select:{observedAt:true}}),
+    db.position.count({where:{mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}}})
   ]);
   const now=Date.now();
   // Live-trading readiness is a stricter, safety-critical claim than the general admin "Connected"
@@ -2287,8 +2294,29 @@ async function computeLiveReadiness(){
   if(!privyOk) reasons.push(`Privy signer ${privyTest.reason||"has not passed a fresh connection test"}.`);
   if(activeWallets===0) reasons.push("No user wallet currently has an active delegated trading permission — connect a wallet and grant MemeCloud as an additional signer with the required policy before activating.");
   if(!workersHealthy) reasons.push("One or more execution workers (executor / exits / market-worker / listener / flow scanner) are not sending a healthy heartbeat.");
+
+  // The DB switch (liveTradingEnabled) and the VPS process-level EXECUTION_MODE env var are two
+  // genuinely independent gates -- both must agree before a NEW live entry (or a live source-sell
+  // mirror) is ever constructed; see executor's handleSourceSell/BUY paths. Reporting them as one
+  // conflated "Execution: X / Live trading: Y" pair (the old admin overview card) let them silently
+  // disagree in production with no explanation. environmentMode is real infrastructure state, never
+  // a business toggle -- there is no admin action that can change it, only a VPS deploy/env edit.
+  const environmentMode=(process.env.EXECUTION_MODE??"simulation").toUpperCase()==="LIVE"?"LIVE":"SIMULATION";
+  if(liveTradingEnabled&&environmentMode!=="LIVE") reasons.push("The Admin switch requests live trading, but the VPS execution runtime is still in SIMULATION mode (EXECUTION_MODE env var) — no real transaction will be constructed for new entries until that changes.");
+  // newEntriesLive mirrors exactly the gate executor's BUY path checks (mode==="live" &&
+  // isLiveTradingEnabled()) -- this is genuinely "would a qualified new signal go live right now",
+  // not an inferred/cosmetic guess.
+  const newEntriesLive=liveTradingEnabled&&environmentMode==="LIVE"&&ready;
+  const status:"LIVE"|"LIVE_BLOCKED"|"SIMULATION"=newEntriesLive?"LIVE":liveTradingEnabled?"LIVE_BLOCKED":"SIMULATION";
   return {
     chain:"SOLANA",ready,reasons,liveTradingEnabled,
+    environmentMode,newEntriesLive,status,
+    // Already-open real positions (from a past live entry) are always exited for real by
+    // stop-loss/take-profit (services/exits) and by source-sell mirroring (executor's
+    // handleSourceSell) regardless of this switch -- turning it OFF blocks new live entries only,
+    // it deliberately does not abandon protecting money that is already real. That is a distinct
+    // fact from newEntriesLive and must never be silently implied by it either way.
+    openLivePositions,
     dependencies:{rpc:rpcOk,rpcCredentials:rpcCredentialsOk,chainDataFresh,lastRealChainEvent:latestChainEvent?.observedAt??null,jupiter:jupiterOk,signerCredentialsConnected:privyOk,walletsWithActivePermission:activeWallets},
     workers,
     note:"BNB/Ethereum/other chains have no delegated live-execution signer implemented yet — Solana is the only chain this endpoint evaluates for live trading readiness."
@@ -2297,10 +2325,17 @@ async function computeLiveReadiness(){
 app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
   res.json(await computeLiveReadiness());
 }));
-// Owner-only. The DB-backed switch executor/exits actually check on every decision (see
-// isLiveTradingEnabled) — takes effect immediately, no env file, no VPS restart. Turning it ON
-// always re-verifies the real dependency chain first and refuses if anything's not genuinely
-// ready; turning it OFF is unconditional and immediate.
+// Owner-only. This is a NEW-ENTRIES gate, not a global kill switch: only executor's BUY path
+// checks isLiveTradingEnabled() fresh on every decision (takes effect immediately, no env file, no
+// VPS restart) before ever constructing a brand-new live position. It deliberately does NOT gate
+// services/exits' stop-loss/take-profit or executor's handleSourceSell (source-sell mirroring) —
+// both manage positions that are already real purely off each position's own stored mode, so
+// turning this OFF cannot leave real money unprotected or trapped. That also means OFF is not
+// "nothing real can happen" whenever real positions are already open (see openLivePositions in
+// computeLiveReadiness) — the admin UI must always show that distinction explicitly, never imply
+// this switch freezes every real code path. Turning it ON always re-verifies the real dependency
+// chain first and refuses if anything's not genuinely ready; turning it OFF is unconditional and
+// immediate.
 app.post("/v1/admin/live-trading/enable", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const readiness=await computeLiveReadiness();
   if(!readiness.ready) return res.status(409).json({error:"NOT_READY",reasons:readiness.reasons});

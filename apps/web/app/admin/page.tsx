@@ -78,8 +78,14 @@ export default function Admin(){
 }
 
 function Metric({label,value,note,moneyValue=false}:{label:string;value:any;note:string;moneyValue?:boolean}){const shown=value===null||value===undefined?"—":moneyValue?money(value):value;return <div className="stat-card"><span>{label}</span><b>{shown}</b><small>{note}</small></div>}
-function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{};return <>
- <section className="owner-hero"><div><span>OWNER HOME</span><h2>Everything important, without digging.</h2><p>Real users, trading, discovery and engine activity. Use the controls below to change how MemeCloud operates.</p></div><div className={`owner-mode ${d.liveExecutionEnabled?"live":"safe"}`}><small>Execution</small><b>{String(d.executionMode||"simulation").toUpperCase()}</b><span>{d.liveExecutionEnabled?"Live trading enabled":"Live funds protected"}</span></div></section>
+function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{},lr=d.liveReadiness||{status:"SIMULATION",reasons:[],openLivePositions:0};return <>
+ <section className="owner-hero"><div><span>OWNER HOME</span><h2>Everything important, without digging.</h2><p>Real users, trading, discovery and engine activity. Use the controls below to change how MemeCloud operates.</p></div>
+  <div className={`owner-mode ${lr.status==="LIVE"?"live":lr.status==="LIVE_BLOCKED"?"watch":"safe"}`}>
+   <small>New live entries</small><b>{lr.status==="LIVE"?"LIVE":lr.status==="LIVE_BLOCKED"?"BLOCKED":"SIMULATION"}</b>
+   <span>{lr.status==="LIVE"?"Real transactions will be constructed and signed.":lr.status==="LIVE_BLOCKED"?`Requested ON, but blocked: ${lr.reasons?.[0]||"not ready"}`:"Admin switch is OFF — new entries stay simulated."}</span>
+   {lr.openLivePositions>0&&<span style={{marginTop:4}}>{lr.openLivePositions} real open position{lr.openLivePositions===1?"":"s"} — always exited for real regardless of this switch.</span>}
+  </div>
+ </section>
  <section className="admin-quick-grid">
   <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="whales"]')?.click()}><Fish/><div><b>Whales</b><small>Discovered wallets awaiting review</small></div><ChevronRight/></button>
   <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="tokens"]')?.click()}><Coins/><div><b>Tokens</b><small>What Discovery has seen</small></div><ChevronRight/></button>
@@ -434,6 +440,7 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
       <div><span>Jupiter</span><em className={badgeClass(liveReadiness.dependencies.jupiter?"good":"watch")}>{liveReadiness.dependencies.jupiter?"Connected":"Not verified"}</em></div>
       <div><span>Signer credentials (Privy)</span><em className={badgeClass(liveReadiness.dependencies.signerCredentialsConnected?"good":"watch")}>{liveReadiness.dependencies.signerCredentialsConnected?"Connected":"Not verified"}</em></div>
       <div><span>Wallets with active delegated permission</span><em className={badgeClass(liveReadiness.dependencies.walletsWithActivePermission>0?"good":"watch")}>{liveReadiness.dependencies.walletsWithActivePermission}</em></div>
+      <div><span>VPS execution runtime</span><em className={badgeClass(liveReadiness.environmentMode==="LIVE"?"good":"watch")}>{liveReadiness.environmentMode}</em></div>
      </div>
      <div className="settings-summary-rows">
       {liveReadiness.workers.map((w:any)=><div key={w.name}><span>{w.name}</span><em className={badgeClass(w.running?"good":"watch")}>{w.running?"Running":"Not running"}</em></div>)}
@@ -441,15 +448,16 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
      {!liveReadiness.ready&&liveReadiness.reasons.length>0&&<div className="notice">{liveReadiness.reasons.map((r:string)=><div key={r}>{r}</div>)}</div>}
      <div className="notice">{liveReadiness.note}</div>
      <button type="button" className="soft-action" onClick={loadLiveReadiness}>Refresh</button>
-     <div className="card-title" style={{marginTop:16}}><div><span>MASTER SWITCH</span><h2>Live Solana trading</h2></div>
-      <span className={badgeClass(liveReadiness.liveTradingEnabled?"good":"follow")}>{liveTradingBusy?"Working…":liveReadiness.liveTradingEnabled?"ON":"OFF"}</span>
+     <div className="card-title" style={{marginTop:16}}><div><span>MASTER SWITCH · NEW LIVE ENTRIES</span><h2>Live Solana trading</h2></div>
+      <span className={badgeClass(liveReadiness.status==="LIVE"?"good":liveReadiness.status==="LIVE_BLOCKED"?"watch":"follow")}>{liveTradingBusy?"Working…":liveReadiness.status==="LIVE"?"LIVE":liveReadiness.status==="LIVE_BLOCKED"?"REQUESTED · BLOCKED":"OFF"}</span>
      </div>
      <div className="notice" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-      <span>{liveReadiness.liveTradingEnabled?"Executor and exits will sign and submit real transactions for any user with an active delegated permission.":"Executor and exits currently skip every live decision — this is the real switch, checked fresh on every trade, no VPS restart needed either way."}</span>
+      <span>{liveReadiness.status==="LIVE"?"New copy entries will be signed and submitted as real on-chain transactions for any user with an active delegated permission.":liveReadiness.status==="LIVE_BLOCKED"?"Requested ON, but not actually live — see the blocked reason above (VPS runtime, readiness, or both).":"New entries stay simulated. This switch governs new entries only — it does not stop stop-loss/take-profit exits or source-sell mirrors on positions that are already real (see below)."}</span>
       {admin&&(liveReadiness.liveTradingEnabled
        ?<button type="button" className="action-primary" style={{background:"#c0392b"}} disabled={liveTradingBusy} onClick={disableLiveTrading}>Turn OFF</button>
        :<button type="button" className="action-primary" disabled={liveTradingBusy||!liveReadiness.ready} onClick={enableLiveTrading} title={!liveReadiness.ready?liveReadiness.reasons.join(" "):""}>{liveReadiness.ready?"Turn ON":"Not ready yet"}</button>)}
      </div>
+     <div className="notice">{liveReadiness.openLivePositions>0?`${liveReadiness.openLivePositions} real open position(s) exist right now. Stop-loss/take-profit exits and source-sell mirrors keep managing these for real regardless of this switch — closing a real position always requires a real sell.`:"No real open positions exist right now — nothing is being live-managed regardless of this switch's state."}</div>
      {/* A disabled button with only a hover title explains nothing on a touch device — this is
          the same information as the reasons list above, repeated right next to the control it
          actually blocks, since that's the one place an owner will look when "Turn ON" doesn't
