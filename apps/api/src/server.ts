@@ -1852,10 +1852,15 @@ app.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, asyncRoute(as
     const provenMean=Math.max(0,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
     const meta=(c.metadata??{}) as any;
     const forwardSignals=Number(meta?.forwardSignals??0),forwardMeanPct=Number(meta?.forwardMeanPct??0);
-    const evidenceOk=shouldProve({copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore},forwardSignals,forwardMeanPct)
+    // evidenceCompleteness defaults to 0 (not 100) here specifically -- unlike shouldProve's own
+    // default, a candidate this route has never scored with the evidence-completeness-aware scorer
+    // must not be treated as if its risk evidence were fully verified merely because the field is
+    // absent from an older stored record. Missing completeness data is itself incomplete evidence.
+    const evidenceCompleteness=Number(meta?.evidenceCompleteness??0);
+    const evidenceOk=shouldProve({copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore},forwardSignals,forwardMeanPct,evidenceCompleteness)
       &&c.copyabilityScore>=provenMin&&forwardSignals>=provenSamples&&forwardMeanPct>=provenMean;
     if(!evidenceOk){
-      return res.status(409).json({error:"INSUFFICIENT_EVIDENCE_FOR_PROVEN",detail:{copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,forwardSignals,forwardMeanPct,requiredCopyabilityScore:provenMin,requiredForwardSignals:provenSamples,requiredForwardMeanPct:provenMean}});
+      return res.status(409).json({error:"INSUFFICIENT_EVIDENCE_FOR_PROVEN",detail:{copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,forwardSignals,forwardMeanPct,evidenceCompleteness,requiredCopyabilityScore:provenMin,requiredForwardSignals:provenSamples,requiredForwardMeanPct:provenMean}});
     }
   }
   const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{stage:action as any,provenAt:action==="PROVEN"?new Date():undefined,rejectedReason:action==="REJECTED"?String(req.body?.reason??"ADMIN_REJECTED"):undefined}});

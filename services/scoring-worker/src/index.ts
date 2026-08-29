@@ -70,8 +70,15 @@ async function tick(){
         const paperReturns=closedPaper.map(x=>Number(x.realizedPnlUsd)/Math.max(.01,Number(x.amountUsd))*100);
         const forwardReturns=paperReturns.length>=5?paperReturns:obs.map(o=>Number(o.returnPct));
         const priorMeta=(c.metadata??{}) as any;
-        const insider=Number(priorMeta?.insiderRiskPct??c.insiderRiskPct??0);
-        const rug=Number(priorMeta?.rugExposurePct??c.rugExposurePct??0);
+        // Real bug found by forensic audit: this used to collapse a genuinely missing risk reading
+        // (provider fetch never succeeded, both sources null/undefined) to 0 BEFORE scoreWallet ever
+        // saw it -- indistinguishable from a verified 0%-risk result. Pass real absence through as
+        // `undefined` so scoreWallet's own UNKNOWN-evidence handling (evidenceCompleteness, a
+        // conservative non-zero default penalty) actually applies instead of being short-circuited.
+        const insiderRaw=priorMeta?.insiderRiskPct??c.insiderRiskPct;
+        const rugRaw=priorMeta?.rugExposurePct??c.rugExposurePct;
+        const insider=insiderRaw==null?undefined:Number(insiderRaw);
+        const rug=rugRaw==null?undefined:Number(rugRaw);
         const s=scoreWallet({
           totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,tradeCount:Math.round(p.tradeCount),
           profitableTrades:Math.round(p.profitableTrades),winRatePct:p.winRate,recentSignalReturnsPct:forwardReturns,averageObservedChasePct:avgChase,insiderRiskPct:insider,rugExposurePct:rug
@@ -80,7 +87,7 @@ async function tick(){
         let stage=c.stage;
         let demoted=false,autoRejected=false;
         if(stage!=="PAPER_TRACKING"&&shouldPaperTrack(s,p.tradeCount)&&s.copyabilityScore>=paperMin){stage="PAPER_TRACKING";promotedPaper++;await ensurePaperTrader(c)}
-        if(stage==="PAPER_TRACKING"&&shouldProve(s,forwardReturns.length,forwardMean)&&s.copyabilityScore>=provenMin&&forwardReturns.length>=provenSamples&&forwardMean>=provenMean){stage="PROVEN";promotedProven++}
+        if(stage==="PAPER_TRACKING"&&shouldProve(s,forwardReturns.length,forwardMean,s.evidenceCompleteness)&&s.copyabilityScore>=provenMin&&forwardReturns.length>=provenSamples&&forwardMean>=provenMean){stage="PROVEN";promotedProven++}
         // A PROVEN trader is live-copyable real money. A meaningful, not-noise-level decline (15pt
         // buffer below the bar that promoted them, or risk well past shouldProve's own 42 cap) must
         // pull them out of real trading automatically rather than sit frozen at promotion-time
@@ -92,7 +99,7 @@ async function tick(){
         // read) and clearly, not marginally, fails to qualify, so a wallet oscillating near the
         // paper-tracking bar isn't permanently locked out by one noisy sample.
         else if((stage==="DISCOVERED"||stage==="ANALYZING")&&c.lastScoredAt&&p.tradeCount>=15&&s.copyabilityScore<paperMin-15){stage="REJECTED";autoRejected=true;rejected++}
-        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
+        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
         if(demoted){
           const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
           if(traderId){
