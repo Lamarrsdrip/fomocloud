@@ -307,6 +307,10 @@ function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string}
  return <div className="token-detail">
   <button className="soft-action" onClick={close}><ArrowLeft size={13}/> Back</button>
   <div className="token-detail-head"><TokenAvatar symbol={o?.symbol||o?.name} size={48}/><div><h2>{o?.symbol||o?.name||"Token"}</h2><small>{sel.chain}{o?.firstSeenAt?` · Found ${timeAgo(o.firstSeenAt)}`:""}</small></div>{o?.lifecycleStatus&&<span className="status-badge" style={{marginLeft:"auto"}}>{lifecycleLabel(o.lifecycleStatus)}</span>}</div>
+  {/* evidenceObservedAt is when the underlying chain snapshot was actually captured, distinct from
+      lastEvaluatedAt (which only proves the Brain loop ran, not that it had fresh data). Surfacing
+      this is what stops a stale score from silently looking live. */}
+  {o?.evidenceObservedAt&&<p style={{fontSize:10,color:"#7b8190",margin:"-8px 0 12px"}}>Evidence captured {timeAgo(o.evidenceObservedAt)}{o.lastEvaluatedAt?` · scored ${timeAgo(o.lastEvaluatedAt)}`:""}</p>}
   <div className="review-grid">
    <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
    <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Unknown"}</b></div>

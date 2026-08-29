@@ -965,6 +965,10 @@ model GlobalBrainOpportunity {
   // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
   // 750ms tick a token happens to still be in that state.
   lastNotifiedState     String?
+  // The observedAt of the actual MemeMarketSnapshot this score was computed from -- distinct from
+  // lastEvaluatedAt, which only proves the Brain loop ran, not that it had fresh chain data to
+  // work with. Lets the UI show real evidence age instead of implying every score is live.
+  evidenceObservedAt    DateTime?
   firstSeenAt           DateTime @default(now())
   lastEvaluatedAt       DateTime @default(now())
   createdAt             DateTime @default(now())
