@@ -123,17 +123,35 @@ async function tick(){
       const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
       const upgraded=didStateUpgrade(existing?.lastNotifiedState,d.state);
       const convergentCount=c.convergentWallets.length;
-      const priorConvergentCount=Number((existing?.evidence as any)?.convergentCount??0);
-      const newConvergence=isNewConvergence(convergentCount,priorConvergentCount);
+      // Real bug found by a full-platform audit: lastNotifiedState and the convergence dedup
+      // baseline used to be written into the SAME upsert that ran before the notify call below --
+      // so if notifyDiscoveryUpgrade/notifyConvergence ever failed for any reason (an ordinary
+      // transient DB/queue hiccup, not an outage), the dedup baseline had already advanced,
+      // didStateUpgrade/isNewConvergence would see no upgrade on the next tick, and that one real
+      // notification was gone forever -- not delayed, permanently lost. lastNotifiedConvergentCount
+      // is now a separate field from the always-fresh evidence.convergentCount (which the UI
+      // displays as "smart wallets entered" and must stay accurate regardless of notify outcome);
+      // it -- like lastNotifiedState -- only advances in a follow-up write AFTER the notify call
+      // actually succeeds, so a failed notify naturally retries on the next tick instead of vanishing.
+      const priorNotifiedConvergentCount=Number((existing?.evidence as any)?.lastNotifiedConvergentCount??0);
+      const newConvergence=isNewConvergence(convergentCount,priorNotifiedConvergentCount);
       // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
       // can't silently change a trading decision. "Why was this found" per the audit's requirement.
       const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
-      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date(),...(upgraded?{lastNotifiedState:d.state}:{})};
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,lastNotifiedConvergentCount:priorNotifiedConvergentCount} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
       scans++;if(d.action!=="IGNORE")opportunities++;
       if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
-      if(upgraded)await notifyDiscoveryUpgrade(row,d.state).catch(e=>console.error("[brain-worker] discovery notify failed",row.mint,e));
-      if(newConvergence)await notifyConvergence(row,convergentCount).catch(e=>console.error("[brain-worker] convergence notify failed",row.mint,e));
+      if(upgraded){
+        await notifyDiscoveryUpgrade(row,d.state)
+          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:d.state}}))
+          .catch(e=>console.error("[brain-worker] discovery notify failed, will retry next tick",row.mint,e));
+      }
+      if(newConvergence){
+        await notifyConvergence(row,convergentCount)
+          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedConvergentCount:convergentCount}}}))
+          .catch(e=>console.error("[brain-worker] convergence notify failed, will retry next tick",row.mint,e));
+      }
       await maybeSignal(row,trader,users);
     }
     await sampleOutcomes();
