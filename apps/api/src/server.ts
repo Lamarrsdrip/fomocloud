@@ -2093,8 +2093,30 @@ async function runBackgroundHealthChecks(){
     }
   }
 }
-setInterval(()=>{void runBackgroundHealthChecks()},15*60_000).unref?.();
-setTimeout(()=>{void runBackgroundHealthChecks()},30_000).unref?.();
+// Real, provider-quota-percentage information isn't programmatically available from Helius with
+// what's configured here, so this monitors what actually is available: each worker's own tracked
+// rate-limit state (see the rateLimited field added to flow-worker/balance-worker/social-worker
+// heartbeats this session). Runs on the same 15-minute cadence as the provider tests above, so a
+// single momentary blip can't trigger it -- only a worker still showing rate-limited at the next
+// full sampling interval does. Deduped via an unresolved RiskIncident per worker (never spams
+// repeatedly) and auto-resolves the moment that worker reports clear again.
+const RPC_HEARTBEAT_WORKERS=["solana-flow-scanner","solana-listener","market-worker","balance-worker","social-hype"];
+async function checkProviderDegradation(){
+  try{
+    const heartbeats=await db.workerHeartbeat.findMany({where:{name:{in:RPC_HEARTBEAT_WORKERS}}});
+    for(const h of heartbeats){
+      const dt:any=h.detail??{};
+      const open=await db.riskIncident.findFirst({where:{scope:"PROVIDER_DEGRADED",code:h.name,resolvedAt:{isSet:false}}});
+      if(dt.rateLimited){
+        if(!open) await db.riskIncident.create({data:{severity:"WARNING",scope:"PROVIDER_DEGRADED",code:h.name,detail:{message:`${h.name} is currently being rate-limited by its RPC/provider.`,snapshot:dt}}});
+      }else if(open){
+        await db.riskIncident.update({where:{id:open.id},data:{resolvedAt:new Date()}});
+      }
+    }
+  }catch(e){console.error("[background-health] provider degradation check failed",e)}
+}
+setInterval(()=>{void runBackgroundHealthChecks();void checkProviderDegradation()},15*60_000).unref?.();
+setTimeout(()=>{void runBackgroundHealthChecks();void checkProviderDegradation()},30_000).unref?.();
 
 async function apiHeartbeat(){
   await db.workerHeartbeat.upsert({where:{name:"api"},create:{name:"api",status:"healthy",detail:{port} as any,lastBeatAt:new Date()},update:{status:"healthy",detail:{port} as any,lastBeatAt:new Date()}}).catch(()=>{});
