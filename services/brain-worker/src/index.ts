@@ -120,9 +120,18 @@ async function sampleOutcomes(){
 const STATE_PREF:Record<string,string>={BUILDING:"discoveryHeatingUp",BREAKOUT_FLOW:"discoveryStrong",MONEY_RUSH:"discoveryHighConviction"};
 const STATE_TITLE:Record<string,string>={BUILDING:"is heating up",BREAKOUT_FLOW:"looks strong",MONEY_RUSH:"is a high-conviction opportunity"};
 let discoveryNotifiedUsers:any[]|null=null,discoveryNotifiedUsersAt=0;
+// Real bug found by audit: this base pool used to OR only the 3 state-tier prefs
+// (discoveryHeatingUp/Strong/HighConviction). Every notify function below then filters this SAME
+// pool by its own specific pref -- so a user with e.g. ONLY discoverySmartWallet enabled (all 3
+// tier prefs off) was excluded before notifyConvergence ever got a chance to check their pref at
+// all. Each of the 6 discovery preferences must independently qualify a user; the fix is for this
+// base query to OR across all 6, so no preference type can be structurally excluded upstream of
+// its own per-notification filter. discoveryWhaleActivity and discoveryNewToken were additionally
+// not wired to ANY notification path -- a user could enable them and nothing would ever fire. Both
+// are now real (notifyWhaleActivity, notifyNewToken below).
 async function discoverySubscribers(){
   if(discoveryNotifiedUsers&&Date.now()-discoveryNotifiedUsersAt<60_000)return discoveryNotifiedUsers;
-  discoveryNotifiedUsers=await db.user.findMany({where:{status:"ACTIVE",notificationPrefs:{is:{OR:[{discoveryHeatingUp:true},{discoveryStrong:true},{discoveryHighConviction:true}]}}},include:{notificationPrefs:true}});
+  discoveryNotifiedUsers=await db.user.findMany({where:{status:"ACTIVE",notificationPrefs:{is:{OR:[{discoveryHeatingUp:true},{discoveryStrong:true},{discoveryHighConviction:true},{discoverySmartWallet:true},{discoveryWhaleActivity:true},{discoveryNewToken:true}]}}},include:{notificationPrefs:true}});
   discoveryNotifiedUsersAt=Date.now();
   return discoveryNotifiedUsers;
 }
@@ -146,6 +155,28 @@ async function notifyConvergence(row:any,count:number){
     if(!(u.notificationPrefs as any)?.discoverySmartWallet)continue;
     const key=`convergence:${row.id}:${u.id}`;
     const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,convergentWallets:count} as any}}).catch(()=>null);
+    if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
+  }
+}
+async function notifyWhaleActivity(row:any,whaleCount:number){
+  const subs=await discoverySubscribers();
+  const title=`Whale activity on ${row.symbol||"a token"}`;
+  const body=`${whaleCount} whale wallet(s) ($50K+ single buys) active in the last 60s · ${row.chain} · ${row.mint}`;
+  for(const u of subs){
+    if(!(u.notificationPrefs as any)?.discoveryWhaleActivity)continue;
+    const key=`whale:${row.id}:${u.id}`;
+    const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,whaleCount} as any}}).catch(()=>null);
+    if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
+  }
+}
+async function notifyNewToken(row:any){
+  const subs=await discoverySubscribers();
+  const title=`New token radar: ${row.symbol||"a token"}`;
+  const body=`First seen on-chain · ${row.chain} · ${row.mint} · early/raw intelligence, not yet qualified`;
+  for(const u of subs){
+    if(!(u.notificationPrefs as any)?.discoveryNewToken)continue;
+    const key=`newtoken:${row.id}:${u.id}`;
+    const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint} as any}}).catch(()=>null);
     if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
   }
 }
@@ -173,6 +204,12 @@ async function tick(){
       // actually succeeds, so a failed notify naturally retries on the next tick instead of vanishing.
       const priorNotifiedConvergentCount=Number((existing?.evidence as any)?.lastNotifiedConvergentCount??0);
       const newConvergence=isNewConvergence(convergentCount,priorNotifiedConvergentCount);
+      // Same "notify succeeds, then advance dedup baseline" discipline as convergence above -- a
+      // failed notify must retry next tick, not be silently lost.
+      const whaleCount=c.evidence.whaleBuyers60s+c.evidence.knownWhaleBuyers60s;
+      const priorNotifiedWhaleCount=Number((existing?.evidence as any)?.lastNotifiedWhaleCount??0);
+      const newWhaleActivity=whaleCount>=1&&whaleCount>priorNotifiedWhaleCount;
+      const isBrandNewToken=!existing;
       // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
       // can't silently change a trading decision. "Why was this found" per the audit's requirement.
       const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
@@ -199,6 +236,18 @@ async function tick(){
         await notifyConvergence(row,convergentCount)
           .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedConvergentCount:convergentCount}}}))
           .catch(e=>console.error("[brain-worker] convergence notify failed, will retry next tick",row.mint,e));
+      }
+      if(newWhaleActivity){
+        await notifyWhaleActivity(row,whaleCount)
+          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedWhaleCount:whaleCount}}}))
+          .catch(e=>console.error("[brain-worker] whale notify failed, will retry next tick",row.mint,e));
+      }
+      if(isBrandNewToken){
+        // Fires exactly once per token, naturally deduped by `existing` being null only on the
+        // very first tick a mint is ever seen -- independent of whether it ever qualifies for the
+        // main Discover feed. This is the "New Token Radar" path: early/raw intelligence for users
+        // who explicitly opted into it, not a recommendation.
+        await notifyNewToken(row).catch(e=>console.error("[brain-worker] new-token notify failed",row.mint,e));
       }
       await maybeSignal(row,trader,users);
     }

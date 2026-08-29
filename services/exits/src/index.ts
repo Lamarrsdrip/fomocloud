@@ -219,7 +219,18 @@ async function executeLiveExit(p:any,instruction:any){
   if(!Number.isFinite(impact)||impact>maxImpact)throw Object.assign(new Error("EXIT_PRICE_IMPACT_TOO_HIGH"),{code:"EXIT_PRICE_IMPACT_TOO_HIGH",impact});
   if(!quote.outAmount||BigInt(quote.outAmount)<=0n)throw Object.assign(new Error("NO_EXECUTABLE_SELL_ROUTE"),{code:"NO_EXECUTABLE_SELL_ROUTE"});
   const built=await jupiter.buildSwap(quote,permitted.address);
-  order=await db.order.create({data:{idempotencyKey:idem,decisionId,userId:p.userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdc,requestedInputRaw:rawToSell.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{reason:instruction.reason,sellPct,quote:quote.raw} as any}});
+  try{
+    order=await db.order.create({data:{idempotencyKey:idem,decisionId,userId:p.userId,chain:"SOLANA",mode:"LIVE",side:"SELL",inputMint:p.mint,outputMint:usdc,requestedInputRaw:rawToSell.toString(),expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{reason:instruction.reason,sellPct,quote:quote.raw} as any}});
+  }catch(e:any){
+    if(e?.code!=="P2002")throw e;
+    // Lost the race: another process instance (e.g. overlapping rolling restart) already created
+    // the Order for this idempotency key. Back off rather than throwing into tick()'s catch, which
+    // would log a spurious CRITICAL riskIncident for what is actually a handled, non-destructive
+    // race. The winner's LiveExecutionAttempt row will exist by the next 3s tick, and the recovery
+    // branches at the top of this function (existing?.status handling above) will reconcile against
+    // it exactly like a resumed-after-crash attempt. Never proceed to sign/submit here.
+    return;
+  }
   await db.liveExecutionAttempt.create({data:{idempotencyKey:idem,userId:p.userId,orderId:order.id,positionId:p.id,purpose:"EXIT",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
   try{
     const sent=await signer.signAndSend(permitted.permissionRef!,built,idem.slice(0,64));liveSubmitted++;

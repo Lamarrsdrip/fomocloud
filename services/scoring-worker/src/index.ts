@@ -59,7 +59,15 @@ async function tick(){
         const chaseValues=[...paperChases,...userChases.map(x=>Number(x.walletChasePct??0))];
         const avgChase=chaseValues.length?chaseValues.reduce((a,x)=>a+x,0)/chaseValues.length:undefined;
         // Copyability uses OUR paper fills/exits when available, not only the source wallet's PnL.
-        const paperReturns=paper.map(x=>(Number(x.realizedPnlUsd)+Number(x.unrealizedPnlUsd))/Math.max(.01,Number(x.amountUsd))*100);
+        // Real bug found by audit: this used to include OPEN/PARTIAL trades and their
+        // unrealizedPnlUsd, so a paper position sitting on a temporary +600% unrealized moonbag
+        // counted as forward-proof evidence identically to a completed, realized outcome -- directly
+        // feeding shouldProve()'s forwardMean threshold below. PROVEN eligibility must use mature,
+        // objective evidence: only fully CLOSED paper trades (realized, final) count toward
+        // forwardMean now. An open moonbag still shows up in paper.length/exposure tracking; it just
+        // can't manufacture PROVEN status until it actually closes.
+        const closedPaper=paper.filter(x=>x.status==="CLOSED");
+        const paperReturns=closedPaper.map(x=>Number(x.realizedPnlUsd)/Math.max(.01,Number(x.amountUsd))*100);
         const forwardReturns=paperReturns.length>=5?paperReturns:obs.map(o=>Number(o.returnPct));
         const priorMeta=(c.metadata??{}) as any;
         const insider=Number(priorMeta?.insiderRiskPct??c.insiderRiskPct??0);

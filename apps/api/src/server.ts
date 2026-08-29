@@ -13,6 +13,7 @@ import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema, solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, readExecutionState, type ProviderRecord } from "@memecloud/config";
 import { classifyLifecycle } from "@memecloud/brain";
+import { shouldProve } from "@memecloud/discovery";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
 // `state` is the honest classification of WHY a check failed -- HTTP 429 must never be reported
 // the same way as an actually-invalid key. `ok` remains for backward compat (ok === state==="CONNECTED").
@@ -1838,6 +1839,25 @@ app.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, asyncRoute(as
   const action=String(req.body?.action??"").toUpperCase();
   if(!["PROVEN","REJECTED","PAUSED"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
   const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
+  // Real bug found by audit: this route let one admin click set PROVEN/enabled=true with zero
+  // server-side evidence check -- admin action alone manufactured "proven" status. PROVEN must mean
+  // objectively proven: enforce the exact same threshold scoring-worker uses to auto-promote, using
+  // the same evidence it already persisted onto this candidate (metadata.forwardSignals/forwardMeanPct
+  // from services/scoring-worker/src/index.ts). Admin can still WATCH/REVIEW/PAUSE/REJECT freely --
+  // only the PROVEN transition itself is gated on evidence, not on who clicked it.
+  if(action==="PROVEN"){
+    const dc=await getConfig<any>("discovery");
+    const provenMin=Math.max(50,Number(dc?.provenMinScore??process.env.DISCOVERY_PROVEN_MIN_SCORE??78));
+    const provenSamples=Math.max(5,Number(dc?.provenMinForwardSamples??process.env.DISCOVERY_PROVEN_MIN_FORWARD_SAMPLES??20));
+    const provenMean=Math.max(0,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
+    const meta=(c.metadata??{}) as any;
+    const forwardSignals=Number(meta?.forwardSignals??0),forwardMeanPct=Number(meta?.forwardMeanPct??0);
+    const evidenceOk=shouldProve({copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore},forwardSignals,forwardMeanPct)
+      &&c.copyabilityScore>=provenMin&&forwardSignals>=provenSamples&&forwardMeanPct>=provenMean;
+    if(!evidenceOk){
+      return res.status(409).json({error:"INSUFFICIENT_EVIDENCE_FOR_PROVEN",detail:{copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,forwardSignals,forwardMeanPct,requiredCopyabilityScore:provenMin,requiredForwardSignals:provenSamples,requiredForwardMeanPct:provenMean}});
+    }
+  }
   const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{stage:action as any,provenAt:action==="PROVEN"?new Date():undefined,rejectedReason:action==="REJECTED"?String(req.body?.reason??"ADMIN_REJECTED"):undefined}});
   if(c.traderId){
     await db.trader.update({where:{id:c.traderId},data:{enabled:action==="PROVEN",trackingStatus:action,recommended:action==="PROVEN"&&c.copyabilityScore>=85}}).catch(()=>{});
