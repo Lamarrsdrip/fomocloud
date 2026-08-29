@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo notifications lint",
-    "test": "echo notification tests"
+    "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
     "@memecloud/db": "workspace:*",

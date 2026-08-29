@@ -71,11 +71,13 @@ export async function sendPush(userId:string, payload:{title:string;body:string;
 // A bare address with no display name ("support@meme.xaucloud.io") is itself a weak spam
 // signal to receiving filters, distinct from any DNS/auth issue. Wrap it as a proper identity
 // unless the admin already configured one — never invent a different address (no spoofing).
-function formatFrom(from:string){
+// Exported (was module-private) so the fake-test audit (M-51) fix below can test this pure logic
+// directly instead of only indirectly through sendEmail, which does real SMTP I/O.
+export function formatFrom(from:string){
   return from.includes("<") ? from : `MemeCloud <${from}>`;
 }
 
-function htmlToPlainFallback(html:string){
+export function htmlToPlainFallback(html:string){
   return html
     .replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gis,"$2 ($1)")
     .replace(/<br\s*\/?>/gi,"\n")
