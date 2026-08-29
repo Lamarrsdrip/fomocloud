@@ -186,4 +186,4 @@ Do not fabricate financial/account/provider states.
 
 The repository does **not** contain a fallback that stores user seed phrases or primary private keys. Live Auto Copy remains blocked until a real scoped delegated/session signing provider, per-chain execution adapters, security review and controlled low-value tests are complete.
 
-Read `docs/LIVE_READINESS.md` before changing `LIVE_EXECUTION_ENABLED`.
+Read `docs/LIVE_READINESS.md` and `docs/EXECUTION_STATE.md` before changing the DB-backed Owner live-trading request or the deploy-time `EXECUTION_MODE` safety gate.

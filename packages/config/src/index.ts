@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { db } from "@memecloud/db";
+import { resolveExecutionState } from "./executionState.js";
+export * from "./executionState.js";
 
 function keyBytes() {
   const source = process.env.ENVELOPE_ENCRYPTION_KEY ?? "";
@@ -53,6 +55,115 @@ export async function getConfig<T=any>(key: string): Promise<T | null> {
 export async function isLiveTradingEnabled(): Promise<boolean> {
   const cfg = await getConfig<{ enabled?: boolean }>("liveTrading");
   return Boolean(cfg?.enabled);
+}
+
+const EXECUTION_HEARTBEAT_MAX_AGE_MS=45_000;
+const EXECUTION_PROVIDER_HEALTH_MAX_AGE_MS=60*60_000;
+const EXECUTION_CHAIN_DATA_MAX_AGE_MS=5*60_000;
+const EXECUTION_WORKERS=["executor","exits","market-worker","solana-listener","solana-flow-scanner"] as const;
+const EXECUTION_PROVIDER_FIELDS={
+  marketData:{rpc:["solanaRpc","heliusRpc","fallbackRpc"],helius:["heliusApiKey"]},
+  execution:{jupiter:["jupiterBaseUrl","jupiterApiKey"]},
+  signer:{privy:["privyAppId","privyAppSecret","privyAuthorizationPrivateKey","privySignerId","privyPolicyId"]}
+} as const;
+
+type ReadExecutionStateOptions={
+  runtimeEnvironmentMode?:string;
+  runtimeSignerConfigured?:boolean;
+  selfWorkerName?:string;
+};
+
+/** Reads every real gate and feeds the shared truth table used by API, UI and executor. */
+export async function readExecutionState(options:ReadExecutionStateOptions={}){
+  const [liveCfg,riskCfg,marketRow,executionRow,signerRow,marketCfg,executionCfg,signerCfg,activeDelegatedWallets,heartbeats,latestChainEvent,openLivePositions]=await Promise.all([
+    getConfig<{enabled?:boolean}>("liveTrading"),
+    getConfig<{emergencyNewEntriesPaused?:boolean}>("risk"),
+    db.appConfig.findUnique({where:{key:"marketData"}}),
+    db.appConfig.findUnique({where:{key:"execution"}}),
+    db.appConfig.findUnique({where:{key:"signer"}}),
+    getConfig<any>("marketData"),
+    getConfig<any>("execution"),
+    getConfig<any>("signer"),
+    db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}),
+    db.workerHeartbeat.findMany({where:{name:{in:[...EXECUTION_WORKERS]}}}),
+    db.chainFlowObservation.findFirst({orderBy:{observedAt:"desc"},select:{observedAt:true}}),
+    db.position.count({where:{mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}}})
+  ]);
+  const now=Date.now();
+  const provider=(row:any,cfg:any,fields:readonly string[],name:string)=>{
+    const status=(row?.testResults as any)?.[name];
+    const fingerprintMatches=Boolean(status?.verified?.ok)&&status.verified.fingerprint===fingerprintOf(cfg,[...fields]);
+    const hardRejected=status?.health?.state==="INVALID_CREDENTIALS";
+    const healthFresh=Boolean(status?.health?.checkedAt)&&now-new Date(status.health.checkedAt).getTime()<=EXECUTION_PROVIDER_HEALTH_MAX_AGE_MS;
+    return {
+      verified:fingerprintMatches&&!hardRejected,
+      operational:fingerprintMatches&&!hardRejected&&healthFresh&&status?.health?.ok===true,
+      state:String(status?.health?.state??"UNKNOWN"),
+      checkedAt:status?.health?.checkedAt??null
+    };
+  };
+  const rpc=provider(marketRow,marketCfg,EXECUTION_PROVIDER_FIELDS.marketData.rpc,"rpc");
+  const helius=provider(marketRow,marketCfg,EXECUTION_PROVIDER_FIELDS.marketData.helius,"helius");
+  const jupiter=provider(executionRow,executionCfg,EXECUTION_PROVIDER_FIELDS.execution.jupiter,"jupiter");
+  const privy=provider(signerRow,signerCfg,EXECUTION_PROVIDER_FIELDS.signer.privy,"privy");
+  const executorHeartbeat=heartbeats.find(h=>h.name==="executor");
+  const executorDetail=(executorHeartbeat?.detail??{}) as any;
+  const environmentMode=options.runtimeEnvironmentMode??executorDetail.environmentMode??process.env.EXECUTION_MODE??"simulation";
+  const completeSignerConfig=Boolean(signerCfg?.privyAppId&&signerCfg?.privyAppSecret&&signerCfg?.privyAuthorizationPrivateKey&&signerCfg?.privySignerId&&signerCfg?.privyPolicyId);
+  const signerConfigured=options.runtimeSignerConfigured??(typeof executorDetail.signerConfigured==="boolean"?executorDetail.signerConfigured:completeSignerConfig);
+  const workers=EXECUTION_WORKERS.map(name=>{
+    const h=heartbeats.find(x=>x.name===name);
+    const running=name===options.selfWorkerName||Boolean(h)&&now-h!.lastBeatAt.getTime()<EXECUTION_HEARTBEAT_MAX_AGE_MS;
+    return {name,running,lastBeatAt:h?.lastBeatAt??null,detail:h?.detail??null};
+  });
+  const flow=workers.find(w=>w.name==="solana-flow-scanner")?.detail as any;
+  const scannerDegraded=Boolean(flow?.enabled===false||flow?.rateLimited===true||(Number.isFinite(Number(flow?.lastSuccessfulRpcAgoSec))&&Number(flow.lastSuccessfulRpcAgoSec)>60));
+  const chainDataFresh=Boolean(latestChainEvent)&&now-latestChainEvent!.observedAt.getTime()<EXECUTION_CHAIN_DATA_MAX_AGE_MS;
+  const resolved=resolveExecutionState({
+    liveTradingRequested:Boolean(liveCfg?.enabled),
+    environmentMode,
+    emergencyPaused:Boolean(riskCfg?.emergencyNewEntriesPaused),
+    rpcCredentialsVerified:rpc.verified||helius.verified,
+    rpcOperational:rpc.operational||helius.operational,
+    chainDataFresh,
+    scannerDegraded,
+    jupiterVerified:jupiter.verified,
+    jupiterOperational:jupiter.operational,
+    signerConfigured,
+    signerVerified:privy.verified,
+    signerOperational:privy.operational,
+    activeDelegatedWallets,
+    requiredWorkersHealthy:workers.every(w=>w.running),
+    openLivePositions
+  });
+  return {
+    ...resolved,
+    chain:"SOLANA" as const,
+    // Backward-compatible names now all derive from the same truth table.
+    ready:resolved.readyForLive,
+    liveTradingEnabled:Boolean(liveCfg?.enabled),
+    dependencies:{
+      rpc:rpc.operational||helius.operational,
+      rpcCredentials:rpc.verified||helius.verified,
+      rpcState:rpc.operational?rpc.state:helius.operational?helius.state:`${rpc.state}/${helius.state}`,
+      chainDataFresh,
+      lastRealChainEvent:latestChainEvent?.observedAt??null,
+      scannerDegraded,
+      jupiter:jupiter.operational,
+      signerCredentialsConnected:privy.operational,
+      signerConfigured,
+      walletsWithActivePermission:activeDelegatedWallets
+    },
+    workers,
+    runtimeEvidence:{
+      executorRelease:executorDetail.release??null,
+      executorHeartbeatAt:executorHeartbeat?.lastBeatAt??null,
+      environmentModeSource:options.runtimeEnvironmentMode!==undefined?"LOCAL_PROCESS":executorDetail.environmentMode?"EXECUTOR_HEARTBEAT":"API_ENV_FALLBACK"
+    },
+    resolvedAt:new Date(now).toISOString(),
+    source:"authoritative-execution-state-v1" as const,
+    note:"This state governs new Solana entries. Existing LIVE positions remain eligible for real protective exits even when new entries are blocked."
+  };
 }
 
 export async function setConfig(

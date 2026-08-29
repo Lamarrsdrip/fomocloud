@@ -253,7 +253,7 @@ Safe architecture now implemented:
 4. Execute one partial SELL; verify remaining raw balance and cost basis.
 5. Execute one full SELL; verify close and final realized P&L.
 6. Repeat failed quote, failed transaction, RPC disconnect and worker restart scenarios.
-7. Keep public `LIVE_EXECUTION_ENABLED=false` until a reviewed owner report is signed off.
+7. Keep the DB-backed Owner live-trading request OFF and `EXECUTION_MODE=simulation` until a reviewed owner report is signed off. (`LIVE_EXECUTION_ENABLED` was later retired as an ignored legacy variable.)
 
 ## Final verdict
 

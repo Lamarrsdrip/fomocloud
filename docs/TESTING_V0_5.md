@@ -19,4 +19,4 @@ Before deploying this update:
 15. test VAPID subscription + admin push
 16. test SMTP + broadcast queue
 17. restart each Windows service and verify heartbeat recovery
-18. keep `LIVE_EXECUTION_ENABLED=false` until signer/delegation readiness is complete
+18. keep the DB-backed Owner live-trading request OFF and `EXECUTION_MODE=simulation` until signer/delegation readiness is complete

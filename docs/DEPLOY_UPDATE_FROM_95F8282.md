@@ -48,7 +48,9 @@ Keep:
 
 ```env
 EXECUTION_MODE=simulation
-LIVE_EXECUTION_ENABLED=false
 ```
+
+Keep the DB-backed Owner `liveTrading` request OFF as well. `LIVE_EXECUTION_ENABLED` is a retired,
+ignored legacy variable; it is not a source of execution truth.
 
 until the real delegated/session signer and controlled live-chain tests are complete.

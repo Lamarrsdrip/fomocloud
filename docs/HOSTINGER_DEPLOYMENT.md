@@ -26,4 +26,4 @@ The VPS `CORS_ALLOWED_ORIGINS` value must include both the legacy Hostinger orig
 
 Do not use File Manager or ZIP uploads for future releases. Verify the Hostinger deployment history shows the pushed commit SHA before declaring a release live.
 
-Do not enable live execution during frontend deployment. `EXECUTION_MODE=simulation` and `LIVE_EXECUTION_ENABLED=false` remain enforced on the VPS.
+Do not enable live execution during frontend deployment. Keep `EXECUTION_MODE=simulation` on the VPS and the DB-backed Owner live-trading request OFF.

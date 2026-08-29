@@ -44,8 +44,10 @@ Use:
 
 ```env
 EXECUTION_MODE=simulation
-LIVE_EXECUTION_ENABLED=false
 ```
+
+The Owner request is stored only in the `liveTrading` AppConfig row. The old
+`LIVE_EXECUTION_ENABLED` environment variable is ignored and must not be treated as a gate.
 
 Real chain monitoring and executable quotes can run in this mode; only money movement is simulated.
 

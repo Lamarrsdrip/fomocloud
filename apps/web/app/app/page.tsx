@@ -334,7 +334,7 @@ function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string}
   {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud found this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
   <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade{canTradeLive?"":" — simulation"}</h2></div></div>
    <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
-   <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={()=>buy(false)}>{busy?"Buying…":canTradeLive?`Buy ${money(amount)} (live)`:`Buy ${money(amount)} (simulation)`}</button>
+   <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={()=>buy(!canTradeLive)}>{busy?"Buying…":canTradeLive?`Buy ${money(amount)} (live)`:`Buy ${money(amount)} (simulation)`}</button>
    {msg&&<div className="notice" style={{marginTop:10}}>{msg}</div>}
    {refused&&<div className="notice" style={{marginTop:10,borderColor:"rgba(247,185,95,.25)"}}>
     <div>{refused.message}</div>

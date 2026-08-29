@@ -11,7 +11,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { db, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema } from "@memecloud/shared";
-import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, isLiveTradingEnabled, type ProviderRecord } from "@memecloud/config";
+import { getConfig, setConfig, redactedConfig, encryptJson, decryptJson, maskHint, recordProviderResults, fingerprintOf, ackRestart, readExecutionState, type ProviderRecord } from "@memecloud/config";
 import { classifyLifecycle } from "@memecloud/brain";
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
 // `state` is the honest classification of WHY a check failed -- HTTP 429 must never be reported
@@ -224,15 +224,15 @@ function reasonText(reason?:string|null) {
 app.get("/health", asyncRoute(async (_req,res) => {
   try {
     await db.$runCommandRaw({ping:1});
-    const redisStatus=await redis.ping().then(()=>"healthy").catch(()=>"unavailable");
-    res.json({ok:true,database:"healthy",redis:redisStatus,executionMode:process.env.EXECUTION_MODE??"simulation"});
+    const [redisStatus,executionState]=await Promise.all([redis.ping().then(()=>"healthy").catch(()=>"unavailable"),readExecutionState()]);
+    res.json({ok:true,database:"healthy",redis:redisStatus,executionMode:executionState.actualRuntimeMode.toLowerCase(),executionStatus:executionState.status});
   } catch {
-    res.status(503).json({ok:false,database:"unavailable",executionMode:process.env.EXECUTION_MODE??"simulation"});
+    res.status(503).json({ok:false,database:"unavailable",apiSafetyGate:String(process.env.EXECUTION_MODE??"simulation").toLowerCase()});
   }
 }));
 
 app.get("/v1/public/config", asyncRoute(async (_req,res) => {
-  const [socialCfg,chainCfg,signerCfg]=await Promise.all([getConfig<any>("social"),getConfig<any>("chains"),getConfig<any>("signer")]);
+  const [socialCfg,chainCfg,signerCfg,executionState]=await Promise.all([getConfig<any>("social"),getConfig<any>("chains"),getConfig<any>("signer"),readExecutionState()]);
   // privyAppId/privySignerId/privyPolicyId are Privy dashboard object identifiers, not credentials
   // -- the client already has to pass signerId/policyIds directly to Privy's own createWallet/
   // addSigners calls (see docs.privy.io/wallets/wallets/create/create-a-wallet), so these were
@@ -243,8 +243,11 @@ app.get("/v1/public/config", asyncRoute(async (_req,res) => {
   const privyPolicyId=signerCfg?.privyPolicyId||process.env.PRIVY_POLICY_ID;
   res.json({
     appName:"MemeCloud",
-    executionMode:process.env.EXECUTION_MODE??"simulation",
-    liveExecutionEnabled:await isLiveTradingEnabled(),
+    // Compatibility fields now report the resolved transaction truth, never a partial source.
+    executionMode:executionState.actualRuntimeMode.toLowerCase(),
+    liveExecutionEnabled:executionState.newEntriesLive,
+    liveTradingRequested:executionState.liveTradingEnabled,
+    executionState:{requestedMode:executionState.requestedMode,actualRuntimeMode:executionState.actualRuntimeMode,status:executionState.status,readiness:executionState.readiness,newEntriesLive:executionState.newEntriesLive},
     pushPublicKey:await publicPushKey(),
     supportedChains:chainCfg?.enabled??(process.env.ENABLED_CHAINS??"SOLANA").split(","),
     // Honest per the multi-chain capability audit: BASE/ARBITRUM/AVALANCHE/SUI/HYPERLIQUID exist
@@ -714,6 +717,7 @@ app.get("/v1/me/dashboard", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const wins=closed.filter(x=>x.realizedPnlUsd>0).length;
   const todayRealized=livePositions.reduce((sum,p)=>sum+(p.exits??[]).reduce((a,e)=>a+Number(e.pnlUsd??0),0),0);
   const netPnl=realized+unrealized;
+  const executionState=await readExecutionState();
   // Prefer a genuine pre-midnight account snapshot so "Today" is a change over the day, not
   // the account's entire unrealized P&L. On a brand-new account with no baseline, fall back to
   // today's realized P&L plus unrealized P&L only for positions actually opened today.
@@ -739,7 +743,8 @@ app.get("/v1/me/dashboard", auth, asyncRoute(async (req:AuthedRequest,res) => {
       unrealizedPnlUsd:simOpen.reduce((a,x)=>a+x.unrealizedPnlUsd,0)
     },
     allocations,positions:[...open,...simOpen].slice(0,10),snapshots:snapshots.reverse(),settings,
-    executionMode:process.env.EXECUTION_MODE??"simulation"
+    executionMode:executionState.actualRuntimeMode.toLowerCase(),
+    executionState:{requestedMode:executionState.requestedMode,actualRuntimeMode:executionState.actualRuntimeMode,status:executionState.status,newEntriesLive:executionState.newEntriesLive}
   });
 }));
 
@@ -809,26 +814,30 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
   const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   const amountRaw=String(Math.round(amountUsd*1_000_000));
 
-  // Server-side authority on eligibility — never trust a client-sent "I'm live" flag. Same check
-  // executor/exits use for every automated decision.
-  const liveEnabled=await isLiveTradingEnabled();
-  const permitted=liveEnabled?await db.wallet.findFirst({where:{userId:req.user.sub,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}):null;
-  const signerCfg=liveEnabled&&permitted?await getConfig<any>("signer"):null;
+  // The exact same authoritative model used by the automated executor. This closes the former
+  // gap where manual BUY checked only the DB request and could construct a live transaction even
+  // while EXECUTION_MODE=simulation or the RPC/scanner was operationally degraded.
+  const executionState=await readExecutionState();
+  const permitted=executionState.newEntriesLive?await db.wallet.findFirst({where:{userId:req.user.sub,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}):null;
+  const signerCfg=executionState.newEntriesLive&&permitted?await getConfig<any>("signer"):null;
   const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID, privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
   const privyAuthKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
   const privy=permitted&&privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
-  const willTradeLive=Boolean(liveEnabled&&permitted&&privy);
+  const willTradeLive=Boolean(executionState.newEntriesLive&&permitted&&privy);
 
   if(!willTradeLive && String(req.body?.mode??"")!=="SIMULATION"){
     // Never silently fall back to a fake fill. The caller must explicitly opt into simulation
     // (mode:"SIMULATION") once they've been shown this refusal — matching "Live trading is off" /
     // "Connect and authorize a wallet to trade" as an explicit choice, not a hidden default.
-    const reason=!liveEnabled?"LIVE_TRADING_OFF":"TRADING_PERMISSION_REQUIRED";
+    const reason=!executionState.liveTradingEnabled?"LIVE_TRADING_OFF":!executionState.newEntriesLive?"LIVE_TRADING_BLOCKED":"TRADING_PERMISSION_REQUIRED";
     return res.status(409).json({
       error:reason,
-      message:!liveEnabled
+      message:!executionState.liveTradingEnabled
         ?"Live Solana trading is currently off. Ask the owner to enable it, or explicitly run this as a simulation."
-        :"No wallet has an active delegated trading permission yet. Link and authorize a wallet in Account, or explicitly run this as a simulation.",
+        :!executionState.newEntriesLive
+          ?`Live trading is requested but blocked: ${executionState.reasons[0]??"the execution runtime is not ready"}`
+          :"No wallet has an active delegated trading permission yet. Link and authorize a wallet in Account, or explicitly run this as a simulation.",
+      executionState:{requestedMode:executionState.requestedMode,actualRuntimeMode:executionState.actualRuntimeMode,status:executionState.status,blockers:executionState.blockers},
       simulationAvailable:true
     });
   }
@@ -1545,8 +1554,9 @@ app.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest
       discovery:{watchedTokens:discoveryTokens,opportunitiesToday:newTokensToday},
       engine:{signals,signalsToday,buyDecisions,waitDecisions,skipDecisions}
     },
-    executionMode:process.env.EXECUTION_MODE??"simulation",
-    liveExecutionEnabled:await isLiveTradingEnabled(),
+    executionMode:liveReadiness.actualRuntimeMode.toLowerCase(),
+    liveExecutionEnabled:liveReadiness.newEntriesLive,
+    liveTradingRequested:liveReadiness.liveTradingEnabled,
     liveReadiness,
     broadcasts,
     health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
@@ -2227,9 +2237,10 @@ app.get("/v1/admin/audit", requireAdmin, asyncRoute(async (_req,res) => {
   }))});
 }));
 app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
-  const [heartbeats,queueCounts]=await Promise.all([
+  const [heartbeats,queueCounts,executionState]=await Promise.all([
     db.workerHeartbeat.findMany({orderBy:{name:"asc"}}),
-    broadcastQueue.getJobCounts("waiting","active","failed","completed","delayed")
+    broadcastQueue.getJobCounts("waiting","active","failed","completed","delayed"),
+    readExecutionState()
   ]);
   const now=Date.now();
   res.json({
@@ -2237,109 +2248,19 @@ app.get("/v1/admin/health", requireAdmin, asyncRoute(async (_req,res) => {
     queue:{broadcasts:queueCounts},
     database:"healthy",
     redis:await redis.ping().then(()=>"healthy").catch(()=>"unavailable"),
-    executionMode:process.env.EXECUTION_MODE??"simulation"
+    executionMode:executionState.actualRuntimeMode.toLowerCase(),
+    executionState
   });
 }));
-// Answers "can MemeCloud actually trade real money right now?" purely from real, currently-fresh
-// signals — never from whether a value merely exists in the database. This checks the real
-// INFRASTRUCTURE dependencies only; whether live trading is currently switched on is reported
-// separately (liveTradingEnabled) and is never itself a readiness dependency — that would be
-// circular when this same function gates turning it on in the first place.
-// How fresh the most recent real on-chain event must be for the Solana scanner to count as
-// functionally progressing, not just process-alive. Independent of HEALTH_CHECK_MAX_AGE_MS (which
-// governs the synthetic RPC ping) -- this is real operational evidence, not a ping result.
-const CHAIN_DATA_FRESHNESS_MS=5*60_000;
-async function computeLiveReadiness(){
-  const [marketDataRow,executionRow,signerRow,marketDataCfg,executionCfg,signerCfg,activeWallets,heartbeats,liveTradingEnabled,latestChainEvent,openLivePositions]=await Promise.all([
-    db.appConfig.findUnique({where:{key:"marketData"}}),
-    db.appConfig.findUnique({where:{key:"execution"}}),
-    db.appConfig.findUnique({where:{key:"signer"}}),
-    getConfig<any>("marketData"),
-    getConfig<any>("execution"),
-    getConfig<any>("signer"),
-    db.wallet.count({where:{chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}}),
-    db.workerHeartbeat.findMany({where:{name:{in:["executor","exits","market-worker","solana-listener","solana-flow-scanner"]}}}),
-    isLiveTradingEnabled(),
-    db.chainFlowObservation.findFirst({orderBy:{observedAt:"desc"},select:{observedAt:true}}),
-    db.position.count({where:{mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}}})
-  ]);
-  const now=Date.now();
-  // Live-trading readiness is a stricter, safety-critical claim than the general admin "Connected"
-  // badge: it must require a standing verification whose fingerprint still matches the saved
-  // config (not merely "was correct once, config unchanged forever"). Critically, a RATE_LIMITED or
-  // otherwise transiently-unreachable health check must NEVER undo that standing verification --
-  // only a hard credential rejection (the provider itself said the key/token is invalid) does. A
-  // 429 on the periodic background ping is routine and proves nothing about whether the credential
-  // still works.
-  function readyNow(row:any,cfg:any,fields:Record<string,string[]>,provider:string):{ready:boolean;reason?:string}{
-    const status=row?.testResults?.[provider];
-    if(!status?.verified?.ok) return {ready:false,reason:"has never passed a real connection test"};
-    if(status.verified.fingerprint!==fingerprintOf(cfg,fields[provider]??[])) return {ready:false,reason:"the saved credentials changed since the last passing test"};
-    if(status.health?.state==="INVALID_CREDENTIALS") return {ready:false,reason:"the most recent check shows the provider rejected the credential"};
-    if(!status.health?.checkedAt||(now-new Date(status.health.checkedAt).getTime())>HEALTH_CHECK_MAX_AGE_MS) return {ready:false,reason:"no health check has run recently"};
-    return {ready:true};
-  }
-  const rpcTest=readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"rpc");
-  const heliusTest=readyNow(marketDataRow,marketDataCfg,PROVIDER_FINGERPRINT_FIELDS.marketData,"helius");
-  const rpcCredentialsOk=rpcTest.ready||heliusTest.ready;
-  // Real operational evidence, not a synthetic ping: the scanner must actually be producing fresh
-  // on-chain data right now. Credentials genuinely valid + zero real events flowing is exactly the
-  // "DEGRADED/STALE, not healthy" case the audit called for -- readiness must reflect that, not a
-  // green ping result alone.
-  const chainDataFresh=Boolean(latestChainEvent)&&(now-latestChainEvent!.observedAt.getTime())<CHAIN_DATA_FRESHNESS_MS;
-  const rpcOk=rpcCredentialsOk&&chainDataFresh;
-  const jupiterTest=readyNow(executionRow,executionCfg,PROVIDER_FINGERPRINT_FIELDS.execution,"jupiter");
-  const jupiterOk=jupiterTest.ready;
-  const privyTest=readyNow(signerRow,signerCfg,PROVIDER_FINGERPRINT_FIELDS.signer,"privy");
-  const privyOk=privyTest.ready;
-  const workers=["executor","exits","market-worker","solana-listener","solana-flow-scanner"].map(name=>{
-    const h=heartbeats.find(x=>x.name===name);
-    return {name,running:Boolean(h)&&now-h!.lastBeatAt.getTime()<45_000,lastBeatAt:h?.lastBeatAt??null};
-  });
-  const workersHealthy=workers.every(w=>w.running);
-  const signerReady=privyOk && activeWallets>0;
-  const ready=rpcOk && jupiterOk && signerReady && workersHealthy;
-  const reasons:string[]=[];
-  if(!rpcCredentialsOk) reasons.push(`Solana RPC ${rpcTest.reason||heliusTest.reason||"has not passed a fresh connection test"} (test connection or re-save Market data).`);
-  else if(!chainDataFresh) reasons.push(latestChainEvent?`Solana RPC credentials are verified, but no real on-chain event has been observed in the last ${Math.round(CHAIN_DATA_FRESHNESS_MS/60_000)} minutes — the scanner is not currently producing fresh data.`:"Solana RPC credentials are verified, but no real on-chain event has ever been recorded — the scanner has not produced any data yet.");
-  if(!jupiterOk) reasons.push(`Jupiter ${jupiterTest.reason||"has not passed a fresh connection test"} (test connection or re-save Trade routing).`);
-  if(!privyOk) reasons.push(`Privy signer ${privyTest.reason||"has not passed a fresh connection test"}.`);
-  if(activeWallets===0) reasons.push("No user wallet currently has an active delegated trading permission — connect a wallet and grant MemeCloud as an additional signer with the required policy before activating.");
-  if(!workersHealthy) reasons.push("One or more execution workers (executor / exits / market-worker / listener / flow scanner) are not sending a healthy heartbeat.");
+// One authoritative implementation for Admin, public config, manual trading and the executor.
+async function computeLiveReadiness(){return readExecutionState()}
 
-  // The DB switch (liveTradingEnabled) and the VPS process-level EXECUTION_MODE env var are two
-  // genuinely independent gates -- both must agree before a NEW live entry (or a live source-sell
-  // mirror) is ever constructed; see executor's handleSourceSell/BUY paths. Reporting them as one
-  // conflated "Execution: X / Live trading: Y" pair (the old admin overview card) let them silently
-  // disagree in production with no explanation. environmentMode is real infrastructure state, never
-  // a business toggle -- there is no admin action that can change it, only a VPS deploy/env edit.
-  const environmentMode=(process.env.EXECUTION_MODE??"simulation").toUpperCase()==="LIVE"?"LIVE":"SIMULATION";
-  if(liveTradingEnabled&&environmentMode!=="LIVE") reasons.push("The Admin switch requests live trading, but the VPS execution runtime is still in SIMULATION mode (EXECUTION_MODE env var) — no real transaction will be constructed for new entries until that changes.");
-  // newEntriesLive mirrors exactly the gate executor's BUY path checks (mode==="live" &&
-  // isLiveTradingEnabled()) -- this is genuinely "would a qualified new signal go live right now",
-  // not an inferred/cosmetic guess.
-  const newEntriesLive=liveTradingEnabled&&environmentMode==="LIVE"&&ready;
-  const status:"LIVE"|"LIVE_BLOCKED"|"SIMULATION"=newEntriesLive?"LIVE":liveTradingEnabled?"LIVE_BLOCKED":"SIMULATION";
-  return {
-    chain:"SOLANA",ready,reasons,liveTradingEnabled,
-    environmentMode,newEntriesLive,status,
-    // Already-open real positions (from a past live entry) are always exited for real by
-    // stop-loss/take-profit (services/exits) and by source-sell mirroring (executor's
-    // handleSourceSell) regardless of this switch -- turning it OFF blocks new live entries only,
-    // it deliberately does not abandon protecting money that is already real. That is a distinct
-    // fact from newEntriesLive and must never be silently implied by it either way.
-    openLivePositions,
-    dependencies:{rpc:rpcOk,rpcCredentials:rpcCredentialsOk,chainDataFresh,lastRealChainEvent:latestChainEvent?.observedAt??null,jupiter:jupiterOk,signerCredentialsConnected:privyOk,walletsWithActivePermission:activeWallets},
-    workers,
-    note:"BNB/Ethereum/other chains have no delegated live-execution signer implemented yet — Solana is the only chain this endpoint evaluates for live trading readiness."
-  };
-}
 app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) => {
   res.json(await computeLiveReadiness());
 }));
 // Owner-only. This is a NEW-ENTRIES gate, not a global kill switch: only executor's BUY path
-// checks isLiveTradingEnabled() fresh on every decision (takes effect immediately, no env file, no
-// VPS restart) before ever constructing a brand-new live position. It deliberately does NOT gate
+// checks the authoritative DB-backed request fresh on every decision (takes effect immediately,
+// no env file or VPS restart) before ever constructing a brand-new live position. It deliberately does NOT gate
 // services/exits' stop-loss/take-profit or executor's handleSourceSell (source-sell mirroring) —
 // both manage positions that are already real purely off each position's own stored mode, so
 // turning this OFF cannot leave real money unprotected or trapped. That also means OFF is not
@@ -2350,15 +2271,16 @@ app.get("/v1/admin/live-readiness", requireAdmin, asyncRoute(async (_req,res) =>
 // immediate.
 app.post("/v1/admin/live-trading/enable", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const readiness=await computeLiveReadiness();
-  if(!readiness.ready) return res.status(409).json({error:"NOT_READY",reasons:readiness.reasons});
+  if(!readiness.ready) return res.status(409).json({error:"NOT_READY",reasons:readiness.reasons,blockers:readiness.blockers,executionState:readiness});
   await setConfig("liveTrading",{enabled:true,enabledAt:new Date().toISOString(),enabledBy:req.user.sub},{secret:false,updatedBy:req.user.sub});
   await audit(req.user.sub,"OWNER","LIVE_TRADING_ENABLE","liveTrading",{});
-  res.json({ok:true,enabled:true});
+  const executionState=await computeLiveReadiness();
+  res.json({ok:true,enabled:executionState.newEntriesLive,requested:true,executionState});
 }));
 app.post("/v1/admin/live-trading/disable", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   await setConfig("liveTrading",{enabled:false,disabledAt:new Date().toISOString(),disabledBy:req.user.sub},{secret:false,updatedBy:req.user.sub});
   await audit(req.user.sub,"OWNER","LIVE_TRADING_DISABLE","liveTrading",{});
-  res.json({ok:true,enabled:false});
+  res.json({ok:true,enabled:false,requested:false,executionState:await computeLiveReadiness()});
 }));
 
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{

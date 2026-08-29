@@ -78,11 +78,14 @@ export default function Admin(){
 }
 
 function Metric({label,value,note,moneyValue=false}:{label:string;value:any;note:string;moneyValue?:boolean}){const shown=value===null||value===undefined?"—":moneyValue?money(value):value;return <div className="stat-card"><span>{label}</span><b>{shown}</b><small>{note}</small></div>}
-function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{},lr=d.liveReadiness||{status:"SIMULATION",reasons:[],openLivePositions:0};return <>
+function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{},lr=d.liveReadiness||{requestedMode:"SIMULATION",actualRuntimeMode:"SIMULATION",status:"SIMULATION",blockers:[],openLivePositions:0};return <>
  <section className="owner-hero"><div><span>OWNER HOME</span><h2>Everything important, without digging.</h2><p>Real users, trading, discovery and engine activity. Use the controls below to change how MemeCloud operates.</p></div>
-  <div className={`owner-mode ${lr.status==="LIVE"?"live":lr.status==="LIVE_BLOCKED"?"watch":"safe"}`}>
-   <small>New live entries</small><b>{lr.status==="LIVE"?"LIVE":lr.status==="LIVE_BLOCKED"?"BLOCKED":"SIMULATION"}</b>
-   <span>{lr.status==="LIVE"?"Real transactions will be constructed and signed.":lr.status==="LIVE_BLOCKED"?`Requested ON, but blocked: ${lr.reasons?.[0]||"not ready"}`:"Admin switch is OFF — new entries stay simulated."}</span>
+  <div className={`owner-mode ${lr.status==="LIVE"?"live":lr.status==="SIMULATION"?"safe":"watch"}`}>
+   <small>Actual execution</small><b>{lr.actualRuntimeMode||"SIMULATION"}</b>
+   <span>Requested: {lr.requestedMode||"SIMULATION"}</span>
+   <span>Status: {String(lr.status||"SIMULATION").replaceAll("_"," ")}</span>
+   <span>Qualified signal: {String(lr.nextQualifiedSignalAction||"SIMULATION").replaceAll("_"," ")}</span>
+   {lr.blockers?.[0]&&<span style={{marginTop:4}}>Blocked by: {lr.blockers[0].message}</span>}
    {lr.openLivePositions>0&&<span style={{marginTop:4}}>{lr.openLivePositions} real open position{lr.openLivePositions===1?"":"s"} — always exited for real regardless of this switch.</span>}
   </div>
  </section>
@@ -431,28 +434,34 @@ function Config({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
     </div>
    </section>
    <section className="app-card">
-    <div className="card-title"><div><span>OWNER ONLY</span><h2>Solana live-trading readiness</h2></div>
-     <span className={badgeClass(liveReadiness?.ready?"good":"watch")}>{liveReadiness?liveReadiness.ready?"Ready for live trading":"Not ready for live trading":"Checking…"}</span>
+    <div className="card-title"><div><span>OWNER ONLY · AUTHORITATIVE RUNTIME STATE</span><h2>Solana execution</h2></div>
+     <span className={badgeClass(liveReadiness?.status==="LIVE"?"good":liveReadiness?.status==="SIMULATION"?"follow":"watch")}>{liveReadiness?String(liveReadiness.status).replaceAll("_"," "):"Checking…"}</span>
     </div>
     {liveReadiness&&<>
      <div className="settings-summary-rows">
-      <div><span>Solana RPC</span><em className={badgeClass(liveReadiness.dependencies.rpc?"good":"watch")}>{liveReadiness.dependencies.rpc?"Connected":"Not verified"}</em></div>
-      <div><span>Jupiter</span><em className={badgeClass(liveReadiness.dependencies.jupiter?"good":"watch")}>{liveReadiness.dependencies.jupiter?"Connected":"Not verified"}</em></div>
-      <div><span>Signer credentials (Privy)</span><em className={badgeClass(liveReadiness.dependencies.signerCredentialsConnected?"good":"watch")}>{liveReadiness.dependencies.signerCredentialsConnected?"Connected":"Not verified"}</em></div>
+      <div><span>Requested mode (DB)</span><em className={badgeClass(liveReadiness.requestedMode==="LIVE"?"good":"follow")}>{liveReadiness.requestedMode}</em></div>
+      <div><span>Executor safety gate (VPS)</span><em className={badgeClass(liveReadiness.environmentMode==="LIVE"?"good":"watch")}>{liveReadiness.environmentMode}</em></div>
+      <div><span>Actual runtime mode</span><em className={badgeClass(liveReadiness.actualRuntimeMode==="LIVE"?"good":"follow")}>{liveReadiness.actualRuntimeMode}</em></div>
+      <div><span>Executor release</span><em className={badgeClass(liveReadiness.runtimeEvidence?.executorRelease?"good":"watch")}>{liveReadiness.runtimeEvidence?.executorRelease||"Not reported"}</em></div>
+      <div><span>Readiness</span><em className={badgeClass(liveReadiness.readiness==="READY"?"good":"watch")}>{liveReadiness.readiness}</em></div>
+      <div><span>Qualified signal branch</span><em className={badgeClass(liveReadiness.nextQualifiedSignalAction==="LIVE_TRANSACTION"?"good":liveReadiness.nextQualifiedSignalAction==="SIMULATION"?"follow":"watch")}>{String(liveReadiness.nextQualifiedSignalAction).replaceAll("_"," ")}</em></div>
+      <div><span>Solana execution RPC</span><em className={badgeClass(liveReadiness.dependencies.rpc?"good":"watch")}>{liveReadiness.dependencies.rpc?"Operational":liveReadiness.dependencies.rpcState||"Degraded"}</em></div>
+      <div><span>Scanner progress</span><em className={badgeClass(!liveReadiness.dependencies.scannerDegraded&&liveReadiness.dependencies.chainDataFresh?"good":"watch")}>{!liveReadiness.dependencies.scannerDegraded&&liveReadiness.dependencies.chainDataFresh?"Fresh":"Degraded"}</em></div>
+      <div><span>Jupiter</span><em className={badgeClass(liveReadiness.dependencies.jupiter?"good":"watch")}>{liveReadiness.dependencies.jupiter?"Operational":"Unavailable"}</em></div>
+      <div><span>Signer runtime / Privy</span><em className={badgeClass(liveReadiness.dependencies.signerConfigured&&liveReadiness.dependencies.signerCredentialsConnected?"good":"watch")}>{liveReadiness.dependencies.signerConfigured&&liveReadiness.dependencies.signerCredentialsConnected?"Ready":"Unavailable"}</em></div>
       <div><span>Wallets with active delegated permission</span><em className={badgeClass(liveReadiness.dependencies.walletsWithActivePermission>0?"good":"watch")}>{liveReadiness.dependencies.walletsWithActivePermission}</em></div>
-      <div><span>VPS execution runtime</span><em className={badgeClass(liveReadiness.environmentMode==="LIVE"?"good":"watch")}>{liveReadiness.environmentMode}</em></div>
      </div>
      <div className="settings-summary-rows">
       {liveReadiness.workers.map((w:any)=><div key={w.name}><span>{w.name}</span><em className={badgeClass(w.running?"good":"watch")}>{w.running?"Running":"Not running"}</em></div>)}
      </div>
-     {!liveReadiness.ready&&liveReadiness.reasons.length>0&&<div className="notice">{liveReadiness.reasons.map((r:string)=><div key={r}>{r}</div>)}</div>}
+     {liveReadiness.blockers?.length>0&&<div className="notice"><b style={{display:"block",marginBottom:5}}>Live blockers</b>{liveReadiness.blockers.map((b:any)=><div key={b.code}><b>{b.code.replaceAll("_"," ")}:</b> {b.message}</div>)}</div>}
      <div className="notice">{liveReadiness.note}</div>
      <button type="button" className="soft-action" onClick={loadLiveReadiness}>Refresh</button>
      <div className="card-title" style={{marginTop:16}}><div><span>MASTER SWITCH · NEW LIVE ENTRIES</span><h2>Live Solana trading</h2></div>
-      <span className={badgeClass(liveReadiness.status==="LIVE"?"good":liveReadiness.status==="LIVE_BLOCKED"?"watch":"follow")}>{liveTradingBusy?"Working…":liveReadiness.status==="LIVE"?"LIVE":liveReadiness.status==="LIVE_BLOCKED"?"REQUESTED · BLOCKED":"OFF"}</span>
+      <span className={badgeClass(liveReadiness.status==="LIVE"?"good":liveReadiness.requestedMode==="LIVE"?"watch":"follow")}>{liveTradingBusy?"Working…":liveReadiness.status==="LIVE"?"LIVE":liveReadiness.requestedMode==="LIVE"?"REQUESTED · BLOCKED":"OFF"}</span>
      </div>
      <div className="notice" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-      <span>{liveReadiness.status==="LIVE"?"New copy entries will be signed and submitted as real on-chain transactions for any user with an active delegated permission.":liveReadiness.status==="LIVE_BLOCKED"?"Requested ON, but not actually live — see the blocked reason above (VPS runtime, readiness, or both).":"New entries stay simulated. This switch governs new entries only — it does not stop stop-loss/take-profit exits or source-sell mirrors on positions that are already real (see below)."}</span>
+      <span>{liveReadiness.nextQualifiedSignalAction==="LIVE_TRANSACTION"?"A qualified new entry will enter the construct → sign → submit path.":liveReadiness.nextQualifiedSignalAction==="SIMULATION"?"A qualified new entry will use the simulation path. No transaction will be constructed.":"Qualified new entries are blocked. No live transaction will be constructed."}</span>
       {admin&&(liveReadiness.liveTradingEnabled
        ?<button type="button" className="action-primary" style={{background:"#c0392b"}} disabled={liveTradingBusy} onClick={disableLiveTrading}>Turn OFF</button>
        :<button type="button" className="action-primary" disabled={liveTradingBusy||!liveReadiness.ready} onClick={enableLiveTrading} title={!liveReadiness.ready?liveReadiness.reasons.join(" "):""}>{liveReadiness.ready?"Turn ON":"Not ready yet"}</button>)}
@@ -596,4 +605,4 @@ function RpcUsage({services}:{services:any[]}){
   <p style={{fontSize:10,color:"#7b8190",margin:"10px 2px 0"}}>No historical requests/min/hour/day graph exists yet -- this table is live current state only, refreshed on demand. "Shared account budget" is a cross-process Redis-backed token bucket (P0=highest priority, P5=lowest) protecting the account-wide Helius/Solana RPC limit -- background/bulk consumers back off first when it gets scarce.</p>
  </section>;
 }
-function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Execution</span><b>{String(d.executionMode||"—").toUpperCase()}</b><small>Current backend mode</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section><RpcUsage services={d.services||[]}/></>}
+function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section><RpcUsage services={d.services||[]}/></>}

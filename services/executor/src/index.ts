@@ -8,7 +8,7 @@ import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { startHeartbeat } from "@memecloud/ops";
-import { getConfig, isLiveTradingEnabled } from "@memecloud/config";
+import { getConfig, readExecutionState } from "@memecloud/config";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection});
@@ -20,7 +20,7 @@ const usdcSol=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGG
 // startup and cached forever, identically to the bug already fixed in listener/flow-worker/
 // market-worker this session. Reloaded on a timer (not per-job) so job latency doesn't pay an
 // AppConfig read on every signal.
-let jupiter:JupiterExecution,solanaRpc:string|undefined,solanaConnection:Connection|null,privy:PrivySolanaSigner|null,exitSlippageBps=700,maxExecutablePriceImpactPct=35;
+let jupiter:JupiterExecution,solanaRpc:string|undefined,solanaConnection:Connection|null,privy:PrivySolanaSigner|null,signerConfigured=false,exitSlippageBps=700,maxExecutablePriceImpactPct=35;
 async function reloadConfig(){
   const execCfg=await getConfig<any>("execution");
   const marketCfg=await getConfig<any>("marketData");
@@ -34,12 +34,21 @@ async function reloadConfig(){
   const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
   const privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
   const privyAuthorizationPrivateKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
-  privy=privyAppId&&privyAppSecret?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
+  const privySignerId=signerCfg?.privySignerId||process.env.PRIVY_SIGNER_ID;
+  const privyPolicyId=signerCfg?.privyPolicyId||process.env.PRIVY_POLICY_ID;
+  signerConfigured=Boolean(privyAppId&&privyAppSecret&&privyAuthorizationPrivateKey&&privySignerId&&privyPolicyId);
+  privy=signerConfigured?new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthorizationPrivateKey,sponsorGas:Boolean(signerCfg?.sponsorGas)}):null;
 }
 await reloadConfig();
 setInterval(()=>void reloadConfig().catch(e=>console.error("[executor] config reload failed, keeping previous clients",e)),60_000);
 
 let processed=0,allowedCount=0,skippedCount=0,errors=0;
+const runtimeRelease=decodeURIComponent(import.meta.url).match(/memecloud-releases\/([^/]+)/i)?.[1]??process.env.MEMECLOUD_RELEASE_SHA??"unknown";
+let latestExecutionState=await readExecutionState({runtimeEnvironmentMode:process.env.EXECUTION_MODE,runtimeSignerConfigured:signerConfigured,selfWorkerName:"executor"});
+async function refreshExecutionState(){
+  latestExecutionState=await readExecutionState({runtimeEnvironmentMode:process.env.EXECUTION_MODE,runtimeSignerConfigured:signerConfigured,selfWorkerName:"executor"});
+}
+setInterval(()=>void refreshExecutionState().catch(e=>console.error("[executor] execution-state refresh failed",e)),15_000);
 
 
 async function tokenDecimals(mint:string){
@@ -459,7 +468,6 @@ const worker=new Worker("signals",async job=>{
     // Every Solana copy decision -- simulation or future LIVE -- uses the user's actual
     // requested size to obtain the authoritative executable quote. A cached market mark may help
     // liquidity/sizing checks, but it is never the final chase value.
-    const executionMode=(process.env.EXECUTION_MODE??"simulation").toLowerCase();
     if(signal.chain!=="SOLANA"){
       await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:"EXECUTION_ADAPTER_NOT_CONFIGURED",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd:currentPriceUsd,walletChasePct:chase,explanation:"This chain is adapter-ready but does not yet have a verified execution route in this build."});
       skippedCount++; continue;
@@ -570,13 +578,17 @@ const worker=new Worker("signals",async job=>{
         explanation:`Eligible copy from ${signal.trader.displayName}. Intelligence ${intelligence.confidence}/100; actual-size wallet chase ${actualChase.toFixed(1)}%; executable price impact ${priceImpactPct.toFixed(2)}%. ${intelligence.reasons.join(" · ")}`
       });
 
-      if(executionMode==="live"){
-        // The real, owner-controlled gate — read fresh from the database on every decision, so
-        // the Admin toggle takes effect immediately with no env file edit or service restart.
-        if(!(await isLiveTradingEnabled())){
-          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"LIVE_EXECUTION_NOT_ENABLED",explanation:"Live execution is intentionally disabled. The executable quote was verified, but no funds were moved."}});
-          skippedCount++; continue;
-        }
+      // Resolve immediately before the first transaction-construction call. The exact same state
+      // object powers Admin/Public APIs, so a qualified signal cannot enter a branch the UI calls
+      // blocked. In the VPS SIMULATION safety mode, this deliberately selects the simulation path.
+      const executionState=await readExecutionState({runtimeEnvironmentMode:process.env.EXECUTION_MODE,runtimeSignerConfigured:signerConfigured,selfWorkerName:"executor"});
+      latestExecutionState=executionState;
+      if(executionState.nextQualifiedSignalAction==="BLOCKED"){
+        const blocker=executionState.blockers[0];
+        await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:blocker?.code??"LIVE_EXECUTION_BLOCKED",explanation:blocker?.message??"Live execution is blocked by the authoritative runtime state. No transaction was constructed."}});
+        skippedCount++;continue;
+      }
+      if(executionState.nextQualifiedSignalAction==="LIVE_TRANSACTION"){
         const permitted=await db.wallet.findFirst({where:{userId:follow.userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
         if(!permitted){
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"TRADING_PERMISSION_REQUIRED",explanation:"This account has no active delegated trading permission for this chain."}});
@@ -671,5 +683,19 @@ const worker=new Worker("signals",async job=>{
 },{connection,concurrency:20});
 
 worker.on("failed",(job,err)=>{errors++;console.error("[executor] failed",job?.id,err)});
-startHeartbeat("executor",()=>({processed,allowed:allowedCount,skipped:skippedCount,errors,concurrency:20}));
+startHeartbeat("executor",()=>({
+  processed,allowed:allowedCount,skipped:skippedCount,errors,concurrency:20,
+  release:runtimeRelease,
+  requestedMode:latestExecutionState.requestedMode,
+  environmentMode:latestExecutionState.environmentMode,
+  actualRuntimeMode:latestExecutionState.actualRuntimeMode,
+  executionStatus:latestExecutionState.status,
+  readiness:latestExecutionState.readiness,
+  nextQualifiedSignalAction:latestExecutionState.nextQualifiedSignalAction,
+  liveTransactionConstructionEnabled:latestExecutionState.newEntriesLive,
+  signerConfigured,
+  activeDelegatedWallets:latestExecutionState.dependencies.walletsWithActivePermission,
+  blockers:latestExecutionState.blockers.map(b=>({code:b.code,source:b.source,message:b.message})),
+  stateResolvedAt:latestExecutionState.resolvedAt
+}));
 console.log("[executor] running");

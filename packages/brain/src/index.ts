@@ -34,7 +34,14 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   score+=clamp((e.holderGrowth5mPct??0)*.8,-5,10);
   score+=clamp((e.smartMoneyNetFlow5mUsd??0)/Math.max(5000,e.liquidityUsd)*18,-8,14);
   score+=clamp(((e.socialVelocity??1)-1)*5,-4,10);
-  score+=clamp((e.narrativeScore??50-50)*.05,-3,3);
+  // Real bug found by audit (JS operator precedence, ?? binds looser than -): as written this
+  // parsed as (e.narrativeScore ?? (50-50)) = (e.narrativeScore ?? 0), not the intended "center a
+  // 0-100 narrative score around its neutral midpoint of 50, defaulting unknown to neutral." A
+  // real narrativeScore was being added to the score in raw proportion to its own value (so even a
+  // weak/negative 10/100 narrative ADDED +0.5 instead of correctly subtracting), while only the
+  // unknown case coincidentally landed on the right answer (0). 50/100 must contribute ~0, not be
+  // silently treated as positive evidence.
+  score+=clamp(((e.narrativeScore??50)-50)*.05,-3,3);
   score+=clamp(e.catalystBoost??0,0,15);
   const dd=Math.max(0,e.drawdownFromRecentPeakPct??0);
   const survivorScore=clamp((dd>=45?20:0)+(dd>=65?20:0)+Math.min(25,e.buyers60s*.7)+Math.min(20,whaleDensity*3)+Math.min(15,Math.max(0,e.volumeAcceleration1m-1)*8));
@@ -91,6 +98,18 @@ export function didStateUpgrade(priorNotifiedState:string|null|undefined,newStat
 // isn't "convergence" -- that's just one wallet buying, already covered by ordinary evidence).
 export function isNewConvergence(convergentCount:number,priorConvergentCount:number):boolean{
   return convergentCount>=2&&convergentCount>priorConvergentCount;
+}
+
+// Extracted so the dedup logic itself is directly testable without a database (same rationale as
+// didStateUpgrade/isNewConvergence above). Real bug this replaced: the inline version in
+// brain-worker counted raw BUY EVENTS per wallet-tier filter, not distinct wallets -- one whale
+// buying 4 times in 60s reported as "4 whales", not "1 whale, 4 buys", and fed directly into
+// evaluateOpportunity's whaleDensity (real scoring, not just display).
+export function countUniqueWhaleWallets(rows:{walletAddress:string;walletTier?:string|null}[]):number{
+  return new Set(rows.filter(r=>String(r.walletTier??"").startsWith("WHALE_")).map(r=>r.walletAddress)).size;
+}
+export function countUniqueKnownWallets(rows:{walletAddress:string;knownWallet?:boolean|null}[]):number{
+  return new Set(rows.filter(r=>r.knownWallet).map(r=>r.walletAddress)).size;
 }
 
 export function walletTier(balanceUsd?:number){

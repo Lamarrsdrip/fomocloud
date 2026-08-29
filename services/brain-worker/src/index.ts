@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
-import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK} from "@memecloud/brain";
+import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets} from "@memecloud/brain";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const signalQueue=new Queue("signals",{connection:redis});
@@ -35,7 +35,7 @@ async function context(chain:Chain,mint:string,s:any){
     db.marketPrice.findMany({where:{chain,mint,observedAt:{gte:new Date(now-7*24*60*60_000)}},orderBy:{priceUsd:"desc"},take:1})
   ]);
   const sum=(x:any[])=>x.reduce((a,v)=>a+Number(v.amountUsd??0),0),uniq=(x:any[])=>new Set(x.map(v=>v.walletAddress)).size;
-  const whale=(x:any[])=>x.filter(v=>String(v.walletTier??"").startsWith("WHALE_")).length;
+  const whale=countUniqueWhaleWallets,knownWallets=countUniqueKnownWallets;
   const peakPrice=Number(peak[0]?.priceUsd??s.priceUsd),dd=peakPrice>0?Math.max(0,(peakPrice-s.priceUsd)/peakPrice*100):0;
   // Convergence: how many of the wallets that bought this mint in the last 10 minutes are
   // wallets MemeCloud itself has already built real evidence on (PAPER_TRACKING/PROVEN -- never
@@ -44,7 +44,12 @@ async function context(chain:Chain,mint:string,s:any){
   // decisions -- it's explanatory evidence per the "why was this found" requirement.
   const recentAddresses=[...new Set(f10m.map(v=>v.walletAddress))];
   const convergentWallets=recentAddresses.length?await db.smartWalletCandidate.findMany({where:{chain,address:{in:recentAddresses},stage:{in:["PAPER_TRACKING","PROVEN"]}},select:{address:true,stage:true}}):[];
-  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:f60.filter(v=>v.knownWallet).length+known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd??undefined,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0};
+  // Real bug found by audit: knownWhaleBuyers60s used to add a raw Signal count (`known`, a
+  // platform-tracked-trader BUY signal count from an entirely different source table) directly
+  // onto a wallet count -- "A Signal is not a wallet." platformSignals60s now reports that as its
+  // own honest field instead of silently inflating a wallet-count metric with event counts from an
+  // unrelated pipeline.
+  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWallets(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd??undefined,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0};
   return {evidence,token,catalyst,convergentWallets};
 }
 async function notifyUsers(opp:any,users:any[]){
@@ -138,7 +143,7 @@ async function tick(){
       // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
       // can't silently change a trading decision. "Why was this found" per the audit's requirement.
       const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
-      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,lastNotifiedConvergentCount:priorNotifiedConvergentCount} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,lastNotifiedConvergentCount:priorNotifiedConvergentCount,platformSignals60s:c.evidence.platformSignals60s} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
       scans++;if(d.action!=="IGNORE")opportunities++;
       if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
