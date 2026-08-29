@@ -35,7 +35,13 @@ export class BirdeyeClient{
     return dataOf(await this.get("/defi/v3/token/list",{sort_by:"volume_1h_usd",sort_type:"desc",offset:0,limit:opts.limit??50,min_liquidity:opts.minLiquidity??15000,max_market_cap:opts.maxMarketCap??50000000,min_market_cap:opts.minMarketCap??50000},"solana"));
   }
   async topTraders(token:string,timeFrame="30d",limit=50){
-    return dataOf(await this.get("/defi/v2/tokens/top_traders",{address:token,time_frame:timeFrame,sort_by:"total_pnl",sort_type:"desc",offset:0,limit},"solana"));
+    // Real bug found by audit: Birdeye's own top_traders endpoint hard-caps limit at 1-10 --
+    // "limit should be integer, range 1-10" -- but every caller in this codebase was passing up to
+    // 50 (discovery-worker defaulted to 20), so this call failed with HTTP 400 on literally every
+    // single token, 100% of the time, silently starving smart-wallet-candidate discovery of any
+    // data at all. Clamped here so the client itself can never violate the real API contract,
+    // regardless of what a caller (or an Admin config value) passes in.
+    return dataOf(await this.get("/defi/v2/tokens/top_traders",{address:token,time_frame:timeFrame,sort_by:"total_pnl",sort_type:"desc",offset:0,limit:Math.max(1,Math.min(10,Math.round(limit)))},"solana"));
   }
   async walletPnlSummary(address:string,duration="30d",chain:ChainName="solana"){
     return dataOf(await this.get("/wallet/v2/pnl/summary",{wallet:address,duration},chain));

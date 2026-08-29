@@ -64,7 +64,11 @@ async function scan(){
     const maxMc=Math.max(100000,Number(cfg?.maxMarketCapUsd??25_000_000));
     const minMc=Math.max(10000,Number(cfg?.minMarketCapUsd??75_000));
     const tokenLimit=Math.max(10,Math.min(100,Number(cfg?.tokenScanLimit??40)));
-    const traderLimit=Math.max(5,Math.min(50,Number(cfg?.topTradersPerToken??20)));
+    // Birdeye's top_traders endpoint hard-caps at 10 -- this used to default to 20 and clamp up to
+    // 50, so every call failed with HTTP 400 (see BirdeyeClient.topTraders). The client now
+    // defends against this too, but the config-facing range should never advertise a value that
+    // can't actually work.
+    const traderLimit=Math.max(1,Math.min(10,Number(cfg?.topTradersPerToken??10)));
     const [trending,list]=await Promise.allSettled([
       client.trending("solana",Math.min(50,tokenLimit)),
       client.tokenListSolana({minLiquidity:minLiq,maxMarketCap:maxMc,minMarketCap:minMc,limit:tokenLimit})
