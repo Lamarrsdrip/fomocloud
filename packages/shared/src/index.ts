@@ -287,22 +287,32 @@ export function solanaRpcCandidates(cfg: { heliusRpc?: string; solanaRpc?: strin
 // Falls back to the first candidate (never throws for a non-empty list) so a transient probe
 // failure never blocks startup outright -- the caller's own real usage will surface a genuine
 // failure if the chosen candidate turns out not to work after all.
+async function probeOnce(url: string): Promise<boolean> {
+  const res = await Promise.race([
+    fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }) }),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Timed out")), 5000)),
+  ]);
+  if (!res.ok) return false;
+  const body = await res.json().catch(() => null);
+  return body?.result === "ok";
+}
+
 export async function pickHealthyRpc(candidates: string[], logPrefix = "[rpc]"): Promise<string> {
   if (candidates.length === 0) throw new Error("SOLANA_RPC_REQUIRED");
   for (const url of candidates) {
     const host = (() => { try { return new URL(url).host } catch { return url } })();
     try {
-      const res = await Promise.race([
-        fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }) }),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Timed out")), 5000)),
-      ]);
-      if (res.ok) {
-        const body = await res.json().catch(() => null);
-        if (body?.result === "ok") return url;
-        console.warn(`${logPrefix} RPC candidate unhealthy body, trying next if available`, host, body);
-      } else {
-        console.warn(`${logPrefix} RPC candidate unhealthy, trying next if available`, host, res.status);
-      }
+      // Real bug found while diagnosing the live incident this replaced: this only ran once per
+      // full worker cycle (not once per RPC call), so a single transient health-check blip on an
+      // otherwise-fine primary (confirmed live: api.mainnet-beta.solana.com genuinely works, but
+      // failed one probe under load) locked the entire cycle onto a lower-priority fallback that
+      // then failed a DIFFERENT way (PublicNode's free tier blocks "indexed" methods like
+      // getTokenSupply even though it passes getHealth). One retry after a short pause is enough to
+      // smooth over a one-off blip without meaningfully slowing down the common case.
+      let healthy = await probeOnce(url);
+      if (!healthy) { await new Promise(r => setTimeout(r, 400)); healthy = await probeOnce(url).catch(() => false); }
+      if (healthy) return url;
+      console.warn(`${logPrefix} RPC candidate unhealthy after retry, trying next if available`, host);
     } catch (e: any) {
       console.warn(`${logPrefix} RPC candidate unreachable, trying next if available`, host, e?.message);
     }
