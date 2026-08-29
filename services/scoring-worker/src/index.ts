@@ -42,7 +42,12 @@ async function tick(){
     const provenMin=Math.max(paperMin,Number(dc?.provenMinScore??process.env.DISCOVERY_PROVEN_MIN_SCORE??78));
     const provenSamples=Math.max(5,Number(dc?.provenMinForwardSamples??process.env.DISCOVERY_PROVEN_MIN_FORWARD_SAMPLES??20));
     const provenMean=Math.max(0,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
-    const candidates=await db.smartWalletCandidate.findMany({where:{stage:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING"]}},orderBy:[{lastScoredAt:"asc"},{createdAt:"asc"}],take:50});
+    // Real bug found by audit: PROVEN was excluded from this filter, so once a wallet was proven
+    // it was NEVER re-scored again -- its scores froze permanently at promotion-time values, any
+    // subsequent performance/risk deterioration was invisible, and there was no automatic way to
+    // pull a degraded trader out of real copy-trading. PROVEN now stays in the loop; the demotion
+    // branch below is what actually acts on a real decline.
+    const candidates=await db.smartWalletCandidate.findMany({where:{stage:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}},orderBy:[{lastScoredAt:"asc"},{createdAt:"asc"}],take:50});
     for(const c of candidates){
       try{
         const raw=await b.walletPnlSummary(c.address,"30d","solana");
@@ -65,11 +70,34 @@ async function tick(){
         });
         const forwardMean=forwardReturns.length?forwardReturns.reduce((a,x)=>a+x,0)/forwardReturns.length:0;
         let stage=c.stage;
+        let demoted=false,autoRejected=false;
         if(stage!=="PAPER_TRACKING"&&shouldPaperTrack(s,p.tradeCount)&&s.copyabilityScore>=paperMin){stage="PAPER_TRACKING";promotedPaper++;await ensurePaperTrader(c)}
         if(stage==="PAPER_TRACKING"&&shouldProve(s,forwardReturns.length,forwardMean)&&s.copyabilityScore>=provenMin&&forwardReturns.length>=provenSamples&&forwardMean>=provenMean){stage="PROVEN";promotedProven++}
-        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean}}});
+        // A PROVEN trader is live-copyable real money. A meaningful, not-noise-level decline (15pt
+        // buffer below the bar that promoted them, or risk well past shouldProve's own 42 cap) must
+        // pull them out of real trading automatically rather than sit frozen at promotion-time
+        // trust forever -- mirrors the admin's own manual "Pause" action (same trader/traderWallet
+        // side effects) so this reads identically whether a human or the scorer did it.
+        if(stage==="PROVEN"&&(s.copyabilityScore<provenMin-15||s.riskScore>60)){stage="PAUSED";demoted=true}
+        // REJECTED is a dead end (excluded from the query above) by design -- only apply it to a
+        // candidate that's had at least one full scoring pass already (never on the very first
+        // read) and clearly, not marginally, fails to qualify, so a wallet oscillating near the
+        // paper-tracking bar isn't permanently locked out by one noisy sample.
+        else if((stage==="DISCOVERED"||stage==="ANALYZING")&&c.lastScoredAt&&p.tradeCount>=15&&s.copyabilityScore<paperMin-15){stage="REJECTED";autoRejected=true;rejected++}
+        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
+        if(demoted){
+          const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
+          if(traderId){
+            await db.trader.update({where:{id:traderId},data:{enabled:false,trackingStatus:"PAUSED",recommended:false}}).catch(()=>{});
+            await db.traderWallet.updateMany({where:{traderId},data:{monitoringStatus:"PAUSED"}}).catch(()=>{});
+          }
+        }
         await db.walletScoreSnapshot.create({data:{chain:"SOLANA",address:c.address,candidateId:c.id,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,riskScore:s.riskScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,metadata:{forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean}}});
-        if(c.traderId||stage==="PROVEN"){
+        if(!demoted&&(c.traderId||stage==="PROVEN")){
+          // Skipped when demoted -- the block above already set the correct PAUSED status; this
+          // one only understands PROVEN vs PAPER_TRACKING and would otherwise silently overwrite
+          // PAUSED back to PAPER_TRACKING, losing the distinction between "still building evidence"
+          // and "was proven, then pulled from real trading for a real reason."
           const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
           if(traderId)await db.trader.update({where:{id:traderId},data:{enabled:stage==="PROVEN",trackingStatus:stage==="PROVEN"?"PROVEN":"PAPER_TRACKING",recommended:stage==="PROVEN"&&s.copyabilityScore>=85}});
         }
