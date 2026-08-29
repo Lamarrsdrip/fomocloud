@@ -66,11 +66,17 @@ async function maybeSignal(opp:any,trader:any,users:any[]){
   const cfg=await getConfig<any>("brain");
   const threshold=Math.max(1,Math.min(100,Number(cfg?.autoEntryScore??76)));
   if(opp.action!=="BUY_NOW"||opp.score<threshold)return;
+  // One entry per genuine qualification, not one per 30s clock tick this opportunity happens to
+  // still be BUY_NOW for -- see the lastSignaledState schema comment. The 30s bucket in the key
+  // below now only protects against firing twice within the same tick/near-simultaneous evaluation,
+  // never against re-firing every 30s while the token is simply still hot.
+  if(!didStateUpgrade(opp.lastSignaledState,opp.state))return;
   const bucket=Math.floor(Date.now()/30_000),key=crypto.createHash("sha256").update(`BRAIN:${opp.chain}:${opp.mint}:${bucket}`).digest("hex");
   const existing=await db.signal.findUnique({where:{idempotencyKey:key}});if(existing)return;
   const snap=await db.memeMarketSnapshot.findFirst({where:{chain:opp.chain,mint:opp.mint},orderBy:{observedAt:"desc"}});if(!snap)return;
   const inputMint=opp.chain==="SOLANA"?USDC_SOL:"USDC";
   const signal=await db.signal.create({data:{idempotencyKey:key,chain:opp.chain,traderId:trader.id,sourceWallet:"GLOBAL_BRAIN",sourceTx:`brain:${opp.id}:${bucket}`,action:"BUY",inputMint,outputMint:opp.mint,inputRaw:"0",outputRaw:"0",sourcePriceUsd:snap.priceUsd,sourcePriceMethod:"GLOBAL_BRAIN_MARK",sourceMarketCapUsd:snap.marketCapUsd,observedAt:new Date(),status:"DETECTED"}});
+  await db.globalBrainOpportunity.update({where:{id:opp.id},data:{lastSignaledState:opp.state}}).catch(()=>{});
   await signalQueue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:250},removeOnComplete:1000});signals++;
   await notifyUsers(opp,users);
 }
@@ -178,14 +184,16 @@ async function tick(){
         await notifyDiscoveryUpgrade(row,d.state)
           .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:d.state}}))
           .catch(e=>console.error("[brain-worker] discovery notify failed, will retry next tick",row.mint,e));
-      }else if((STATE_RANK[d.state]??0)===0&&existing?.lastNotifiedState&&(STATE_RANK[existing.lastNotifiedState]??0)>0){
+      }else if((STATE_RANK[d.state]??0)===0&&((existing?.lastNotifiedState&&(STATE_RANK[existing.lastNotifiedState]??0)>0)||(existing?.lastSignaledState&&(STATE_RANK[existing.lastSignaledState]??0)>0))){
         // Real bug found by audit: lastNotifiedState only ever ratchets up (see didStateUpgrade),
         // so a token that once reached MONEY_RUSH would never notify again -- even after a genuine
         // full cool-down and a real re-heat months later, since 750ms ticks mean nothing here is
         // noise-tolerant enough to reset on a partial dip. Only reset on a return to the true
         // SCANNING baseline, an unambiguous "this cooled off for real" signal, so a later genuine
         // climb notifies again without spamming on ordinary score flapping near a rank boundary.
-        await db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:null}}).catch(()=>{});
+        // lastSignaledState resets the same way, for the same reason: a real re-entry after a
+        // genuine cool-down is a deliberate strategy decision, not clock rollover.
+        await db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:null,lastSignaledState:null}}).catch(()=>{});
       }
       if(newConvergence){
         await notifyConvergence(row,convergentCount)

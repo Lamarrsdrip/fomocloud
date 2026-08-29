@@ -1046,6 +1046,14 @@ model GlobalBrainOpportunity {
   // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
   // 750ms tick a token happens to still be in that state.
   lastNotifiedState         String?
+  // Real bug found by audit: maybeSignal()'s only dedup was a rolling 30s idempotency bucket, so a
+  // token that stayed BUY_NOW for 5 minutes fired a genuinely new BUY Signal every 30s -- and since
+  // UserFollow.copyAdditionalBuys defaults to true, the executor would not skip these, meaning a
+  // real user would get repeated real buys of the SAME token every 30 seconds for as long as it
+  // stayed hot. Tracks the highest state an entry signal has already fired for, same ratchet-up /
+  // reset-only-on-SCANNING discipline as lastNotifiedState, so one initial entry fires per genuine
+  // qualification and a real re-entry requires an actual cool-down and re-heat, not clock rollover.
+  lastSignaledState         String?
   // The observedAt of the actual MemeMarketSnapshot this score was computed from -- distinct from
   // lastEvaluatedAt, which only proves the Brain loop ran, not that it had fresh chain data to
   // work with. Lets the UI show real evidence age instead of implying every score is live.
