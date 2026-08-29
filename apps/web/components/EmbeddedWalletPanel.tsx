@@ -5,6 +5,7 @@ import { PrivyProvider, usePrivy, useLoginWithEmail, useSigners, useUser } from 
 import { useWallets, useCreateWallet } from "@privy-io/react-auth/solana";
 import { apiFetch, plainError } from "../lib/api";
 import { Wallet as WalletIcon, Copy } from "lucide-react";
+import { WalletDetailSheet } from "./WalletDetailSheet";
 
 type Step = "idle" | "email" | "code" | "creating" | "delegating" | "registering" | "done";
 
@@ -63,6 +64,7 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
   const [err, setErr] = useState("");
 
   const embeddedWallet = (me?.wallets || []).find((w: any) => w.chain === "SOLANA" && w.tradingEnabled && w.permissionRef);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   async function afterAuthenticated() {
     setErr("");
@@ -127,11 +129,14 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
   }
 
   if (embeddedWallet) {
-    return <div className="wallet-line">
-      <div><b>MemeCloud wallet · {embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
-        <small>Created and custodied by MemeCloud (Privy) · Trading permission active{embeddedWallet.permissionExpiry ? ` until ${new Date(embeddedWallet.permissionExpiry).toLocaleDateString()}` : ""}</small></div>
-      <button className="soft-action" onClick={() => { navigator.clipboard.writeText(embeddedWallet.address).catch(() => {}); }}><Copy size={12} /> Copy address</button>
-    </div>;
+    return <>
+      <div className="wallet-line">
+        <div><b>MemeCloud wallet · {embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
+          <small>Created and custodied by MemeCloud (Privy) · Trading permission active{embeddedWallet.permissionExpiry ? ` until ${new Date(embeddedWallet.permissionExpiry).toLocaleDateString()}` : ""}</small></div>
+        <button className="soft-action" onClick={() => setDetailOpen(true)}><WalletIcon size={12} /> Send / Receive / History</button>
+      </div>
+      {detailOpen && <WalletDetailSheet wallet={embeddedWallet} onClose={() => setDetailOpen(false)} onSent={reload} />}
+    </>;
   }
 
   return <div className="switch-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>

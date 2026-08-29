@@ -21,7 +21,8 @@ type TestResult = { ok: boolean; state: ProviderState; httpStatus?: number; late
 import { sendEmail, sendPush, ensureVapid, publicPushKey, renderEmail } from "@memecloud/notifications";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { JupiterExecution } from "@memecloud/execution";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferInstruction } from "@solana/spl-token";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
@@ -1039,6 +1040,150 @@ app.post("/v1/me/wallets/:id/disable-automation", auth, asyncRoute(async (req:Au
   await db.wallet.update({where:{id:wallet.id},data:{tradingEnabled:false,permissionRef:null,permissionExpiry:null}});
   await db.globalTradingSettings.updateMany({where:{userId:req.user.sub},data:{autoCopyEnabled:false}});
   await audit(req.user.sub,"USER","REVOKE_DELEGATED_TRADING",wallet.id);res.json({ok:true});
+}));
+
+// ------------------------ WALLET TRANSACTION HISTORY (real on-chain reads) ------------------------
+app.get("/v1/me/wallets/:id/history", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub,chain:"SOLANA"}});
+  if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
+  const marketCfg=await getConfig<any>("marketData");
+  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!rpc)return res.json({transactions:[],rpcConfigured:false});
+  const conn=new Connection(rpc,"confirmed");
+  const usdcMint=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const sigs=await conn.getSignaturesForAddress(new PublicKey(wallet.address),{limit:20});
+  const transactions=await Promise.all(sigs.map(async s=>{
+    if(s.err)return {signature:s.signature,blockTime:s.blockTime,status:"FAILED" as const};
+    try{
+      const tx=await conn.getParsedTransaction(s.signature,{maxSupportedTransactionVersion:0,commitment:"confirmed"});
+      if(!tx||!tx.meta)return {signature:s.signature,blockTime:s.blockTime,status:"UNKNOWN" as const};
+      const idx=tx.transaction.message.accountKeys.findIndex(k=>k.pubkey.toBase58()===wallet.address);
+      const solDeltaSol=idx>=0?(tx.meta.postBalances[idx]-tx.meta.preBalances[idx])/1e9:0;
+      const usdcOf=(rows:typeof tx.meta.preTokenBalances)=>(rows??[]).filter(b=>b.owner===wallet.address&&b.mint===usdcMint).reduce((a,b)=>a+Number(b.uiTokenAmount.amount||0),0);
+      const usdcDelta=(usdcOf(tx.meta.postTokenBalances)-usdcOf(tx.meta.preTokenBalances))/1e6;
+      return {signature:s.signature,blockTime:s.blockTime,status:"CONFIRMED" as const,solDeltaSol,usdcDelta,feeSol:(tx.meta.fee??0)/1e9};
+    }catch{
+      // A transaction this old may have fallen out of the RPC's retained history, or the RPC
+      // itself may be rate-limited (documented external Helius blocker) -- surface it honestly as
+      // unresolved rather than silently dropping the row or fabricating a delta.
+      return {signature:s.signature,blockTime:s.blockTime,status:"UNKNOWN" as const};
+    }
+  }));
+  res.json({transactions,rpcConfigured:true});
+}));
+
+// ------------------------ WALLET SEND (real on-chain transfer, signed via the same delegated
+// Privy signer already used for trade execution) ------------------------
+app.post("/v1/me/wallets/:id/send", auth, tradeLimiter, asyncRoute(async (req:AuthedRequest,res) => {
+  const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub,chain:"SOLANA"}});
+  if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
+  const permitted=wallet.tradingEnabled&&wallet.permissionRef&&(!wallet.permissionExpiry||wallet.permissionExpiry>new Date());
+  if(!permitted)return res.status(409).json({error:"TRADING_PERMISSION_REQUIRED",message:"This wallet has no active delegated signing permission, so MemeCloud cannot sign a send on its behalf."});
+
+  const asset=String(req.body?.asset??"").toUpperCase();
+  if(asset!=="SOL"&&asset!=="USDC")return res.status(400).json({error:"INVALID_ASSET"});
+  const toAddressRaw=String(req.body?.toAddress??"").trim();
+  const amount=Number(req.body?.amount??0);
+  const clientRequestId=String(req.body?.clientRequestId??"").trim();
+  if(!clientRequestId||!/^[a-zA-Z0-9-]{8,64}$/.test(clientRequestId))return res.status(400).json({error:"CLIENT_REQUEST_ID_REQUIRED"});
+  if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({error:"INVALID_AMOUNT"});
+  if(toAddressRaw===wallet.address)return res.status(400).json({error:"CANNOT_SEND_TO_SELF"});
+  let toPubkey:PublicKey;
+  try{toPubkey=new PublicKey(toAddressRaw)}catch{return res.status(400).json({error:"INVALID_DESTINATION_ADDRESS"})}
+
+  const marketCfg=await getConfig<any>("marketData");
+  const rpc=marketCfg?.heliusRpc||marketCfg?.solanaRpc||process.env.SOLANA_RPC_HTTP;
+  if(!rpc)return res.status(409).json({error:"SOLANA_RPC_REQUIRED"});
+  const signerCfg=await getConfig<any>("signer");
+  const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID,privyAppSecret=signerCfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+  const privyAuthKey=signerCfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+  if(!privyAppId||!privyAppSecret)return res.status(503).json({error:"DELEGATED_SIGNER_NOT_CONFIGURED"});
+  const sponsorGas=Boolean(signerCfg?.sponsorGas);
+  const privy=new PrivySolanaSigner({appId:privyAppId,appSecret:privyAppSecret,authorizationPrivateKey:privyAuthKey,sponsorGas});
+  // Only used for its generic waitConfirmed() (a plain signature-status poll, no Jupiter API call
+  // involved) -- same shared execution utility the manual-trade route already constructs, not a
+  // Jupiter-specific step for a plain transfer.
+  const execCfg=await getConfig<any>("execution");
+  const jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
+
+  const key=`send:${req.user.sub}:${clientRequestId}`;
+  const fromPubkey=new PublicKey(wallet.address);
+  const usdcMint=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+  try{
+    const conn=new Connection(rpc,"confirmed");
+
+    // Idempotent resume: an existing attempt for this exact client request either already has a
+    // hash (return it) or is ambiguous and must be reconciled via Privy's own reference lookup
+    // before ever considering a resubmit -- never a blind retry of a real-money transfer.
+    const existing=await db.liveExecutionAttempt.findUnique({where:{idempotencyKey:key}});
+    if(existing){
+      if(existing.status==="CONFIRMED"&&existing.txHash)return res.status(200).json({ok:true,txHash:existing.txHash});
+      const ref=existing.idempotencyKey.slice(0,64);
+      const recovered=existing.txHash||await recoverManualPrivyHash(privy,ref);
+      if(!recovered)return res.status(409).json({error:"AMBIGUOUS_PRIOR_SEND_ATTEMPT",message:"A previous send for this exact request has no confirmed result yet and cannot be safely resubmitted. Try again shortly."});
+      await db.liveExecutionAttempt.update({where:{id:existing.id},data:{status:"SUBMITTED",txHash:recovered}});
+      await jupiter.waitConfirmed(rpc,recovered,60_000);
+      await db.liveExecutionAttempt.update({where:{id:existing.id},data:{status:"CONFIRMED",txHash:recovered}});
+      await audit(req.user.sub,"USER","WALLET_SEND",wallet.id,{asset,toAddress:toAddressRaw,amount,txHash:recovered});
+      return res.status(200).json({ok:true,txHash:recovered});
+    }
+
+    const instructions=[];
+    if(asset==="SOL"){
+      const lamports=Math.round(amount*1_000_000_000);
+      const balance=await conn.getBalance(fromPubkey,"confirmed");
+      const feeReserveLamports=sponsorGas?0:10_000;
+      if(lamports+feeReserveLamports>balance)return res.status(409).json({error:"INSUFFICIENT_BALANCE",message:"This wallet does not have enough SOL to cover the amount plus network fees."});
+      instructions.push(SystemProgram.transfer({fromPubkey,toPubkey,lamports}));
+    }else{
+      const amountRaw=BigInt(Math.round(amount*1_000_000));
+      const mint=new PublicKey(usdcMint);
+      const sourceAta=await getAssociatedTokenAddress(mint,fromPubkey);
+      const destAta=await getAssociatedTokenAddress(mint,toPubkey);
+      const [sourceBalance,destInfo]=await Promise.all([
+        conn.getTokenAccountBalance(sourceAta,"confirmed").catch(()=>null),
+        conn.getAccountInfo(destAta,"confirmed")
+      ]);
+      const sourceRaw=BigInt(sourceBalance?.value?.amount??"0");
+      if(amountRaw>sourceRaw)return res.status(409).json({error:"INSUFFICIENT_BALANCE",message:"This wallet does not have enough USDC to cover this amount."});
+      if(!destInfo){
+        // Recipient has no USDC token account yet -- this wallet pays to create it (standard
+        // practice; costs a small amount of rent-exempt SOL), same as any real Solana wallet app.
+        const solBalance=await conn.getBalance(fromPubkey,"confirmed");
+        if(solBalance<3_000_000)return res.status(409).json({error:"INSUFFICIENT_SOL_FOR_ATA",message:"The recipient has no USDC account yet and this wallet needs a small amount of SOL to create one."});
+        instructions.push(createAssociatedTokenAccountInstruction(fromPubkey,destAta,toPubkey,mint));
+      }
+      instructions.push(createTransferInstruction(sourceAta,destAta,fromPubkey,amountRaw));
+    }
+
+    const {blockhash}=await conn.getLatestBlockhash("confirmed");
+    const message=new TransactionMessage({payerKey:fromPubkey,recentBlockhash:blockhash,instructions}).compileToV0Message();
+    const built=Buffer.from(new VersionedTransaction(message).serialize()).toString("base64");
+
+    await db.liveExecutionAttempt.create({data:{idempotencyKey:key,userId:req.user.sub,purpose:"SEND",chain:"SOLANA",walletAddress:wallet.address,provider:"PRIVY",providerRef:wallet.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
+    let hash:string;
+    try{
+      const sent=await privy.signAndSend(wallet.permissionRef!,built,key.slice(0,64));
+      hash=sent.hash;
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:key},data:{status:"SUBMITTED",txHash:hash}});
+    }catch(e:any){
+      const recovered=await recoverManualPrivyHash(privy,key.slice(0,64));
+      if(!recovered){
+        await db.liveExecutionAttempt.update({where:{idempotencyKey:key},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_SEND_ATTEMPT"),errorMessage:String(e?.message??e)}}).catch(()=>{});
+        await db.riskIncident.create({data:{severity:"CRITICAL",scope:"LIVE_EXECUTION",userId:req.user.sub,chain:"SOLANA",code:String(e?.code??"AMBIGUOUS_SEND_ATTEMPT"),detail:{message:String(e?.message??e),referenceId:key.slice(0,64),asset,toAddress:toAddressRaw,amount}}}).catch(()=>{});
+        return res.status(502).json({error:"SEND_SUBMIT_FAILED",message:"MemeCloud could not confirm whether this send reached Solana. It has not been retried automatically."});
+      }
+      hash=recovered;
+      await db.liveExecutionAttempt.update({where:{idempotencyKey:key},data:{status:"SUBMITTED",txHash:hash}}).catch(()=>{});
+    }
+    await jupiter.waitConfirmed(rpc,hash,60_000);
+    await db.liveExecutionAttempt.update({where:{idempotencyKey:key},data:{status:"CONFIRMED",txHash:hash}});
+    await audit(req.user.sub,"USER","WALLET_SEND",wallet.id,{asset,toAddress:toAddressRaw,amount,txHash:hash});
+    res.status(200).json({ok:true,txHash:hash});
+  }catch(e:any){
+    res.status(409).json({error:e?.code||"SEND_FAILED",message:e?.message||"This send could not be completed."});
+  }
 }));
 
 // ------------------------ TRADERS ------------------------

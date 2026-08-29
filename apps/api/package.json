@@ -29,7 +29,8 @@
     "@memecloud/providers": "workspace:*",
     "@memecloud/execution": "workspace:*",
     "@memecloud/brain": "workspace:*",
-    "@solana/web3.js": "^1.98.4"
+    "@solana/web3.js": "^1.98.4",
+    "@solana/spl-token": "^0.4.15"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
