@@ -54,6 +54,10 @@ export default function AppPage(){
   const[customOpen,setCustomOpen]=useState(false);
   const[brain,setBrain]=useState<any[]>([]);
   const[brainDegraded,setBrainDegraded]=useState(false);
+  // Explicitly separate from `brain` (the qualified feed) -- early/raw intelligence that hasn't
+  // cleared the same evidence bar. Kept apart in state, not just filtered client-side, so the two
+  // never accidentally get merged back into one undifferentiated list.
+  const[newTokenRadar,setNewTokenRadar]=useState<any[]>([]);
   const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
 
@@ -66,7 +70,7 @@ export default function AppPage(){
         apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/settings"),apiFetch("/v1/me/notifications"),apiFetch("/v1/me/sessions")
       ]);
       setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
-      apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
+      apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setNewTokenRadar(x.newTokenRadar||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
     }catch(e:any){
       if(e?.status===401){
         // A silent bounce back to a blank login form (no explanation) is exactly the Phantom
@@ -86,7 +90,7 @@ export default function AppPage(){
       if(stopped||document.visibilityState!=="visible")return;
       try{
         const[d,a,pos,t,n,b]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications"),apiFetch<any>("/v1/brain/feed")]);
-        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
+        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setNewTokenRadar(b.newTokenRadar||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
       }catch(e:any){if(e?.status===401&&!stopped)location.replace("/login/")}
     };
     const timer=setInterval(()=>void refreshLive(),8000);
@@ -135,7 +139,7 @@ export default function AppPage(){
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
-        {view==="discover"&&<DiscoverView brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
+        {view==="discover"&&<DiscoverView brain={brain} newTokenRadar={newTokenRadar} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="smart-wallets"&&<SmartWalletsView/>}
         {view==="trade"&&<TradeView settings={settings} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
@@ -209,7 +213,7 @@ function lifecycleLabel(status:string){return LIFECYCLE_LABELS[status]||status}
 function whaleCount(o:any){return (o.whaleBuyers60s||0)+(o.knownWhaleBuyers60s||0)}
 function copyText(t:string){try{navigator.clipboard.writeText(t)}catch{}}
 function TokenAvatar({symbol,size=38}:{symbol?:string;size?:number}){return <div className="token-avatar" style={{width:size,height:size,fontSize:size*0.4}}>{(symbol||"?").slice(0,2).toUpperCase()}</div>}
-function DiscoverView({brain,brainDegraded,setView,openToken}:{brain:any[];brainDegraded:boolean;setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
+function DiscoverView({brain,newTokenRadar,brainDegraded,setView,openToken}:{brain:any[];newTokenRadar:any[];brainDegraded:boolean;setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
  const[filter,setFilter]=useState<typeof discoverFilters[number][0]>("trending");
  const rows=useMemo(()=>{
   const list=[...brain];
@@ -226,6 +230,15 @@ function DiscoverView({brain,brainDegraded,setView,openToken}:{brain:any[];brain
     <div className="token-row-main"><b>{o.symbol||o.name||"New token"}</b><small>{o.chain} · {money(o.marketCapUsd||0)} MC · {money(o.inflow60sUsd||0)} / 60s · Found {timeAgo(o.firstSeenAt)}</small>{o.reasons?.[0]&&<small className="token-row-reason">{o.reasons[0]}</small>}</div>
     <div className="token-row-side"><span className={`status-badge ${o.action==="BUY_NOW"?"":o.lifecycleStatus==="STALE"||o.lifecycleStatus==="COOLING"?"watch":""}`}>{whaleCount(o)>0?`🐋 ${whaleCount(o)}`:lifecycleLabel(o.lifecycleStatus||qualityLabel(o.score))}</span><small>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x momentum`:"Watching"}</small></div>
    </div>)}</div>:<Empty icon={TrendingUp} title={brainDegraded?"Discovery is temporarily paused":"Nothing here yet"} body={brainDegraded?"The market data provider is rate-limited right now, so MemeCloud isn't scoring new tokens. This will resume automatically once the provider recovers.":"MemeCloud is scanning chain flow. Real opportunities appear here as on-chain evidence arrives — nothing is invented while it's quiet."} action="Browse traders instead" onClick={()=>setView("traders")}/>}
+  {Boolean(newTokenRadar.length)&&<>
+   <div className="card-title" style={{marginTop:20}}><div><span>NEW TOKEN RADAR</span><h2>Early, unqualified activity</h2></div></div>
+   <div className="notice" style={{marginBottom:12}}>These tokens haven't cleared MemeCloud's evidence bar yet — early/raw intelligence, not a recommendation. They may never qualify.</div>
+   <div className="token-list">{newTokenRadar.map(o=><div className="token-row" key={o.id} onClick={()=>openToken({chain:o.chain,mint:o.mint})}>
+    <TokenAvatar symbol={o.symbol||o.name}/>
+    <div className="token-row-main"><b>{o.symbol||o.name||"New token"}</b><small>{o.chain} · {money(o.marketCapUsd||0)} MC · Found {timeAgo(o.firstSeenAt)}</small></div>
+    <div className="token-row-side"><span className="status-badge watch">{lifecycleLabel(o.lifecycleStatus)}</span></div>
+   </div>)}</div>
+  </>}
  </>
 }
 

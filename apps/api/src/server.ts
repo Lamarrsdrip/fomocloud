@@ -1677,7 +1677,15 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 // gate EXECUTION, never observation.
 app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const now=Date.now();
-  const [opportunities,mostRecentlyEvaluated]=await Promise.all([
+  // Real gap found by forensic audit (M-5/PC-E): the main feed's qualification was "any nonzero
+  // inflow/buyer OR just-seen" -- a token with a single $0.01 buy technically qualified, just
+  // ranked low by score. That's not "MemeCloud recommends this," it's a token-list API with sorting.
+  // QUALIFIED_MIN_SCORE reuses evaluateOpportunity's own "WATCH" threshold (score>=56) -- the same
+  // principled bar already used elsewhere to mean "genuine, evidence-backed evidence," not an
+  // arbitrary new number invented for this route. A token with truly no real buyer/inflow/whale
+  // evidence cannot reach this score (the formula's base is ~24-30 with zero evidence).
+  const QUALIFIED_MIN_SCORE=56;
+  const [opportunities,newTokenRadar,mostRecentlyEvaluated]=await Promise.all([
     db.globalBrainOpportunity.findMany({
       where:{
         // Real bug found by audit, surfaced by a live 20+ hour outage (Helius RPC quota exhausted
@@ -1689,15 +1697,19 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
         // of a bare empty list. Widened so genuine outages don't erase the feed entirely;
         // pipelineDegraded below is what actually tells the client this isn't live right now.
         lastEvaluatedAt:{gte:new Date(now-48*60*60_000)},
-        OR:[
-          {inflow60sUsd:{gt:0}},
-          {buyers60s:{gt:0}},
-          {whaleBuyers60s:{gt:0}},
-          {knownWhaleBuyers60s:{gt:0}},
-          {firstSeenAt:{gte:new Date(now-10*60_000)}}
-        ]
+        score:{gte:QUALIFIED_MIN_SCORE}
       },
       orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
+    }),
+    // Explicit, separate "New Token Radar": early/raw intelligence for users who want it, clearly
+    // NOT the same list as the qualified opportunities above. Capped smaller and to genuinely recent
+    // tokens only -- this is meant to answer "what's brand new," not to be a second, looser Discover.
+    db.globalBrainOpportunity.findMany({
+      where:{
+        firstSeenAt:{gte:new Date(now-30*60_000)},
+        score:{lt:QUALIFIED_MIN_SCORE}
+      },
+      orderBy:{firstSeenAt:"desc"},take:50
     }),
     // Deliberately unfiltered by the 6h window above -- this is the real signal of whether the
     // Brain's scoring loop is actually running at all right now, independent of whether any
@@ -1713,7 +1725,15 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   // long means its upstream data (MemeMarketSnapshot, itself dependent on the Solana RPC) has
   // stalled, not that the loop is just between ticks.
   const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
-  res.json({watching:true,opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),pipelineDegraded,dataFreshnessSec});
+  res.json({
+    watching:true,
+    opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
+    // Additive field: existing clients reading only `opportunities` are unaffected. A future
+    // Discover UI pass can render this as the explicitly-separate "New Token Radar" the product
+    // spec calls for, rather than mixing unqualified rows into the main feed.
+    newTokenRadar:newTokenRadar.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
+    pipelineDegraded,dataFreshnessSec
+  });
 }));
 app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   const chain=routeParam(req.params.chain) as Chain;
