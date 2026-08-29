@@ -10,7 +10,13 @@ export type BrainEvidence={
   liquidityChange5mPct?:number; creatorNetSell5mPct?:number; top10EffectivePct?:number;
   drawdownFromRecentPeakPct?:number; catalystBoost?:number;
 };
-export type BrainDecision={score:number;action:"BUY_NOW"|"WATCH"|"IGNORE";state:string;reasons:string[];warnings:string[];survivorScore:number};
+// Real gap found by forensic audit (M-16/C-8): the platform's only user/admin-visible number was
+// one opaque composite score. "87/100" answers nothing about WHY -- is it whale activity, raw
+// momentum, or thin/risky liquidity carrying the number? Breakdown is purely additive/diagnostic:
+// computed from the exact same BrainEvidence inputs as the score above, never fed back into it, so
+// this cannot change any real trading decision -- it only explains one that's already made.
+export type BrainBreakdown={momentum:number;smartMoney:number;executionQuality:number;risk:number;evidenceCompleteness:number};
+export type BrainDecision={score:number;action:"BUY_NOW"|"WATCH"|"IGNORE";state:string;reasons:string[];warnings:string[];survivorScore:number;breakdown:BrainBreakdown};
 const clamp=(n:number,a=0,b=100)=>Math.min(b,Math.max(a,n));
 const ratio=(a:number,b:number)=>a/Math.max(1,b);
 
@@ -60,7 +66,47 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   score=clamp(Math.round(score));
   const state=score>=86?"MONEY_RUSH":score>=76?"BREAKOUT_FLOW":score>=64?"BUILDING":"SCANNING";
   const action=score>=76?"BUY_NOW":score>=56?"WATCH":"IGNORE";
-  return {score,action,state,reasons,warnings,survivorScore};
+  const breakdown=scoreBreakdown(e,flowRatio,whaleDensity);
+  return {score,action,state,reasons,warnings,survivorScore,breakdown};
+}
+
+// Same evidence, five human-legible lenses instead of one number. Each is independently clamped
+// 0-100; none of these values feed back into `score` above or each other.
+function scoreBreakdown(e:BrainEvidence,flowRatio:number,whaleDensity:number):BrainBreakdown{
+  const momentum=clamp(
+    clamp(Math.log10(1+e.inflow10sUsd)*9,0,26)+
+    clamp(Math.log10(1+e.inflow60sUsd)*6,0,22)+
+    clamp(e.buyers10s*2.6,0,20)+
+    clamp((e.volumeAcceleration1m-1)*14,-10,22)+
+    clamp((flowRatio-1)*10,-10,20)+
+    clamp((e.holderGrowth5mPct??0)*1,-8,10)
+  );
+  const smartMoney=clamp(
+    clamp(whaleDensity*9,0,55)+
+    clamp(e.knownWhaleBuyers60s*15,0,30)+
+    clamp((e.smartMoneyNetFlow5mUsd??0)/Math.max(5000,e.liquidityUsd)*40,-15,25)
+  );
+  // A proxy for "can real size actually get filled here" from evidence Brain already has (no quote
+  // exists yet at this stage -- the executor's own price-impact check at quote time remains the
+  // actual authority on executability; this is explanatory, not a promise).
+  const executionQuality=clamp(
+    clamp(Math.log10(1+e.liquidityUsd)*14,0,70)-
+    clamp(Math.max(0,(e.top10EffectivePct??0)-40)*.6,0,30)
+  );
+  const risk=clamp(
+    clamp(Math.max(0,-(e.liquidityChange5mPct??0))*.8,0,30)+
+    clamp((e.creatorNetSell5mPct??0)*.4,0,30)+
+    clamp((e.socialSpamRatio??0)*100*.25,0,15)+
+    clamp(Math.max(0,(e.top10EffectivePct??0)-50)*.5,0,25)+
+    (e.liquidityUsd<5_000?15:0)
+  );
+  // How many of the OPTIONAL evidence fields (provider-dependent; can genuinely be unavailable) are
+  // actually present. Same UNKNOWN-!=-SAFE discipline as packages/discovery's evidenceCompleteness:
+  // this number existing lets a caller distinguish "confidently evaluated" from "mostly guessed."
+  const optionalFields:(keyof BrainEvidence)[]=["holderGrowth5mPct","smartMoneyNetFlow5mUsd","socialVelocity","socialSpamRatio","narrativeScore","liquidityChange5mPct","creatorNetSell5mPct","top10EffectivePct","marketCapUsd"];
+  const present=optionalFields.filter(k=>e[k]!==undefined).length;
+  const evidenceCompleteness=Math.round((present/optionalFields.length)*100);
+  return {momentum:Math.round(momentum),smartMoney:Math.round(smartMoney),executionQuality:Math.round(executionQuality),risk:Math.round(risk),evidenceCompleteness};
 }
 
 // DISCOVERY != AUTO-TRADE QUALIFICATION. action:"IGNORE" (score<56) is the trading-decision

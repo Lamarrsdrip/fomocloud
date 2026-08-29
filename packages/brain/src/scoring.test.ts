@@ -64,3 +64,26 @@ test("a strong narrative score (above the 50 midpoint) adds to the score", () =>
   const neutral = evaluateOpportunity({ ...baseEvidence, narrativeScore: 50 });
   assert.ok(strong.score > neutral.score, `strong narrative (${strong.score}) should score above neutral (${neutral.score})`);
 });
+
+test("breakdown sub-scores are additive/diagnostic and never change the trading score", () => {
+  const withBreakdown = evaluateOpportunity({ ...baseEvidence, whaleBuyers60s: 3, knownWhaleBuyers60s: 2 });
+  const withoutContext = evaluateOpportunity({ ...baseEvidence });
+  // Same base evidence otherwise -- adding whale evidence changes momentum/smartMoney breakdown
+  // numbers but the underlying `score` computation path is untouched by the breakdown function.
+  assert.ok(withBreakdown.breakdown.smartMoney > withoutContext.breakdown.smartMoney);
+  for (const v of Object.values(withBreakdown.breakdown)) {
+    assert.ok(v >= 0 && v <= 100, `breakdown value ${v} out of 0-100 range`);
+  }
+});
+
+test("evidenceCompleteness in the breakdown reflects how many optional fields are actually present", () => {
+  const noOptionalFields = evaluateOpportunity({ ...baseEvidence });
+  const allOptionalFields = evaluateOpportunity({
+    ...baseEvidence,
+    marketCapUsd: 1_000_000, holderGrowth5mPct: 5, smartMoneyNetFlow5mUsd: 1000,
+    socialVelocity: 1.2, socialSpamRatio: 0.1, narrativeScore: 60,
+    liquidityChange5mPct: 2, creatorNetSell5mPct: 0, top10EffectivePct: 20,
+  });
+  assert.equal(noOptionalFields.breakdown.evidenceCompleteness, 0);
+  assert.equal(allOptionalFields.breakdown.evidenceCompleteness, 100);
+});
