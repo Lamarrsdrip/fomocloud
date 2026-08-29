@@ -209,3 +209,30 @@ export function calculatePositionMark(params: {
       currentValueUsd - remainingCostBasisUsd
   };
 }
+
+// A token's decimals never change after mint creation -- this is a permanent fact, not a
+// time-sensitive one. Before this, exits/executor/market-worker/paper-worker each independently
+// called getTokenSupply for the exact same mints, each maintaining its own separate (or, for
+// exits, no) in-process cache -- real redundant RPC load across otherwise-unrelated processes for
+// an answer that's identical everywhere and never expires. This shares the answer across every
+// process via Redis (no TTL, since the fact itself never changes) while each caller keeps its own
+// existing Redis connection -- no new connection, no new dependency added to this package.
+export interface MinimalRedisClient {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<unknown>;
+}
+export async function cachedTokenDecimals(
+  redis: MinimalRedisClient,
+  mint: string,
+  fetchFresh: () => Promise<number>
+): Promise<number> {
+  const key = `token-decimals:${mint}`;
+  const cached = await redis.get(key).catch(() => null);
+  if (cached !== null && cached !== undefined) {
+    const n = Number(cached);
+    if (Number.isFinite(n)) return n;
+  }
+  const decimals = await fetchFresh();
+  await redis.set(key, String(decimals)).catch(() => {});
+  return decimals;
+}

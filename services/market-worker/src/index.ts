@@ -5,6 +5,7 @@ import {JupiterExecution} from "@memecloud/execution";
 import {BirdeyeClient} from "@memecloud/providers";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
+import {cachedTokenDecimals} from "@memecloud/shared";
 
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
@@ -31,7 +32,12 @@ async function tokenMeta(mint:string){
   const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<60*60_000)return c;
   const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
   const v={decimals:supply.value.decimals,supply:Number(supply.value.uiAmountString??0),at:Date.now()};
-  decimalsCache.set(mint,v);return v;
+  decimalsCache.set(mint,v);
+  // Supply is mutable so this call must always stay fresh, but the decimals half never
+  // changes -- share it via cachedTokenDecimals' write path so exits/executor/paper-worker
+  // can skip their own RPC call for mints market-worker has already resolved.
+  cachedTokenDecimals(redis,mint,async()=>v.decimals).catch(()=>{});
+  return v;
 }
 
 async function trackedMints(){

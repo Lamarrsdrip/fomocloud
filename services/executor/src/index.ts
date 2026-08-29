@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct } from "@memecloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
@@ -43,11 +43,16 @@ let processed=0,allowedCount=0,skippedCount=0,errors=0;
 
 
 async function tokenDecimals(mint:string){
+  // Two tiers: an in-process Map is the fastest path for this process's own hot mints; a shared
+  // Redis cache (a mint's decimals never change) is checked before ever hitting RPC, since
+  // exits/executor/market-worker/paper-worker were each independently re-fetching the exact same
+  // immutable fact for the same mints.
   const cached=decimalsCache.get(mint);
   if(cached&&Date.now()-cached.at<60*60_000)return cached.decimals;
   if(!solanaConnection)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
-  const supply=await solanaConnection.getTokenSupply(new PublicKey(mint),"confirmed");
-  const decimals=supply.value.decimals;decimalsCache.set(mint,{decimals,at:Date.now()});return decimals;
+  const decimals=await cachedTokenDecimals(connection,mint,async()=>(await solanaConnection!.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals);
+  decimalsCache.set(mint,{decimals,at:Date.now()});
+  return decimals;
 }
 
 async function resolveSourceBuyPriceUsd(signal:any){

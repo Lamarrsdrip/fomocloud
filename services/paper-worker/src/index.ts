@@ -6,6 +6,7 @@ import {JupiterExecution} from "@memecloud/execution";
 import {evaluateEntry,evaluateExit,type MarketSnapshot} from "@memecloud/strategy";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
+import {cachedTokenDecimals} from "@memecloud/shared";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 // Same startup-only-config bug fixed elsewhere this session. Reloaded on a slow independent
@@ -24,7 +25,11 @@ setInterval(()=>void reloadConfig().catch(e=>console.error("[paper-worker] confi
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const paperUsd=Math.max(10,Number(process.env.DISCOVERY_PAPER_TRADE_USD??100));
 const decimals=new Map<string,number>();let entries=0,skips=0,marks=0,exits=0,errors=0,ticking=false;
-async function dec(mint:string){if(decimals.has(mint))return decimals.get(mint)!;const d=(await connection.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals;decimals.set(mint,d);return d}
+async function dec(mint:string){
+  if(decimals.has(mint))return decimals.get(mint)!;
+  const d=await cachedTokenDecimals(redis,mint,async()=>(await connection.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals);
+  decimals.set(mint,d);return d;
+}
 async function sourcePrice(signal:any){
   if(signal.sourcePriceUsd&&signal.sourcePriceUsd>0)return Number(signal.sourcePriceUsd);
   if(signal.action!=="BUY")return null;

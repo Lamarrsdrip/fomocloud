@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting } from "@memecloud/shared";
+import { calculateExitAccounting, cachedTokenDecimals } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
 import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
@@ -52,7 +52,10 @@ function exitKey(positionId:string,remaining:string,action:string,sellPct:number
 
 async function tokenDecimals(mint:string){
   if(!chain)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
-  return (await chain.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals;
+  // Shared across every service via Redis -- a mint's decimals never change, so this eliminates
+  // redundant getTokenSupply RPC calls that exits/executor/market-worker/paper-worker were each
+  // making independently for the same mints.
+  return cachedTokenDecimals(redis,mint,async()=>(await chain!.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals);
 }
 
 async function reconcile(signature:string,owner:string,inputMint:string,outputMint:string){
