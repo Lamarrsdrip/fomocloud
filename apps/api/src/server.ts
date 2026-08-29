@@ -1411,28 +1411,43 @@ app.delete("/v1/admin/trader-wallets/:id", adminOnly, asyncRoute(async (req:Auth
 // ever read here). Requiring login just to SEE what the Global Brain is watching was blocking
 // the entire discovery experience for anyone without an account; wallet/login should only ever
 // gate EXECUTION, never observation.
+// DISCOVERY != AUTO-TRADE QUALIFICATION. action:"IGNORE" is the Brain's own trading-decision
+// threshold (score<56) -- it must gate execution, not visibility. A token with real, non-zero
+// inflow/buyers/whale evidence below that threshold is still a genuine discovery worth showing;
+// hiding it just because it isn't good enough to auto-trade was over-strict. lastEvaluatedAt alone
+// is still never sufficient evidence on its own (brain-worker touches it every tick regardless of
+// real flow), so real evidence (or a genuinely-recent firstSeenAt, for a just-discovered token that
+// hasn't accumulated scored evidence yet) remains required -- this broadens WHEN something is
+// visible, not WHETHER it has to be real.
+function classifyLifecycle(row:{score:number;lastEvaluatedAt:Date;firstSeenAt:Date;inflow60sUsd:number;buyers60s:number;whaleBuyers60s:number;knownWhaleBuyers60s:number},now:number):string{
+  // brain-worker stopped evaluating this token (dropped out of the snapshot pipeline) -- never
+  // let it keep looking "live" just because the row still exists.
+  if(now-row.lastEvaluatedAt.getTime()>15*60_000)return "STALE";
+  if(row.score>=86)return "HIGH_CONVICTION";
+  if(row.score>=76)return "STRONG";
+  if(row.score>=64)return "HEATING_UP";
+  if(row.score>=56)return "INTERESTING";
+  const hasEvidence=row.inflow60sUsd>0||row.buyers60s>0||row.whaleBuyers60s>0||row.knownWhaleBuyers60s>0;
+  if(hasEvidence)return "WATCHING";
+  if(now-row.firstSeenAt.getTime()<10*60_000)return "FOUND";
+  return "COOLING";
+}
 app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
-  // lastEvaluatedAt alone is not evidence of a real opportunity — the brain-worker touches it on
-  // every tick for any token with a fresh market-data snapshot, even when the snapshot itself
-  // carries zero real flow (e.g. during an upstream scanner outage). action:"IGNORE" is the
-  // Brain's own scoring already having decided a token isn't a real opportunity right now; showing
-  // it under "Trending" anyway would directly contradict the system's own evaluation. Requiring at
-  // least one genuine evidence signal (not just a non-IGNORE label) additionally guards against a
-  // token sitting at the WATCH threshold on stale/default inputs.
+  const now=Date.now();
   const opportunities=await db.globalBrainOpportunity.findMany({
     where:{
-      lastEvaluatedAt:{gte:new Date(Date.now()-6*60*60_000)},
-      action:{not:"IGNORE"},
+      lastEvaluatedAt:{gte:new Date(now-6*60*60_000)},
       OR:[
         {inflow60sUsd:{gt:0}},
         {buyers60s:{gt:0}},
         {whaleBuyers60s:{gt:0}},
-        {knownWhaleBuyers60s:{gt:0}}
+        {knownWhaleBuyers60s:{gt:0}},
+        {firstSeenAt:{gte:new Date(now-10*60_000)}}
       ]
     },
-    orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:120
+    orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
   });
-  res.json({watching:true,opportunities});
+  res.json({watching:true,opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)}))});
 }));
 app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   const chain=routeParam(req.params.chain) as Chain;
@@ -1443,6 +1458,46 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
     db.catalystEvent.findFirst({where:{chain,mint},orderBy:{announcedAt:"desc"}})
   ]);
   res.json({opportunity,flows,catalyst});
+}));
+
+// ------------------------ SMART WALLETS (public) ------------------------
+// Real evidence only, from packages/discovery's sample-size-aware scoring (shouldPaperTrack
+// requires >=15 observed trades, shouldProve requires >=20 forward signals) -- never a label from
+// one lucky trade. Whale status (walletTier in flow-worker) is a separate signal from trading skill
+// and is surfaced as its own field, not conflated with copyabilityScore.
+function smartWalletSummary(c:any){
+  const winRatePct=c.sampleTrades>0?Math.round((c.profitableTrades/c.sampleTrades)*1000)/10:null;
+  const isWhale=String(c.label??"").startsWith("WHALE_");
+  return {
+    id:c.id,chain:c.chain,address:c.address,stage:c.stage,
+    isWhale,whaleTier:isWhale?c.label:null,
+    copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
+    sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
+    winRatePct, // null = not enough resolved trades yet to compute -- never shown as 0%
+    realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
+    averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,
+    rugExposurePct:c.rugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,
+    source:c.source,sourceToken:c.sourceToken,
+    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:c.updatedAt,
+    paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
+  };
+}
+app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
+  const stageParam=String(req.query.stage??"").toUpperCase();
+  const includeWhalesOnly=String(req.query.whales??"")==="true";
+  const where:any={stage:stageParam&&["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"].includes(stageParam)?stageParam:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}};
+  if(includeWhalesOnly)where.label={startsWith:"WHALE_"};
+  const candidates=await db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:200});
+  res.json({wallets:candidates.map(smartWalletSummary)});
+}));
+app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
+  const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});
+  if(!candidate)return res.status(404).json({error:"SMART_WALLET_NOT_FOUND"});
+  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:40});
+  // Real, currently-tracked tokens for this wallet -- derived from its own recent observed activity,
+  // not a separate unverified list.
+  const currentTokens=[...new Map(recentFlow.map(f=>[f.mint,f])).values()].slice(0,10).map(f=>({mint:f.mint,chain:f.chain,side:f.side,lastSeenAt:f.observedAt}));
+  res.json({wallet:smartWalletSummary(candidate),recentActivity:recentFlow,currentTokens});
 }));
 app.get("/v1/admin/brain", requireAdmin, asyncRoute(async (_req,res) => {
   const [opportunities,flows,outcomes]=await Promise.all([

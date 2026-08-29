@@ -10,7 +10,7 @@ import {connectWallet,signWithWallet,type DetectedWallet} from "../../lib/wallet
 import {BrandGlyph} from "../../components/BrandGlyph";
 import WalletChooser from "../../components/WalletChooser";
 
-type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"activity";
+type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"activity"|"smart-wallets";
 const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
 const mobileNav=nav;
 
@@ -120,7 +120,7 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Wallets":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -129,6 +129,7 @@ export default function AppPage(){
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} setView={setView} openToken={setSelectedMint}/>}
         {view==="discover"&&<DiscoverView brain={brain} setView={setView} openToken={setSelectedMint}/>}
+        {view==="smart-wallets"&&<SmartWalletsView/>}
         {view==="trade"&&<TradeView settings={settings} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
@@ -193,6 +194,11 @@ function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){ret
 
 const discoverFilters=[["trending","Trending now",TrendingUp],["whales","Whales buying",Users],["new","New",Sparkles],["momentum","Momentum",Flame]] as const;
 function qualityLabel(score:number){return score>=76?"Strong setup":score>=56?"Building evidence":score>=40?"Early — thin evidence":"Just watching"}
+// Backend-computed from real evidence (see classifyLifecycle in the API) -- never client-guessed.
+// Discovery visibility and auto-trade qualification are deliberately different bars: FOUND/WATCHING
+// tokens are real, just below the BUY_NOW/WATCH trading threshold.
+const LIFECYCLE_LABELS:Record<string,string>={FOUND:"Found",WATCHING:"Watching",INTERESTING:"Interesting",HEATING_UP:"Heating up",STRONG:"Strong",HIGH_CONVICTION:"High conviction",COOLING:"Cooling",STALE:"Stale"};
+function lifecycleLabel(status:string){return LIFECYCLE_LABELS[status]||status}
 function whaleCount(o:any){return (o.whaleBuyers60s||0)+(o.knownWhaleBuyers60s||0)}
 function copyText(t:string){try{navigator.clipboard.writeText(t)}catch{}}
 function TokenAvatar({symbol,size=38}:{symbol?:string;size?:number}){return <div className="token-avatar" style={{width:size,height:size,fontSize:size*0.4}}>{(symbol||"?").slice(0,2).toUpperCase()}</div>}
@@ -206,13 +212,69 @@ function DiscoverView({brain,setView,openToken}:{brain:any[];setView:(v:View)=>v
   return list.sort((a,b)=>(b.volumeAcceleration1m||0)-(a.volumeAcceleration1m||0));
  },[brain,filter]);
  return <>
-  <div className="config-tabs discover-tabs">{discoverFilters.map(([id,label,Icon])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}><Icon size={13} style={{verticalAlign:"middle",marginRight:5}}/>{label}</button>)}</div>
+  <div className="config-tabs discover-tabs">{discoverFilters.map(([id,label,Icon])=><button key={id} className={filter===id?"active":""} onClick={()=>setFilter(id)}><Icon size={13} style={{verticalAlign:"middle",marginRight:5}}/>{label}</button>)}<button onClick={()=>setView("smart-wallets")}><Users size={13} style={{verticalAlign:"middle",marginRight:5}}/>Smart Wallets</button></div>
   {rows.length?<div className="token-list">{rows.map(o=><div className="token-row" key={o.id} onClick={()=>openToken({chain:o.chain,mint:o.mint})}>
     <TokenAvatar symbol={o.symbol||o.name}/>
-    <div className="token-row-main"><b>{o.symbol||o.name||"New token"}</b><small>{o.chain} · {money(o.marketCapUsd||0)} MC · {money(o.inflow60sUsd||0)} / 60s</small></div>
-    <div className="token-row-side"><span className={`status-badge ${o.action==="BUY_NOW"?"":"watch"}`}>{whaleCount(o)>0?`🐋 ${whaleCount(o)}`:qualityLabel(o.score)}</span><small>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x momentum`:"Watching"}</small></div>
+    <div className="token-row-main"><b>{o.symbol||o.name||"New token"}</b><small>{o.chain} · {money(o.marketCapUsd||0)} MC · {money(o.inflow60sUsd||0)} / 60s · Found {timeAgo(o.firstSeenAt)}</small>{o.reasons?.[0]&&<small className="token-row-reason">{o.reasons[0]}</small>}</div>
+    <div className="token-row-side"><span className={`status-badge ${o.action==="BUY_NOW"?"":o.lifecycleStatus==="STALE"||o.lifecycleStatus==="COOLING"?"watch":""}`}>{whaleCount(o)>0?`🐋 ${whaleCount(o)}`:lifecycleLabel(o.lifecycleStatus||qualityLabel(o.score))}</span><small>{o.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x momentum`:"Watching"}</small></div>
    </div>)}</div>:<Empty icon={TrendingUp} title="Nothing here yet" body="MemeCloud is scanning chain flow. Real opportunities appear here as on-chain evidence arrives — nothing is invented while it's quiet." action="Browse traders instead" onClick={()=>setView("traders")}/>}
  </>
+}
+
+const STAGE_LABELS:Record<string,string>={DISCOVERED:"Discovered",ANALYZING:"Analyzing",PAPER_TRACKING:"Paper tracking",PROVEN:"Proven",PAUSED:"Paused"};
+function SmartWalletsView(){
+ const[wallets,setWallets]=useState<any[]|null>(null);
+ const[filter,setFilter]=useState<"all"|"whales"|"proven">("all");
+ const[detail,setDetail]=useState<any|null>(null);
+ const[detailBusy,setDetailBusy]=useState(false);
+ useEffect(()=>{let live=true;apiFetch<any>("/v1/smart-wallets",{},false).then(x=>{if(live)setWallets(x.wallets||[])}).catch(()=>{if(live)setWallets([])});return()=>{live=false}},[]);
+ const rows=useMemo(()=>{
+  const list=wallets||[];
+  if(filter==="whales")return list.filter(w=>w.isWhale);
+  if(filter==="proven")return list.filter(w=>w.stage==="PROVEN");
+  return list;
+ },[wallets,filter]);
+ async function open(id:string){
+  setDetailBusy(true);
+  try{const x=await apiFetch<any>(`/v1/smart-wallets/${id}`,{},false);setDetail(x)}catch{}finally{setDetailBusy(false)}
+ }
+ return <>
+  <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 12px"}}>Wallets MemeCloud discovered from real on-chain meme activity — not manually entered. Ratings require a meaningful sample size, never one lucky trade.</p>
+  <div className="config-tabs discover-tabs">
+   <button className={filter==="all"?"active":""} onClick={()=>setFilter("all")}>All</button>
+   <button className={filter==="whales"?"active":""} onClick={()=>setFilter("whales")}><Wallet size={13} style={{verticalAlign:"middle",marginRight:5}}/>Whales</button>
+   <button className={filter==="proven"?"active":""} onClick={()=>setFilter("proven")}>Proven</button>
+  </div>
+  {wallets===null?<div className="loading" style={{minHeight:180}}>Loading…</div>:rows.length?<div className="token-list">{rows.map(w=>
+   <div className="token-row" key={w.id} onClick={()=>open(w.id)}>
+    <TokenAvatar symbol={w.address.slice(0,2)}/>
+    <div className="token-row-main"><b>{w.address.slice(0,6)}…{w.address.slice(-5)}</b><small>{w.chain} · {STAGE_LABELS[w.stage]||w.stage} · {w.sampleTrades} trade(s) observed{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")}`:""}</small></div>
+    <div className="token-row-side"><span className="status-badge">{w.winRatePct!==null?`${w.winRatePct}% win`:"Not enough data"}</span><small>Score {Math.round(w.copyabilityScore)}</small></div>
+   </div>
+  )}</div>:<Empty icon={Users} title="No smart wallets discovered yet" body="MemeCloud saves a candidate once it observes genuine meme-trading activity from a wallet. This list fills in as real chain data arrives." />}
+  {(detail||detailBusy)&&<div className="wallet-chooser-wrap" onClick={()=>setDetail(null)}>
+   <div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
+    <div className="wallet-chooser-handle"/>
+    <div className="wallet-chooser-head"><b>{detailBusy&&!detail?"Loading…":`${detail?.wallet.address.slice(0,8)}…${detail?.wallet.address.slice(-6)}`}</b><button type="button" className="wallet-chooser-close" onClick={()=>setDetail(null)} aria-label="Close"><X size={16}/></button></div>
+    {detail&&<>
+     <p>{STAGE_LABELS[detail.wallet.stage]||detail.wallet.stage} · Discovered {timeAgo(detail.wallet.firstDiscoveredAt)} · Last active {detail.wallet.lastActivityAt?timeAgo(detail.wallet.lastActivityAt):"unknown"}{detail.wallet.isWhale?` · 🐋 Whale tier ${detail.wallet.whaleTier?.replace("WHALE_","")}`:""}</p>
+     <div className="app-grid-4" style={{marginBottom:14}}>
+      <div className="stat-card"><span>Win rate</span><b>{detail.wallet.winRatePct!==null?`${detail.wallet.winRatePct}%`:"Unknown"}</b></div>
+      <div className="stat-card"><span>Trades observed</span><b>{detail.wallet.sampleTrades}</b></div>
+      <div className="stat-card"><span>Copyability</span><b>{Math.round(detail.wallet.copyabilityScore)}</b></div>
+      <div className="stat-card"><span>Risk</span><b>{Math.round(detail.wallet.riskScore)}</b></div>
+     </div>
+     <div className="control-list" style={{marginBottom:14}}>
+      <div><span>Realized P&amp;L observed</span><b className={detail.wallet.realizedPnlUsd>=0?"positive":"negative"}>{money(detail.wallet.realizedPnlUsd)}</b></div>
+      <div><span>Volume observed</span><b>{money(detail.wallet.volumeUsd)}</b></div>
+      <div><span>Rug exposure</span><b>{detail.wallet.rugExposurePct!==null?`${detail.wallet.rugExposurePct.toFixed(0)}%`:"Unknown"}</b></div>
+      <div><span>Insider risk</span><b>{detail.wallet.insiderRiskPct!==null?`${detail.wallet.insiderRiskPct.toFixed(0)}%`:"Unknown"}</b></div>
+     </div>
+     {detail.currentTokens?.length>0&&<><b style={{fontSize:11}}>Recently tracked tokens</b><div className="list" style={{margin:"8px 0 14px"}}>{detail.currentTokens.map((t:any,i:number)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={i}><div><b>{t.mint.slice(0,10)}…</b><small>{t.side} · {timeAgo(t.lastSeenAt)}</small></div></div>)}</div></>}
+    </>}
+   </div>
+  </div>}
+ </>;
 }
 
 function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string};opp:any;me:any;close:()=>void;onTraded:()=>void}){
