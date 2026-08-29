@@ -7,25 +7,33 @@ import {walletTier} from "@memecloud/brain";
 
 const USDC=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",USDT="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",WSOL="So11111111111111111111111111111111111111112";
 const quotes=new Set([USDC,USDT,WSOL]);
-// Every real swap this worker cares about necessarily moves SPL token balances, so every
-// transaction it needs is guaranteed to invoke one of these two token programs -- subscribing to
-// them instead of Solana's raw "all" log firehose (every transaction on all of mainnet, regardless
-// of relevance) is what actually fixes the sustained RPC/Helius rate-limiting: "all" was generating
-// request volume no realistic RPC tier can sustain, no matter how much pacing/backoff is added on
-// top, since the demand itself was the problem, not the request rate per event.
-const TOKEN_PROGRAM=new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const TOKEN_2022_PROGRAM=new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 let seen=0,swaps=0,saved=0,profiled=0,errors=0,inflight=0,reconnects=0,lastEventAt=Date.now();
-let rateLimited=false,lastRateLimitAt:number|null=null,lastSuccessfulRpcAt:number|null=null,lastParsedSwapAt:number|null=null,lastDbWriteAt:number|null=null;
+let rateLimited=false,lastRateLimitAt:number|null=null,lastSuccessfulRpcAt:number|null=null,lastParsedSwapAt:number|null=null,lastDbWriteAt:number|null=null,dropped=0;
 // Adaptive load-shedding: on a 429, stop spawning new getParsedTransaction calls for a cooldown
 // window instead of continuing to fire at full concurrency into a provider that just said "too
 // many requests" -- this is what a real backoff has to do at the subscription-callback level,
 // since the callback fires synchronously for every incoming log regardless of any in-flight
-// request's outcome. Recovers additively (halves the remaining cooldown early on any success).
+// request's outcome.
 let backoffUntil=0;
 function isRateLimitError(e:any):boolean{
   const s=String(e?.message??e??"");
   return /429|too many requests|rate.?limit/i.test(s);
+}
+// A real token bucket bounding actual outbound getParsedTransaction requests/sec, independent of
+// how many log events arrive. This is deliberately separate from narrowing the subscription
+// filter: narrowing to the SPL Token Program's mentions filter was tried and empirically failed in
+// production (zero events delivered over a 4+ minute observation window, worse than the proven
+// "all" subscription) -- so the subscription stays "all" (known to actually deliver events) and
+// the request-rate problem is solved entirely on the outbound side instead, which cannot break
+// event delivery since it never touches the subscription itself.
+let tokens=0,lastRefillAt=Date.now();
+const RATE_PER_SEC=Math.max(1,Number(process.env.FLOW_SCANNER_MAX_RPS??10));
+const BUCKET_SIZE=RATE_PER_SEC*2;
+function tryTakeToken():boolean{
+  const now=Date.now(),elapsed=(now-lastRefillAt)/1000;
+  if(elapsed>0){tokens=Math.min(BUCKET_SIZE,tokens+elapsed*RATE_PER_SEC);lastRefillAt=now}
+  if(tokens<1)return false;
+  tokens-=1;return true;
 }
 let solUsd=0,solAt=0;
 async function solPrice(jupiter:JupiterExecution){if(solUsd&&Date.now()-solAt<15_000)return solUsd;const q=await jupiter.quote({inputMint:WSOL,outputMint:USDC,amountRaw:"1000000000",slippageBps:100});solUsd=Number(q.outAmount)/1e6;solAt=Date.now();return solUsd}
@@ -33,15 +41,25 @@ function ownerDeltas(tx:ParsedTransactionWithMeta){const m=new Map<string,Map<st
 async function stableAndNativeBalance(conn:Connection,jupiter:JupiterExecution,owner:string){let usd=0;try{usd+=(await conn.getBalance(new PublicKey(owner),"confirmed"))/1e9*await solPrice(jupiter)}catch{};for(const mint of [USDC,USDT])try{const rows=await conn.getParsedTokenAccountsByOwner(new PublicKey(owner),{mint:new PublicKey(mint)},"confirmed");for(const r of rows.value)usd+=Number((r.account.data as any).parsed?.info?.tokenAmount?.uiAmount??0)}catch{};return usd}
 
 async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,dedupe:Set<string>,MAX:number,sig:string){
-  // Load-shedding: while in an active backoff window (set below on a real 429), skip new work
-  // entirely instead of queueing it -- a queue would just mean the same burst hits the provider the
-  // instant the window ends. Dropping some chain-wide events during a genuine rate-limit window is
-  // the correct tradeoff for a discovery/sampling pipeline; it is never acceptable to keep
-  // hammering a provider that just said "too many requests."
-  if(Date.now()<backoffUntil)return;
-  if(dedupe.has(sig)||inflight>=MAX)return;dedupe.add(sig);if(dedupe.size>5000)dedupe.clear();inflight++;
+  // The subscription being alive is proven by a log notification arriving at all, independent of
+  // whether this worker chooses to act on it -- update watchdog freshness unconditionally so
+  // deliberate rate-limit/token-bucket shedding below is never mistaken for a dead connection.
+  lastEventAt=Date.now();
+  if(dedupe.has(sig))return;dedupe.add(sig);if(dedupe.size>5000)dedupe.clear();
+  // Load-shedding, in order: an active 429 backoff window always wins (a queue would just mean the
+  // same burst hits the provider the instant the window ends); then the real requests/sec token
+  // bucket, which bounds actual outbound RPC calls independent of inbound log volume -- this is
+  // what actually fixes sustained rate-limiting, since narrowing the subscription itself was tried
+  // and empirically failed (see git history: zero events delivered for 4+ minutes in production);
+  // then the existing concurrency cap. Dropping some chain-wide events under real pressure is the
+  // correct tradeoff for a discovery/sampling pipeline -- it is never acceptable to keep hammering
+  // a provider that's already saying "too many requests."
+  if(Date.now()<backoffUntil){dropped++;return}
+  if(!tryTakeToken()){dropped++;return}
+  if(inflight>=MAX){dropped++;return}
+  inflight++;
   try{
-    seen++;lastEventAt=Date.now();
+    seen++;
     const tx=await conn.getParsedTransaction(sig,{maxSupportedTransactionVersion:0,commitment:"confirmed"});
     lastSuccessfulRpcAt=Date.now();
     if(rateLimited){rateLimited=false;backoffUntil=0}
@@ -62,7 +80,7 @@ async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,
         bal=await stableAndNativeBalance(conn,jupiter,owner);tier=walletTier(bal);profiled++;
         if((bal??0)>=50_000&&!known)await db.smartWalletCandidate.upsert({where:{chain_address:{chain:"SOLANA",address:owner}},create:{chain:"SOLANA",address:owner,stage:"DISCOVERED",source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,discoveredBy:"CHAIN_WIDE_SWAP"} as any},update:{source:"ONCHAIN_FLOW",sourceToken:mint,label:tier,metadata:{conservativeLiquidBalanceUsd:bal,lastSeenBy:"CHAIN_WIDE_SWAP"} as any}}).catch(()=>{});
       }
-      await db.chainFlowObservation.create({data:{chain:"SOLANA",mint,walletAddress:owner,txHash:sig,side,amountUsd,walletBalanceUsd:bal,walletTier:tier,knownWallet:known,source:"SOLANA_TOKEN_PROGRAM_LOGS",observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()}}).then(()=>{saved++;lastDbWriteAt=Date.now()}).catch(()=>{});
+      await db.chainFlowObservation.create({data:{chain:"SOLANA",mint,walletAddress:owner,txHash:sig,side,amountUsd,walletBalanceUsd:bal,walletTier:tier,knownWallet:known,source:"SOLANA_ALL_LOGS",observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()}}).then(()=>{saved++;lastDbWriteAt=Date.now()}).catch(()=>{});
     }
   }catch(e){
     errors++;
@@ -96,19 +114,22 @@ async function connectAndSubscribe(){
   enabled=String(brainCfg?.solanaChainWideEnabled??process.env.SOLANA_CHAIN_WIDE_SCAN??"true")!=="false";
   subs=[];
   if(enabled){
-    const onLog=(l:any)=>{if(!l.err)void processSig(conn,jupiter,brainCfg,dedupe,MAX,l.signature)};
-    subs=[conn.onLogs(TOKEN_PROGRAM,onLog,"confirmed"),conn.onLogs(TOKEN_2022_PROGRAM,onLog,"confirmed")];
+    // Narrowing this to a mentions(TOKEN_PROGRAM) filter was tried and reverted: it is API-correct
+    // (every real swap does invoke the token program) but empirically delivered zero events over a
+    // 4+ minute production observation window, worse than "all" which is proven to actually work.
+    // The real rate-limit fix lives entirely on the outbound side now (the token bucket above).
+    subs=[conn.onLogs("all",l=>{if(!l.err)void processSig(conn,jupiter,brainCfg,dedupe,MAX,l.signature)},"confirmed")];
     lastEventAt=Date.now();
-    console.log("[flow-worker] subscribed to token-program logs, sub ids",subs,"rpc",currentRpcHost);
+    console.log("[flow-worker] subscribed, sub id",subs[0],"rpc",currentRpcHost,"maxRps",RATE_PER_SEC);
   }
 }
 
 async function watchdog(){
   if(!enabled)return;
-  // Token-program log volume on Solana mainnet is high enough that any real, live subscription
-  // sees events within a small number of seconds. 90s of total silence is the connection being
-  // dead, not the chain being idle -- this is distinct from the per-request backoff window above,
-  // which only pauses new getParsedTransaction calls, not the subscription itself.
+  // Chain-wide log volume on Solana mainnet is high enough that any real, live subscription sees
+  // events within a small number of seconds. 90s of total silence is the connection being dead,
+  // not the chain being idle -- this is distinct from the per-request backoff window above, which
+  // only pauses new getParsedTransaction calls, not the subscription itself.
   const silentMs=Date.now()-lastEventAt;
   if(silentMs>90_000){
     reconnects++;
@@ -127,8 +148,8 @@ async function watchdog(){
 
 await connectAndSubscribe();
 startHeartbeat("solana-flow-scanner",()=>({
-  enabled,subscriptions:subs.length,rpc:currentRpcHost,seen,swaps,saved,profiled,errors,inflight,reconnects,
-  maxConcurrency:MAX,rateLimited,backoffActiveMs:Math.max(0,backoffUntil-Date.now()),
+  enabled,subscriptions:subs.length,rpc:currentRpcHost,seen,swaps,saved,profiled,errors,dropped,inflight,reconnects,
+  maxConcurrency:MAX,maxRequestsPerSec:RATE_PER_SEC,rateLimited,backoffActiveMs:Math.max(0,backoffUntil-Date.now()),
   silentForSec:Math.round((Date.now()-lastEventAt)/1000),
   lastSuccessfulRpcAgoSec:lastSuccessfulRpcAt?Math.round((Date.now()-lastSuccessfulRpcAt)/1000):null,
   lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,
@@ -136,4 +157,4 @@ startHeartbeat("solana-flow-scanner",()=>({
   lastDbWriteAgoSec:lastDbWriteAt?Math.round((Date.now()-lastDbWriteAt)/1000):null
 }));
 setInterval(()=>void watchdog(),15_000);
-console.log("[flow-worker] Solana token-program flow scanner",enabled?"online":"disabled");
+console.log("[flow-worker] chain-wide Solana flow scanner",enabled?"online":"disabled");
