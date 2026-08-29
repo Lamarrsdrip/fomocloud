@@ -55,15 +55,27 @@ async function tokenMeta(mint:string){
   return v;
 }
 
+// Real bug found by audit: the old order was signals-first (up to 1500, 48h of history) into a
+// flat .slice(0,350) -- if signal volume alone exceeded 350 unique mints, OPEN LIVE POSITIONS could
+// be silently excluded entirely, since positions were concatenated second. exits' mark-to-market
+// depends on this worker's MarketPrice rows staying fresh; a position never receiving a fresh price
+// means stop-loss/take-profit protection silently stops working for real money, with zero signal
+// that anything was wrong (no error, just an untracked mint). Priority now: P0 real open positions
+// (never capped away -- the slice floor always leaves room for every one of them), P1 recently-
+// discovered/hot tokens, P2 historical signal activity backfills whatever's left. Also added
+// explicit recency ordering to signals/discoveries, which previously had none -- "most recent N"
+// wasn't actually guaranteed to mean recent without it.
 async function trackedMints(){
   const since=new Date(Date.now()-48*60*60_000);
-  const [signals,positions,discoveries]=await Promise.all([
-    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true},take:1500}),
-    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:1500}),
-    db.discoveryToken.findMany({where:{chain:"SOLANA",lastSeenAt:{gte:since}},select:{mint:true},take:300})
+  const [positions,discoveries,signals]=await Promise.all([
+    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
+    db.discoveryToken.findMany({where:{chain:"SOLANA",lastSeenAt:{gte:since}},select:{mint:true},orderBy:{lastSeenAt:"desc"},take:300}),
+    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true},orderBy:{observedAt:"desc"},take:1500})
   ]);
   const excluded=new Set([usdc,"So11111111111111111111111111111111111111112"]);
-  return [...new Set([...signals.map(s=>s.outputMint),...positions.map(p=>p.mint),...discoveries.map(x=>x.mint)])].filter(m=>!excluded.has(m)).slice(0,350);
+  const unique=[...new Set([...positions.map(p=>p.mint),...discoveries.map(x=>x.mint),...signals.map(s=>s.outputMint)])].filter(m=>!excluded.has(m));
+  const positionCount=new Set(positions.map(p=>p.mint)).size;
+  return unique.slice(0,Math.max(350,positionCount+350));
 }
 
 async function jupiterMark(mint:string){
