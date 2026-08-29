@@ -1,7 +1,21 @@
 import {Connection,PublicKey} from "@solana/web3.js";
+import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
+import {RpcBudget} from "@memecloud/shared";
+
+const rpcRedis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+// Shared, cross-process Solana RPC budget -- same account, same bucket, as flow-worker and
+// market-worker. Real users' spendable-cash figure (availableUsd, which gates whether a copy-trade
+// or manual buy is even allowed to size itself) is derived directly from this worker's reads, so it
+// draws at P1: one notch below the true real-money execution paths in exits/executor, but ahead of
+// every background discovery/enrichment consumer.
+const sharedRpcBudget=new RpcBudget(rpcRedis,"rpc-budget:solana",{
+  capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),
+  ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))
+});
+let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null;
 
 // Same startup-only-config bug already fixed elsewhere this session: reload each cycle (cycle()
 // already only runs every 60s, so this doesn't add extra AppConfig load).
@@ -24,6 +38,16 @@ async function batchUsdcBalances(addresses:string[]){
   const unique=[...new Set(addresses)];
   for(let offset=0;offset<unique.length;offset+=40){
     const chunk=unique.slice(offset,offset+40);
+    const shared=await sharedRpcBudget.tryAcquire("P1");
+    if(!shared.granted){
+      // Same treatment as a genuine provider 429 (skip this chunk, zero the balances rather than
+      // guessing) but a distinct counter -- this is this worker correctly yielding to a
+      // higher-priority consumer of the shared account budget, not the provider itself failing.
+      sharedBudgetDenied+=chunk.length;lastSharedBudgetDenyAt=Date.now();
+      for(const address of chunk)balances.set(address,0n);
+      if(offset+40<unique.length)await new Promise(r=>setTimeout(r,75));
+      continue;
+    }
     try{
       const requests=chunk.map((address,i)=>({jsonrpc:"2.0",id:i+1,method:"getTokenAccountsByOwner",params:[address,{mint:usdc.toBase58()},{encoding:"jsonParsed",commitment:"confirmed"}]}));
       const response=await fetch(rpc,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(requests),signal:AbortSignal.timeout(12_000)});
@@ -99,6 +123,9 @@ async function cycle(){
     }
   }finally{lastCycleMs=Date.now()-started;running=false}
 }
-startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,errors,lastCycleMs,rateLimited,lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,fallbackSkippedForRateLimit,chain:"SOLANA",asset:"USDC"}));
+startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,errors,lastCycleMs,rateLimited,lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,fallbackSkippedForRateLimit,chain:"SOLANA",asset:"USDC",
+  sharedRpcBudgetPriority:"P1",sharedRpcBudgetDenied:sharedBudgetDenied,
+  lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null
+}));
 setInterval(()=>void cycle(),60_000); void cycle();
 console.log("[balance-worker] syncing genuine Solana USDC balances");

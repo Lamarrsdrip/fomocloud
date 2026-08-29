@@ -1,9 +1,25 @@
 import {Connection,type ParsedTransactionWithMeta,PublicKey} from "@solana/web3.js";
+import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {JupiterExecution} from "@memecloud/execution";
 import {walletTier} from "@memecloud/brain";
+import {RpcBudget} from "@memecloud/shared";
+
+// Shared, cross-process RPC budget: this worker's own token bucket below only bounds ITS OWN
+// outbound rate, so five independently-rate-limited processes (this one, market-worker,
+// balance-worker, social-worker, executor, exits) could each stay under their own private cap
+// while collectively blowing through the shared Helius account's real limit -- which is exactly
+// what happened before this existed. One Redis-backed bucket, shared by every RPC-calling
+// process, with this worker drawing at P4 (background chain-wide discovery scanning) so it backs
+// off first under real account pressure, ahead of exits/executor's real-money paths.
+const rpcRedis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+const sharedRpcBudget=new RpcBudget(rpcRedis,"rpc-budget:solana",{
+  capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),
+  ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))
+});
+let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null,lastKnownTokensRemaining:number|null=null;
 
 const USDC=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",USDT="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",WSOL="So11111111111111111111111111111111111111112";
 const quotes=new Set([USDC,USDT,WSOL]);
@@ -57,6 +73,12 @@ async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,
   if(Date.now()<backoffUntil){dropped++;return}
   if(!tryTakeToken()){dropped++;return}
   if(inflight>=MAX){dropped++;return}
+  // This worker's own token bucket above already passed -- now check the shared, cross-process
+  // account budget. At P4, this is the first thing to back off once other services' real-money or
+  // higher-priority RPC usage is eating into the shared account's headroom.
+  const shared=await sharedRpcBudget.tryAcquire("P4");
+  lastKnownTokensRemaining=shared.tokensRemaining;
+  if(!shared.granted){dropped++;sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();return}
   inflight++;
   try{
     seen++;
@@ -181,7 +203,10 @@ startHeartbeat("solana-flow-scanner",()=>({
   lastSuccessfulRpcAgoSec:lastSuccessfulRpcAt?Math.round((Date.now()-lastSuccessfulRpcAt)/1000):null,
   lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,
   lastParsedSwapAgoSec:lastParsedSwapAt?Math.round((Date.now()-lastParsedSwapAt)/1000):null,
-  lastDbWriteAgoSec:lastDbWriteAt?Math.round((Date.now()-lastDbWriteAt)/1000):null
+  lastDbWriteAgoSec:lastDbWriteAt?Math.round((Date.now()-lastDbWriteAt)/1000):null,
+  sharedRpcBudgetPriority:"P4",sharedRpcBudgetDenied:sharedBudgetDenied,
+  lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null,
+  lastKnownSharedTokensRemaining:lastKnownTokensRemaining
 }));
 setInterval(()=>void watchdog(),15_000);
 console.log("[flow-worker] chain-wide Solana flow scanner",enabled?"online":"disabled");

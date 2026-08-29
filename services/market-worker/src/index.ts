@@ -5,12 +5,22 @@ import {JupiterExecution} from "@memecloud/execution";
 import {BirdeyeClient} from "@memecloud/providers";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {cachedTokenDecimals} from "@memecloud/shared";
+import {cachedTokenDecimals,RpcBudget} from "@memecloud/shared";
 
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
 const decimalsCache=new Map<string,{decimals:number;supply:number;at:number}>();
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+// Shared, cross-process Solana RPC budget -- same account, same bucket, as flow-worker. This
+// worker marks real open positions' current value (trackedMints() pulls OPEN/PARTIALLY_CLOSED
+// positions, not just discovery candidates), so its getTokenSupply calls draw at P2: well above
+// pure background discovery (flow-worker, P4) since stale marks are user-visible, but still below
+// the true real-money execution paths (exits/executor).
+const sharedRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{
+  capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),
+  ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))
+});
+let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null;
 let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false;
 
 // Previously read once at process startup and cached forever — an Admin change to the RPC URL,
@@ -30,6 +40,11 @@ await reloadConfig();
 
 async function tokenMeta(mint:string){
   const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<60*60_000)return c;
+  const shared=await sharedRpcBudget.tryAcquire("P2");
+  if(!shared.granted){
+    sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();
+    throw Object.assign(new Error("SHARED_RPC_BUDGET_EXCEEDED"),{code:"SHARED_RPC_BUDGET_EXCEEDED"});
+  }
   const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
   const v={decimals:supply.value.decimals,supply:Number(supply.value.uiAmountString??0),at:Date.now()};
   decimalsCache.set(mint,v);
@@ -139,7 +154,13 @@ async function updateMint(mint:string){
     if(old.length)await db.marketPrice.deleteMany({where:{id:{in:old.map(x=>x.id)}}});
     const oldRich=await db.memeMarketSnapshot.findMany({where:{chain:"SOLANA",mint},orderBy:{observedAt:"desc"},skip:720,take:300,select:{id:true}});
     if(oldRich.length)await db.memeMarketSnapshot.deleteMany({where:{id:{in:oldRich.map(x=>x.id)}}});
-  }catch(e){quoteErrors++;console.error("[market-worker]",mint,e)}
+  }catch(e:any){
+    // A shared-budget denial is this worker correctly backing off for another, higher-priority
+    // consumer -- not a provider-side failure, so it must not feed the adaptive-backoff counter
+    // below (that would slow this worker's own pace for a reason unrelated to its own error rate).
+    if(e?.code==="SHARED_RPC_BUDGET_EXCEEDED")return;
+    quoteErrors++;console.error("[market-worker]",mint,e);
+  }
 }
 
 // Adaptive backoff: sustained provider 429s mean the current pace exceeds whatever tier the
@@ -165,7 +186,10 @@ async function tick(){
     else adaptiveDelayMs=Math.max(baseDelayMs,Math.round(adaptiveDelayMs*0.85));
   }finally{running=false}
 }
-startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,adaptiveDelayMs,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running}));
+startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,adaptiveDelayMs,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running,
+  sharedRpcBudgetPriority:"P2",sharedRpcBudgetDenied:sharedBudgetDenied,
+  lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null
+}));
 setInterval(()=>void tick(),Math.max(3000,Number(process.env.MARKET_INTERVAL_MS??7000)));
 void tick();
 console.log("[market-worker] running");

@@ -573,7 +573,7 @@ function RpcUsage({services}:{services:any[]}){
  const rows=services.filter(s=>RPC_WORKERS.includes(s.name));
  if(!rows.length)return null;
  return <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>RPC / PROVIDER USAGE</span><h2>Real-time request state by worker</h2></div></div>
-  <table className="admin-table"><thead><tr><th>Worker</th><th>State</th><th>Rate limited</th><th>Errors / Dropped</th><th>Request budget</th><th>Last event</th></tr></thead><tbody>
+  <table className="admin-table"><thead><tr><th>Worker</th><th>State</th><th>Rate limited</th><th>Errors / Dropped</th><th>Request budget</th><th>Shared account budget</th><th>Last event</th></tr></thead><tbody>
    {rows.map(s=>{const dt=s.detail||{};const rateLimited=Boolean(dt.rateLimited);const lastRl=dt.lastRateLimitAgoSec??dt.lastRateLimitAt;
     return <tr key={s.name}>
      <td><b>{s.name}</b></td>
@@ -581,10 +581,11 @@ function RpcUsage({services}:{services:any[]}){
      <td>{rateLimited?<span className="status-badge watch">Rate limited now</span>:lastRl!=null?<small>Clear · last 429 {typeof lastRl==="number"?`${lastRl}s ago`:"recorded"}</small>:<small>No 429s recorded</small>}</td>
      <td>{dt.errors??0}{dt.dropped!=null?` / ${dt.dropped} dropped`:""}{dt.fallbackSkippedForRateLimit?` (${dt.fallbackSkippedForRateLimit} fallback skipped)`:""}</td>
      <td>{dt.maxRequestsPerSec?`${dt.maxRequestsPerSec}/sec cap`:dt.tickIntervalMs?`1 batch / ${Math.round(dt.tickIntervalMs/1000)}s`:"—"}</td>
+     <td>{dt.sharedRpcBudgetPriority?<small>{dt.sharedRpcBudgetPriority} · {dt.sharedRpcBudgetDenied??0} denied{dt.lastSharedRpcBudgetDenyAgoSec!=null?` · last ${dt.lastSharedRpcBudgetDenyAgoSec}s ago`:""}</small>:<small>Not wired in</small>}</td>
      <td><small>{dt.lastSuccessfulRpcAgoSec!=null?`RPC OK ${dt.lastSuccessfulRpcAgoSec}s ago`:dt.lastDbWriteAgoSec!=null?`Last write ${dt.lastDbWriteAgoSec}s ago`:"—"}</small></td>
     </tr>;})}
   </tbody></table>
-  <p style={{fontSize:10,color:"#7b8190",margin:"10px 2px 0"}}>No historical requests/min/hour/day graph exists yet -- this table is live current state only, refreshed on demand.</p>
+  <p style={{fontSize:10,color:"#7b8190",margin:"10px 2px 0"}}>No historical requests/min/hour/day graph exists yet -- this table is live current state only, refreshed on demand. "Shared account budget" is a cross-process Redis-backed token bucket (P0=highest priority, P5=lowest) protecting the account-wide Helius/Solana RPC limit -- background/bulk consumers back off first when it gets scarce.</p>
  </section>;
 }
 function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Execution</span><b>{String(d.executionMode||"—").toUpperCase()}</b><small>Current backend mode</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section><RpcUsage services={d.services||[]}/></>}

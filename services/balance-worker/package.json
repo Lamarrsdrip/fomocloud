@@ -13,8 +13,10 @@
   "dependencies": {
     "@memecloud/db": "workspace:*",
     "@memecloud/ops": "workspace:*",
+    "@memecloud/shared": "workspace:*",
     "@solana/web3.js": "^1.98.4",
-    "@memecloud/config": "workspace:*"
+    "@memecloud/config": "workspace:*",
+    "ioredis": "^5.7.0"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

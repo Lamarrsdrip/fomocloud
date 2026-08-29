@@ -236,3 +236,15 @@ export async function cachedTokenDecimals(
   await redis.set(key, String(decimals)).catch(() => {});
   return decimals;
 }
+
+export {
+  RpcBudget,
+  RPC_PRIORITY,
+  RESERVE_FRACTION,
+  computeTokenBucket,
+  type RpcPriority,
+  type RedisEvalClient,
+  type RpcBudgetOptions,
+  type TokenBucketState,
+  type TokenBucketResult,
+} from "./rpcBudget.js";
