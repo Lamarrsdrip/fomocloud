@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {Connection,PublicKey} from "@solana/web3.js";
 import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
@@ -141,15 +142,25 @@ async function recordDeposit(wallet:{id:string;userId:string;address:string;crea
     const recent=Boolean(blockTime&&Date.now()-blockTime.getTime()<10*60_000);
     const amount=rawToDecimalString(candidate.amountRaw,candidate.decimals);
     const symbol=candidate.symbol??`${candidate.assetMint.slice(0,5)}…${candidate.assetMint.slice(-4)}`;
-    const depositData={idempotencyKey:key,userId:wallet.userId,walletId:wallet.id,chain:"SOLANA" as const,walletAddress:wallet.address,txHash:sig.signature,slot:BigInt(sig.slot),blockTime,assetMint:candidate.assetMint,symbol:candidate.symbol,decimals:candidate.decimals,amountRaw:candidate.amountRaw,supported:candidate.supported,status,confirmations,confirmedAt:new Date(),finalizedAt:status==="FINALIZED"?new Date():null,lastCheckedAt:new Date()};
+    // Pre-generated so the LedgerEntry below can reference this exact Deposit's real _id (the
+    // ledger's referenceId is @db.ObjectId -- it must be a valid ObjectId, not the idempotency key).
+    const depositId=crypto.randomBytes(12).toString("hex");
+    const depositData={id:depositId,idempotencyKey:key,userId:wallet.userId,walletId:wallet.id,chain:"SOLANA" as const,walletAddress:wallet.address,txHash:sig.signature,slot:BigInt(sig.slot),blockTime,assetMint:candidate.assetMint,symbol:candidate.symbol,decimals:candidate.decimals,amountRaw:candidate.amountRaw,supported:candidate.supported,status,confirmations,confirmedAt:new Date(),finalizedAt:status==="FINALIZED"?new Date():null,lastCheckedAt:new Date()};
+    // Real-money audit trail (LedgerEntry), scoped to USDC only: that's the one asset here with a
+    // direct 1:1 USD value already on hand (`amount`) -- SOL or any other supported-but-non-USDC
+    // deposit would need a price conversion this function doesn't have, and a fabricated price has
+    // no place in an accounting ledger. Non-USDC deposits are still fully recorded in Deposit itself;
+    // they just don't get a USD-denominated ledger line until/unless a real price source is wired in.
+    const ledgerEntry=candidate.assetMint===usdc.toBase58()?db.ledgerEntry.create({data:{userId:wallet.userId,type:"DEPOSIT" as const,amountUsd:Number(amount),chain:"SOLANA" as const,asset:"USDC",referenceType:"Deposit",referenceId:depositId,note:`USDC deposit confirmed, tx ${sig.signature}`}}):null;
     try{
       if(recent){
         await db.$transaction([
           db.deposit.create({data:depositData}),
           db.userActivityEvent.create({data:{userId:wallet.userId,type:candidate.supported?"DEPOSIT_CONFIRMED":"UNSUPPORTED_TOKEN_RECEIVED",title:candidate.supported?`${symbol} deposit confirmed`:`Unsupported token received`,body:candidate.supported?`${amount} ${symbol} arrived in your MemeCloud wallet and the on-chain balance is being reconciled.`:`${amount} ${symbol} arrived on-chain. It is visible in deposit history but is not counted as Trading Cash.`,status,data:{txHash:sig.signature,walletId:wallet.id,assetMint:candidate.assetMint,amountRaw:candidate.amountRaw} as any}}),
-          db.notification.create({data:{userId:wallet.userId,deliveryKey:`deposit:${key}`,type:candidate.supported?"DEPOSIT_CONFIRMED":"UNSUPPORTED_TOKEN_RECEIVED",title:candidate.supported?`${symbol} deposit confirmed`:`Unsupported token received`,body:candidate.supported?`${amount} ${symbol} is now visible in your MemeCloud wallet.`:`${amount} ${symbol} was received but is not supported as Trading Cash.`,data:{txHash:sig.signature,walletId:wallet.id,assetMint:candidate.assetMint} as any}})
+          db.notification.create({data:{userId:wallet.userId,deliveryKey:`deposit:${key}`,type:candidate.supported?"DEPOSIT_CONFIRMED":"UNSUPPORTED_TOKEN_RECEIVED",title:candidate.supported?`${symbol} deposit confirmed`:`Unsupported token received`,body:candidate.supported?`${amount} ${symbol} is now visible in your MemeCloud wallet.`:`${amount} ${symbol} was received but is not supported as Trading Cash.`,data:{txHash:sig.signature,walletId:wallet.id,assetMint:candidate.assetMint} as any}}),
+          ...(ledgerEntry?[ledgerEntry]:[])
         ]);
-      }else await db.deposit.create({data:depositData});
+      }else await db.$transaction([db.deposit.create({data:depositData}),...(ledgerEntry?[ledgerEntry]:[])]);
       depositsRecorded++;if(!candidate.supported)unsupportedDepositsRecorded++;
     }catch(e:any){
       if(!isUniqueConflict(e))throw e;

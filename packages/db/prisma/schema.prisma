@@ -103,6 +103,7 @@ model User {
   wallets               Wallet[]
   walletAssetBalances   WalletAssetBalance[]
   deposits              Deposit[]
+  ledgerEntries         LedgerEntry[]
   follows               UserFollow[]
   positions             Position[]
   orders                Order[]
@@ -207,6 +208,49 @@ model Wallet {
 enum DepositStatus {
   CONFIRMED
   FINALIZED
+}
+
+// Real gap found by forensic audit: no append-only accounting trail existed anywhere. Every
+// money-affecting write (Deposit, Position.costUsd/realizedPnlUsd, PositionExit.proceedsUsd,
+// TradingCashAllocation) happened independently with nothing to reconcile against if a balance
+// ever looked wrong. LedgerEntry does not replace those fields as the source of truth for CURRENT
+// state (TradingCashAllocation is still resynced from real on-chain balance -- that discipline,
+// verified correct by audit, stays as-is); it is the audit trail: an immutable, append-only record
+// of every real-money event, written atomically alongside the state change it documents. Entries
+// are created only, never updated or deleted -- that discipline is enforced at the application
+// layer (no .update()/.delete() call should ever target this model).
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL
+  BUY_SPEND
+  SELL_PROCEEDS
+  NETWORK_FEE
+  PLATFORM_FEE
+  ADJUSTMENT
+  REVERSAL
+}
+
+model LedgerEntry {
+  id              String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String          @db.ObjectId
+  type            LedgerEntryType
+  // Positive = money/value entering the user's trading cash (deposit, sell proceeds); negative =
+  // leaving it (buy spend, fees, withdrawal). Always in USD for now (this platform's real-money
+  // execution is USDC-denominated) -- never fabricated from a price this code doesn't actually have.
+  amountUsd       Float
+  chain           Chain
+  asset           String
+  // Points at the authoritative record this entry documents (Deposit, Order, PositionExit, ...) --
+  // never the entry's own reason for existing without something concrete backing it.
+  referenceType   String
+  referenceId     String          @db.ObjectId
+  note            String?
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([referenceType, referenceId])
 }
 
 // Exact on-chain wallet balances. Raw integer amounts are authoritative; display conversion is

@@ -179,11 +179,15 @@ async function executeLiveExit(p:any,instruction:any){
     const costBasis=p.costUsd*frac(tokenSold,BigInt(p.entryTokenRaw));const pnl=proceeds-costBasis;
     const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)return;
     const nowRemaining=BigInt(fresh.remainingTokenRaw);const next=nowRemaining>tokenSold?nowRemaining-tokenSold:0n;
+    // Pre-generated so the LedgerEntry below can reference this exact PositionExit within the same
+    // array-form $transaction (see executor.ts's identical pattern for the SOURCE_SELL mirror).
+    const exitId=crypto.randomBytes(12).toString("hex");
     await db.$transaction([
-      db.positionExit.create({data:{positionId:p.id,reason:`${instruction.action}_${instruction.reason}`.slice(0,180),tokenRaw:tokenSold.toString(),proceedsUsd:proceeds,pnlUsd:pnl,txHash:existing.txHash}}),
+      db.positionExit.create({data:{id:exitId,positionId:p.id,reason:`${instruction.action}_${instruction.reason}`.slice(0,180),tokenRaw:tokenSold.toString(),proceedsUsd:proceeds,pnlUsd:pnl,txHash:existing.txHash}}),
       db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}}),
       db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"CONFIRMED"}}),
-      ...(order?[db.order.update({where:{id:order.id},data:{status:"CONFIRMED",actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}})]:[])
+      ...(order?[db.order.update({where:{id:order.id},data:{status:"CONFIRMED",actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}})]:[]),
+      db.ledgerEntry.create({data:{userId:p.userId,type:"SELL_PROCEEDS",amountUsd:proceeds,chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live exit confirmed on-chain, tx ${existing.txHash}`}})
     ]);
     liveConfirmed++;await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Live position closed":"Live profit protected",instruction.reason,{positionId:p.id,txHash:existing.txHash,sellPct,pnlUsd:pnl,mode:"LIVE"});return;
   }
