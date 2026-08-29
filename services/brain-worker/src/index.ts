@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
-import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets} from "@memecloud/brain";
+import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets,weightedConvergenceScore} from "@memecloud/brain";
 import {chainSupports} from "@memecloud/shared";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
@@ -155,10 +155,10 @@ async function notifyDiscoveryUpgrade(row:any,newState:string){
     if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
   }
 }
-async function notifyConvergence(row:any,count:number){
+async function notifyConvergence(row:any,count:number,provenCount:number){
   const subs=await discoverySubscribers();
   const title=`${count} tracked smart wallets entered ${row.symbol||"a token"}`;
-  const body=`${count} wallets MemeCloud has already built real evidence on bought this within 10 minutes · ${row.chain} · ${row.mint}`;
+  const body=`${count} wallets MemeCloud has already built real evidence on bought this within 10 minutes${provenCount?` (${provenCount} PROVEN)`:""} · ${row.chain} · ${row.mint}`;
   for(const u of subs){
     if(!(u.notificationPrefs as any)?.discoverySmartWallet)continue;
     const key=`convergence:${row.id}:${u.id}`;
@@ -200,18 +200,23 @@ async function tick(){
       const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
       const upgraded=didStateUpgrade(existing?.lastNotifiedState,d.state);
       const convergentCount=c.convergentWallets.length;
+      const provenConvergentCount=c.convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
+      // Weighted, not raw count, is what actually gates the convergence signal below -- a PROVEN
+      // wallet (cleared packages/discovery's objective shouldProve bar) carries more evidentiary
+      // weight than one still PAPER_TRACKING. See weightedConvergenceScore's own comment.
+      const convergentWeightedScore=weightedConvergenceScore(c.convergentWallets);
       // Real bug found by a full-platform audit: lastNotifiedState and the convergence dedup
       // baseline used to be written into the SAME upsert that ran before the notify call below --
       // so if notifyDiscoveryUpgrade/notifyConvergence ever failed for any reason (an ordinary
       // transient DB/queue hiccup, not an outage), the dedup baseline had already advanced,
       // didStateUpgrade/isNewConvergence would see no upgrade on the next tick, and that one real
-      // notification was gone forever -- not delayed, permanently lost. lastNotifiedConvergentCount
+      // notification was gone forever -- not delayed, permanently lost. lastNotifiedConvergentWeightedScore
       // is now a separate field from the always-fresh evidence.convergentCount (which the UI
       // displays as "smart wallets entered" and must stay accurate regardless of notify outcome);
       // it -- like lastNotifiedState -- only advances in a follow-up write AFTER the notify call
       // actually succeeds, so a failed notify naturally retries on the next tick instead of vanishing.
-      const priorNotifiedConvergentCount=Number((existing?.evidence as any)?.lastNotifiedConvergentCount??0);
-      const newConvergence=isNewConvergence(convergentCount,priorNotifiedConvergentCount);
+      const priorNotifiedConvergentWeightedScore=Number((existing?.evidence as any)?.lastNotifiedConvergentWeightedScore??0);
+      const newConvergence=isNewConvergence(convergentWeightedScore,priorNotifiedConvergentWeightedScore);
       // Same "notify succeeds, then advance dedup baseline" discipline as convergence above -- a
       // failed notify must retry next tick, not be silently lost.
       const whaleCount=c.evidence.whaleBuyers60s+c.evidence.knownWhaleBuyers60s;
@@ -220,8 +225,8 @@ async function tick(){
       const isBrandNewToken=!existing;
       // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
       // can't silently change a trading decision. "Why was this found" per the audit's requirement.
-      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
-      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,lastNotifiedConvergentCount:priorNotifiedConvergentCount,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
+      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes${provenConvergentCount?` (${provenConvergentCount} PROVEN)`:""}`,...d.reasons]:d.reasons;
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,provenConvergentCount,convergentWeightedScore,lastNotifiedConvergentWeightedScore:priorNotifiedConvergentWeightedScore,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
       scans++;if(d.action!=="IGNORE")opportunities++;
       if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
@@ -241,8 +246,8 @@ async function tick(){
         await db.globalBrainOpportunity.update({where:{id:row.id},data:{lastNotifiedState:null,lastSignaledState:null}}).catch(()=>{});
       }
       if(newConvergence){
-        await notifyConvergence(row,convergentCount)
-          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedConvergentCount:convergentCount}}}))
+        await notifyConvergence(row,convergentCount,provenConvergentCount)
+          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedConvergentWeightedScore:convergentWeightedScore}}}))
           .catch(e=>console.error("[brain-worker] convergence notify failed, will retry next tick",row.mint,e));
       }
       if(newWhaleActivity){

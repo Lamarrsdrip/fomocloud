@@ -146,6 +146,19 @@ export function isNewConvergence(convergentCount:number,priorConvergentCount:num
   return convergentCount>=2&&convergentCount>priorConvergentCount;
 }
 
+// Real gap found by forensic audit (M-15/PC-H): convergence used to count every tracked wallet
+// identically -- "2 PAPER_TRACKING wallets" and "2 PROVEN wallets" registered as the same evidence
+// strength, when a PROVEN wallet has cleared a real, objective bar (packages/discovery's
+// shouldProve) that a PAPER_TRACKING one hasn't yet. Weighting PROVEN higher means fewer
+// higher-quality wallets can register the same convergence signal as more lower-quality ones,
+// matching the master spec's own example: "3 PROVEN wallets entering carries more credibility than
+// 3 unknown buyers." Fed into the exact same isNewConvergence() dedup above -- only what number
+// gets passed in changes, not the dedup logic itself.
+const CONVERGENCE_WEIGHT:Record<string,number>={PROVEN:2,PAPER_TRACKING:1};
+export function weightedConvergenceScore(wallets:{stage:string}[]):number{
+  return wallets.reduce((sum,w)=>sum+(CONVERGENCE_WEIGHT[w.stage]??0),0);
+}
+
 // Extracted so the dedup logic itself is directly testable without a database (same rationale as
 // didStateUpgrade/isNewConvergence above). Real bug this replaced: the inline version in
 // brain-worker counted raw BUY EVENTS per wallet-tier filter, not distinct wallets -- one whale
