@@ -52,7 +52,7 @@ export default function EmbeddedWalletPanel(props: { me: any; reload: () => Prom
 // (see verifyPrivyDelegation in apps/api/src/server.ts) before ever marking the wallet trading-
 // enabled, so nothing here is trusted blindly server-side.
 function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: () => Promise<void>; pubConfig: any }) {
-  const { ready, authenticated } = usePrivy();
+  const { ready, authenticated, logout } = usePrivy();
   const { user, refreshUser } = useUser();
   const { sendCode, loginWithCode, state: emailState } = useLoginWithEmail();
   const { createWallet } = useCreateWallet();
@@ -101,8 +101,20 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
       await apiFetch("/v1/me/wallets/embedded", { method: "POST", body: JSON.stringify({ privyWalletId: walletId, address }) });
       await reload();
       setStep("done");
-    } catch (e) {
-      setErr(plainError(e));
+    } catch (e: any) {
+      // Real bug found from a live report: Privy's own login session isn't tied to MemeCloud's --
+      // it persists in the browser independently of MemeCloud sign-in/out. If this browser
+      // previously created a wallet under a *different* MemeCloud account (or a stray earlier
+      // attempt), Privy's leftover session hands back that same wallet here, and the backend
+      // correctly refuses to reassign someone else's wallet -- but the raw error was confusing
+      // ("already linked" when the user has never linked anything on this account). Recover
+      // automatically: clear the stale Privy session and let the user start genuinely fresh.
+      if (e?.body?.error === "WALLET_ALREADY_LINKED_TO_ANOTHER_ACCOUNT") {
+        await logout().catch(() => {});
+        setErr("This email's MemeCloud wallet is already linked to a different account. Signed out of that session -- press \"Create my wallet\" again to start fresh, or use a different email.");
+      } else {
+        setErr(plainError(e));
+      }
       setStep("idle");
     }
   }
@@ -116,7 +128,23 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
 
   async function start() {
     setErr("");
-    if (authenticated) { void afterAuthenticated(); return; }
+    if (authenticated) {
+      // Guard against the same stale-session problem proactively, before even attempting
+      // registration: if this browser's Privy session already has an embedded wallet that isn't
+      // one of THIS account's own wallets, it belongs to a different MemeCloud account (or a
+      // discarded earlier attempt) -- start from a clean Privy session rather than reusing it.
+      const existing = (user?.linkedAccounts || []).find(
+        (a: any) => a.type === "wallet" && a.chainType === "solana" && a.walletClientType === "privy"
+      ) as any | undefined;
+      const belongsToThisAccount = existing && (me?.wallets || []).some((w: any) => w.address === existing.address);
+      if (existing && !belongsToThisAccount) {
+        await logout().catch(() => {});
+        setStep("email");
+        return;
+      }
+      void afterAuthenticated();
+      return;
+    }
     setStep("email");
   }
   async function submitEmail(e: React.FormEvent) {
