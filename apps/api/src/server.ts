@@ -1051,7 +1051,16 @@ app.get("/v1/me/wallets/:id/history", auth, asyncRoute(async (req:AuthedRequest,
   if(!rpc)return res.json({transactions:[],rpcConfigured:false});
   const conn=new Connection(rpc,"confirmed");
   const usdcMint=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-  const sigs=await conn.getSignaturesForAddress(new PublicKey(wallet.address),{limit:20});
+  let sigs;
+  try{
+    sigs=await conn.getSignaturesForAddress(new PublicKey(wallet.address),{limit:20});
+  }catch(e:any){
+    // The RPC IS configured (checked above) -- this is a live call failing, most likely the
+    // documented Helius rate-limit/quota exhaustion. Distinct from "not configured" so the client
+    // shows an honest "temporarily unavailable" state instead of a misleading configuration error,
+    // and distinct from a raw 500 so a genuine backend bug isn't masked as an external outage.
+    return res.json({transactions:[],rpcConfigured:true,rpcError:String(e?.message??e)});
+  }
   const transactions=await Promise.all(sigs.map(async s=>{
     if(s.err)return {signature:s.signature,blockTime:s.blockTime,status:"FAILED" as const};
     try{

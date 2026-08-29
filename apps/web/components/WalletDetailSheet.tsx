@@ -122,12 +122,19 @@ function HistoryTab({ walletId }: { walletId: string }) {
   const [data, setData] = useState<any>(undefined);
   useEffect(() => {
     let live = true;
-    apiFetch<any>(`/v1/me/wallets/${walletId}/history`).then((d) => { if (live) setData(d); }).catch(() => { if (live) setData({ transactions: [], rpcConfigured: false }); });
+    apiFetch<any>(`/v1/me/wallets/${walletId}/history`)
+      .then((d) => { if (live) setData(d); })
+      // A request failure here (network, auth, an unexpected backend error) is not the same fact
+      // as "the RPC is not configured" -- conflating them showed a misleading, specifically-wrong
+      // message when the real cause could be almost anything. Keep the real error and say so.
+      .catch((e) => { if (live) setData({ transactions: [], fetchError: plainError(e) }); });
     return () => { live = false; };
   }, [walletId]);
 
   if (data === undefined) return <div className="loading" style={{ minHeight: 100 }}>Loading…</div>;
-  if (!data.rpcConfigured) return <div className="pnl-empty">No Solana RPC is configured yet, so history can't be read.</div>;
+  if (data.fetchError) return <div className="pnl-empty">Couldn't load history: {data.fetchError}</div>;
+  if (data.rpcConfigured === false) return <div className="pnl-empty">No Solana RPC is configured yet, so history can't be read.</div>;
+  if (data.rpcError) return <div className="pnl-empty">History is temporarily unavailable (the Solana RPC provider is rate-limited or unreachable right now). Try again shortly.</div>;
   if (!data.transactions?.length) return <div className="pnl-empty">No transactions found yet for this wallet.</div>;
 
   return <div className="list">
