@@ -231,7 +231,15 @@ app.get("/health", asyncRoute(async (_req,res) => {
 }));
 
 app.get("/v1/public/config", asyncRoute(async (_req,res) => {
-  const [socialCfg,chainCfg]=await Promise.all([getConfig<any>("social"),getConfig<any>("chains")]);
+  const [socialCfg,chainCfg,signerCfg]=await Promise.all([getConfig<any>("social"),getConfig<any>("chains"),getConfig<any>("signer")]);
+  // privyAppId/privySignerId/privyPolicyId are Privy dashboard object identifiers, not credentials
+  // -- the client already has to pass signerId/policyIds directly to Privy's own createWallet/
+  // addSigners calls (see docs.privy.io/wallets/wallets/create/create-a-wallet), so these were
+  // always meant to be public. privyAppSecret and privyAuthorizationPrivateKey are the actual
+  // secrets and are never read here.
+  const privyAppId=signerCfg?.privyAppId||process.env.PRIVY_APP_ID;
+  const privySignerId=signerCfg?.privySignerId||process.env.PRIVY_SIGNER_ID;
+  const privyPolicyId=signerCfg?.privyPolicyId||process.env.PRIVY_POLICY_ID;
   res.json({
     appName:"MemeCloud",
     executionMode:process.env.EXECUTION_MODE??"simulation",
@@ -245,7 +253,11 @@ app.get("/v1/public/config", asyncRoute(async (_req,res) => {
     // previously claiming BASE/ARBITRUM/AVALANCHE were "adapter ready" was simply false.
     adapterReadyChains:(process.env.ADAPTER_READY_CHAINS??"").split(",").filter(Boolean),
     discoveryOnlyChains:["BNB","ETHEREUM"],
-    xOAuthConfigured:Boolean(socialCfg?.xOAuthClientId||process.env.X_OAUTH_CLIENT_ID)
+    xOAuthConfigured:Boolean(socialCfg?.xOAuthClientId||process.env.X_OAUTH_CLIENT_ID),
+    embeddedWalletsConfigured:Boolean(privyAppId&&privySignerId&&privyPolicyId),
+    privyAppId:privyAppId||null,
+    privySignerId:privySignerId||null,
+    privyPolicyId:privyPolicyId||null
   });
 }));
 
@@ -952,31 +964,75 @@ app.post("/v1/me/resume", auth, asyncRoute(async (req:AuthedRequest,res) => {
 }));
 
 // ------------------------ DELEGATED TRADING PERMISSION ------------------------
+// Shared by both the existing "delegate an already-connected external wallet" flow and the new
+// "create a MemeCloud embedded wallet" flow below. Never trust the client's claim that delegation
+// succeeded -- independently re-fetch the wallet from Privy's own API and check the actual
+// additional_signers/policy_ids grants server-side before ever marking tradingEnabled:true. This is
+// the same verification the delegated-execution path (executor/exits' signAndSend) implicitly
+// depends on being correct, so it must never be weakened for either caller.
+type PrivyDelegationCheck =
+  | { ok:true; provider:PrivySolanaSigner; remote:any }
+  | { ok:false; status:number; error:string };
+async function verifyPrivyDelegation(privyWalletId:string, expectedAddress?:string):Promise<PrivyDelegationCheck>{
+  const cfg=await getConfig<any>("signer");
+  const appId=cfg?.privyAppId||process.env.PRIVY_APP_ID,appSecret=cfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
+  const authKey=cfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+  const expectedSigner=cfg?.privySignerId||process.env.PRIVY_SIGNER_ID;
+  const expectedPolicy=cfg?.privyPolicyId||process.env.PRIVY_POLICY_ID;
+  if(!appId||!appSecret||!authKey||!expectedSigner||!expectedPolicy)return {ok:false,status:503,error:"DELEGATED_SIGNER_NOT_CONFIGURED"};
+  const provider=new PrivySolanaSigner({appId,appSecret,authorizationPrivateKey:authKey,sponsorGas:Boolean(cfg?.sponsorGas)});
+  const remote:any=await provider.getWallet(privyWalletId);
+  if(String(remote?.chain_type??"").toLowerCase()!=="solana")return {ok:false,status:400,error:"PRIVY_WALLET_NOT_SOLANA"};
+  if(expectedAddress&&String(remote?.address??"")!==expectedAddress)return {ok:false,status:400,error:"PRIVY_WALLET_ADDRESS_MISMATCH"};
+  const signers=Array.isArray(remote?.additional_signers)?remote.additional_signers:[];
+  const signer=signers.find((x:any)=>String(x?.signer_id??x?.id??"")===expectedSigner);
+  const policies=[...(Array.isArray(remote?.policy_ids)?remote.policy_ids:[]),...(Array.isArray(signer?.override_policy_ids)?signer.override_policy_ids:[])].map(String);
+  if(!signer)return {ok:false,status:400,error:"RESTRICTED_SIGNER_NOT_GRANTED_BY_USER"};
+  if(!policies.includes(String(expectedPolicy)))return {ok:false,status:400,error:"REQUIRED_TRADING_POLICY_NOT_GRANTED"};
+  return {ok:true,provider,remote};
+}
 app.post("/v1/me/wallets/:id/enable-automation", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub}});
   if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
   if(wallet.chain!=="SOLANA")return res.status(400).json({error:"AUTOMATION_CHAIN_NOT_IMPLEMENTED"});
   const privyWalletId=String(req.body?.privyWalletId??"").trim();
   if(!privyWalletId)return res.status(400).json({error:"PRIVY_WALLET_ID_REQUIRED"});
-  const cfg=await getConfig<any>("signer");
-  const appId=cfg?.privyAppId||process.env.PRIVY_APP_ID,appSecret=cfg?.privyAppSecret||process.env.PRIVY_APP_SECRET;
-  const authKey=cfg?.privyAuthorizationPrivateKey||process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
-  const expectedSigner=cfg?.privySignerId||process.env.PRIVY_SIGNER_ID;
-  const expectedPolicy=cfg?.privyPolicyId||process.env.PRIVY_POLICY_ID;
-  if(!appId||!appSecret||!authKey||!expectedSigner||!expectedPolicy)return res.status(503).json({error:"DELEGATED_SIGNER_NOT_CONFIGURED"});
-  const provider=new PrivySolanaSigner({appId,appSecret,authorizationPrivateKey:authKey,sponsorGas:Boolean(cfg?.sponsorGas)});
-  const remote:any=await provider.getWallet(privyWalletId);
-  if(String(remote?.chain_type??"").toLowerCase()!=="solana"||String(remote?.address??"")!==wallet.address)return res.status(400).json({error:"PRIVY_WALLET_ADDRESS_MISMATCH"});
-  const signers=Array.isArray(remote?.additional_signers)?remote.additional_signers:[];
-  const signer=signers.find((x:any)=>String(x?.signer_id??x?.id??"")===expectedSigner);
-  const policies=[...(Array.isArray(remote?.policy_ids)?remote.policy_ids:[]),...(Array.isArray(signer?.override_policy_ids)?signer.override_policy_ids:[])].map(String);
-  if(!signer)return res.status(400).json({error:"RESTRICTED_SIGNER_NOT_GRANTED_BY_USER"});
-  if(!policies.includes(String(expectedPolicy)))return res.status(400).json({error:"REQUIRED_TRADING_POLICY_NOT_GRANTED"});
+  const check=await verifyPrivyDelegation(privyWalletId,wallet.address);
+  if(!check.ok)return res.status(check.status).json({error:check.error});
   const expiryRaw=req.body?.permissionExpiry;const expiry=expiryRaw?new Date(String(expiryRaw)):new Date(Date.now()+30*24*60*60_000);
   if(!Number.isFinite(expiry.getTime())||expiry<=new Date())return res.status(400).json({error:"INVALID_PERMISSION_EXPIRY"});
   const updated=await db.wallet.update({where:{id:wallet.id},data:{tradingEnabled:true,permissionRef:privyWalletId,permissionExpiry:expiry}});
-  await audit(req.user.sub,"USER","ENABLE_DELEGATED_TRADING",wallet.id,{provider:"PRIVY",permissionExpiry:expiry.toISOString(),policyId:expectedPolicy});
+  await audit(req.user.sub,"USER","ENABLE_DELEGATED_TRADING",wallet.id,{provider:"PRIVY",permissionExpiry:expiry.toISOString()});
   res.json({wallet:{id:updated.id,chain:updated.chain,address:updated.address,tradingEnabled:true,permissionExpiry:updated.permissionExpiry}});
+}));
+// ------------------------ EMBEDDED WALLET (created + delegated client-side via Privy, never a
+// plaintext key/seed touching this backend) ------------------------
+// The client already: (1) created a Privy embedded Solana wallet for the logged-in user via
+// useCreateWallet, (2) granted MemeCloud's restricted signer+policy via useSigners().addSigners.
+// This endpoint independently re-verifies both facts against Privy's own API (verifyPrivyDelegation
+// above) before ever creating a Wallet row or marking it tradingEnabled -- the client's report of
+// its own success is never trusted on its own.
+app.post("/v1/me/wallets/embedded", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const privyWalletId=String(req.body?.privyWalletId??"").trim();
+  const address=String(req.body?.address??"").trim();
+  if(!privyWalletId||!address)return res.status(400).json({error:"PRIVY_WALLET_ID_AND_ADDRESS_REQUIRED"});
+  const check=await verifyPrivyDelegation(privyWalletId,address);
+  if(!check.ok)return res.status(check.status).json({error:check.error});
+  // Ownership must be checked BEFORE any write -- upserting straight through would silently
+  // re-point another user's existing wallet row at this request's delegation if the address
+  // somehow already belonged to someone else (practically unreachable for a freshly Privy-
+  // generated keypair, but a real cross-account correctness bug if it were ever possible).
+  const existing=await db.wallet.findUnique({where:{chain_address:{chain:"SOLANA",address}}});
+  if(existing&&existing.userId!==req.user.sub)return res.status(409).json({error:"WALLET_ALREADY_LINKED_TO_ANOTHER_ACCOUNT"});
+  const expiry=new Date(Date.now()+30*24*60*60_000);
+  const count=await db.wallet.count({where:{userId:req.user.sub}});
+  const wallet=await db.wallet.upsert({
+    where:{chain_address:{chain:"SOLANA",address}},
+    create:{userId:req.user.sub,chain:"SOLANA",address,isPrimary:count===0,label:"MemeCloud wallet",tradingEnabled:true,permissionRef:privyWalletId,permissionExpiry:expiry},
+    update:{tradingEnabled:true,permissionRef:privyWalletId,permissionExpiry:expiry}
+  });
+  await audit(req.user.sub,"USER","CREATE_EMBEDDED_WALLET",wallet.id,{provider:"PRIVY",permissionExpiry:expiry.toISOString()});
+  res.status(201).json({wallet:{id:wallet.id,chain:wallet.chain,address:wallet.address,isPrimary:wallet.isPrimary,tradingEnabled:true,permissionExpiry:wallet.permissionExpiry}});
 }));
 app.post("/v1/me/wallets/:id/disable-automation", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub}});if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
