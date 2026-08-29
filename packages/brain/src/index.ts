@@ -76,6 +76,23 @@ export function classifyLifecycle(row:LifecycleRow,now:number):string{
   return "COOLING";
 }
 
+// Real state ranking behind brain-worker's "notify exactly once per genuine upgrade" rule.
+// Extracted as a pure function (was inline in the worker's tick()) so the dedup logic itself is
+// directly testable without a database.
+export const STATE_RANK:Record<string,number>={SCANNING:0,BUILDING:1,BREAKOUT_FLOW:2,MONEY_RUSH:3};
+export function didStateUpgrade(priorNotifiedState:string|null|undefined,newState:string):boolean{
+  const priorRank=STATE_RANK[priorNotifiedState??"SCANNING"]??0;
+  const newRank=STATE_RANK[newState]??0;
+  return newRank>priorRank&&newRank>0;
+}
+
+// Convergence notifications must fire exactly once per genuine increase in tracked-smart-wallet
+// count, never repeatedly for the same count on every tick, and never for a single wallet (which
+// isn't "convergence" -- that's just one wallet buying, already covered by ordinary evidence).
+export function isNewConvergence(convergentCount:number,priorConvergentCount:number):boolean{
+  return convergentCount>=2&&convergentCount>priorConvergentCount;
+}
+
 export function walletTier(balanceUsd?:number){
   const b=Number(balanceUsd??0);
   if(b>=10_000_000)return "WHALE_10M";

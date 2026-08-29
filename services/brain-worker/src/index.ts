@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
-import {evaluateOpportunity} from "@memecloud/brain";
+import {evaluateOpportunity,didStateUpgrade,isNewConvergence} from "@memecloud/brain";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const signalQueue=new Queue("signals",{connection:redis});
@@ -79,7 +79,6 @@ async function sampleOutcomes(){
 // auto-trade signal path, but wrong for "tell me what you found," which must work with 0 wallets
 // and Live Trading off. Fires exactly once per genuine state upgrade (never on every tick a token
 // happens to still be in that state) by comparing against the row's own lastNotifiedState.
-const STATE_RANK:Record<string,number>={SCANNING:0,BUILDING:1,BREAKOUT_FLOW:2,MONEY_RUSH:3};
 const STATE_PREF:Record<string,string>={BUILDING:"discoveryHeatingUp",BREAKOUT_FLOW:"discoveryStrong",MONEY_RUSH:"discoveryHighConviction"};
 const STATE_TITLE:Record<string,string>={BUILDING:"is heating up",BREAKOUT_FLOW:"looks strong",MONEY_RUSH:"is a high-conviction opportunity"};
 let discoveryNotifiedUsers:any[]|null=null,discoveryNotifiedUsersAt=0;
@@ -122,12 +121,10 @@ async function tick(){
     for(const s of latest.values()){
       const c=await context(s.chain,s.mint,s),d=evaluateOpportunity(c.evidence);
       const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
-      const priorNotifiedRank=STATE_RANK[existing?.lastNotifiedState??"SCANNING"]??0;
-      const newRank=STATE_RANK[d.state]??0;
-      const upgraded=newRank>priorNotifiedRank&&newRank>0;
+      const upgraded=didStateUpgrade(existing?.lastNotifiedState,d.state);
       const convergentCount=c.convergentWallets.length;
       const priorConvergentCount=Number((existing?.evidence as any)?.convergentCount??0);
-      const newConvergence=convergentCount>=2&&convergentCount>priorConvergentCount;
+      const newConvergence=isNewConvergence(convergentCount,priorConvergentCount);
       // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
       // can't silently change a trading decision. "Why was this found" per the audit's requirement.
       const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes`,...d.reasons]:d.reasons;
