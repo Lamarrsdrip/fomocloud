@@ -133,14 +133,14 @@ export default function AppPage(){
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} setView={setView} openToken={setSelectedMint}/>}
+        {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="discover"&&<DiscoverView brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="smart-wallets"&&<SmartWalletsView/>}
         {view==="trade"&&<TradeView settings={settings} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
-        {view==="positions"&&<PositionsView positions={positions} d={dashboard}/>}
+        {view==="positions"&&<PositionsView positions={positions} d={dashboard} me={me} reload={load}/>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView}/>}
         </>}
       </section>
@@ -173,7 +173,7 @@ function eventLine(e:any){
  const map:Record<string,string>={TRADE_COPIED:"💰",PROFIT_TAKEN:"💰",POSITION_CLOSED:"✅",TRADE_SKIPPED:"⏸️",WAIT_PULLBACK:"⏳",GLOBAL_BRAIN:"🧠"};
  return {emoji:map[e.type]||"📣",text:e.title,sub:e.body,at:e.createdAt};
 }
-function HomeView({d,activity,brain,setView,openToken}:{d:any;activity:any;brain:any[];setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
+function HomeView({d,activity,brain,brainDegraded,setView,openToken}:{d:any;activity:any;brain:any[];brainDegraded:boolean;setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
  const s=d?.summary||{};
  const feed=useMemo(()=>{
   const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain}));
@@ -192,7 +192,7 @@ function HomeView({d,activity,brain,setView,openToken}:{d:any;activity:any;brain
    <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Portfolio</span></button>
   </div>
   <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">Live</span></div>
-   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">MemeCloud is scanning the chain. Real activity appears here as evidence arrives — nothing is invented while it's quiet.</div>}
+   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Discovery activity is temporarily paused -- the market data provider is rate-limited right now. This will resume automatically once it recovers.":"MemeCloud is scanning the chain. Real activity appears here as evidence arrives — nothing is invented while it's quiet."}</div>}
   </section>
  </>;
 }
@@ -231,10 +231,11 @@ function DiscoverView({brain,brainDegraded,setView,openToken}:{brain:any[];brain
 const STAGE_LABELS:Record<string,string>={DISCOVERED:"Discovered",ANALYZING:"Analyzing",PAPER_TRACKING:"Paper tracking",PROVEN:"Proven",PAUSED:"Paused"};
 function SmartWalletsView(){
  const[wallets,setWallets]=useState<any[]|null>(null);
+ const[degraded,setDegraded]=useState(false);
  const[filter,setFilter]=useState<"all"|"whales"|"proven">("all");
  const[detail,setDetail]=useState<any|null>(null);
  const[detailBusy,setDetailBusy]=useState(false);
- useEffect(()=>{let live=true;apiFetch<any>("/v1/smart-wallets",{},false).then(x=>{if(live)setWallets(x.wallets||[])}).catch(()=>{if(live)setWallets([])});return()=>{live=false}},[]);
+ useEffect(()=>{let live=true;apiFetch<any>("/v1/smart-wallets",{},false).then(x=>{if(live){setWallets(x.wallets||[]);setDegraded(Boolean(x.pipelineDegraded))}}).catch(()=>{if(live)setWallets([])});return()=>{live=false}},[]);
  const rows=useMemo(()=>{
   const list=wallets||[];
   if(filter==="whales")return list.filter(w=>w.isWhale);
@@ -247,6 +248,7 @@ function SmartWalletsView(){
  }
  return <>
   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 12px"}}>Wallets MemeCloud discovered from real on-chain meme activity — not manually entered. Ratings require a meaningful sample size, never one lucky trade.</p>
+  {degraded&&<div className="notice" style={{marginBottom:12,borderColor:"rgba(247,185,95,.3)"}}>Scoring is temporarily degraded — the market data provider is rate-limited, so ratings below aren't updating right now. Existing scores stay visible but may be stale.</div>}
   <div className="config-tabs discover-tabs">
    <button className={filter==="all"?"active":""} onClick={()=>setFilter("all")}>All</button>
    <button className={filter==="whales"?"active":""} onClick={()=>setFilter("whales")}><Wallet size={13} style={{verticalAlign:"middle",marginRight:5}}/>Whales</button>
@@ -485,7 +487,11 @@ function PositionRow({p}:{p:any}){
  const m=positionMath(p);
  const recovered=(p.profitTakenUsd||0)>=(p.costUsd||0)&&(p.costUsd||0)>0;
  return <div className="position-row"><div className="position-main"><div className="position-token"><b>{p.mint?.slice(0,8)}…</b><span className="sim-badge">{p.mode}</span><span className="status-badge">{String(p.status).replaceAll("_"," ")}</span></div><small>{p.sourceTrader?.displayName||"Source trader"} · {p.chain} · opened {timeAgo(p.openedAt)}</small>{p.status!=="CLOSED"&&<small className={recovered?"positive":""}>{recovered?"✓ Principal recovered · runner active":"Principal not recovered"}</small>}</div><div><span>Invested remaining</span><b>{money(m.remainingCost)}</b></div><div><span>Current value</span><b>{p.currentPriceUsd?money(m.currentValue):"Awaiting mark"}</b></div><div><span>Unrealized</span><b className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)} <small>({pct(m.pnlPct)})</small></b></div><div><span>Realized</span><b className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</b></div><div><span>Profit taken</span><b>{money(p.profitTakenUsd)}</b></div></div>}
-function PositionsView({positions,d}:{positions:any[];d:any}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");const s=d?.summary||{};return <>
+function PositionsView({positions,d,me,reload}:{positions:any[];d:any;me:any;reload:()=>Promise<void>}){const[filter,setFilter]=useState("ALL");const shown=positions.filter(p=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");const s=d?.summary||{};return <>
+ {/* User-reported UX gap: wallet creation was only reachable buried in Account settings. This is
+     the primary Portfolio surface, where a wallet is actually most relevant, so it's shown here
+     first now -- Account keeps its own copy too (harmless, matches where people also expect it). */}
+ <section className="app-card" style={{marginBottom:10}}><div className="card-title"><div><span>YOUR WALLET</span><h2>Solana wallet</h2></div></div><EmbeddedWalletPanel me={me} reload={reload}/></section>
  <div className="app-grid-4" style={{marginBottom:10}}>
   <div className="stat-card"><span>Portfolio value</span><b>{money((s.tradingCashUsd||0))}</b></div>
   <div className="stat-card"><span>Total P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{money(s.netPnlUsd)}</b></div>

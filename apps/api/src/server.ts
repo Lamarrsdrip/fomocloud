@@ -1144,17 +1144,41 @@ app.post("/v1/me/wallets/:id/send", auth, tradeLimiter, asyncRoute(async (req:Au
       const balance=await conn.getBalance(fromPubkey,"confirmed");
       const feeReserveLamports=sponsorGas?0:10_000;
       if(lamports+feeReserveLamports>balance)return res.status(409).json({error:"INSUFFICIENT_BALANCE",message:"This wallet does not have enough SOL to cover the amount plus network fees."});
+      // Real gap found by audit: a partial send that leaves the source account below Solana's
+      // rent-exempt minimum (~0.00089 SOL) isn't caught up front -- it either fails on-chain with a
+      // confusing error, or silently gets rejected by the RPC. Leaving exactly 0 (a full sweep) is
+      // fine; anything else below the minimum is refused clearly before ever building the tx.
+      const remainingLamports=balance-lamports-feeReserveLamports;
+      const RENT_EXEMPT_MIN_LAMPORTS=890_880;
+      if(remainingLamports>0&&remainingLamports<RENT_EXEMPT_MIN_LAMPORTS)return res.status(409).json({error:"LEAVES_DUST_BELOW_RENT_EXEMPTION",message:`Sending this amount would leave a tiny leftover balance Solana doesn't allow (below the rent-exempt minimum). Send the full balance instead, or a smaller amount.`});
       instructions.push(SystemProgram.transfer({fromPubkey,toPubkey,lamports}));
     }else{
       const amountRaw=BigInt(Math.round(amount*1_000_000));
       const mint=new PublicKey(usdcMint);
       const sourceAta=await getAssociatedTokenAddress(mint,fromPubkey);
       const destAta=await getAssociatedTokenAddress(mint,toPubkey);
-      const [sourceBalance,destInfo]=await Promise.all([
-        conn.getTokenAccountBalance(sourceAta,"confirmed").catch(()=>null),
-        conn.getAccountInfo(destAta,"confirmed")
-      ]);
-      const sourceRaw=BigInt(sourceBalance?.value?.amount??"0");
+      // Real bug found by a full-platform audit: catching every failure here as null (-> treated
+      // as a genuine $0 balance) conflated two very different facts -- "this wallet's USDC token
+      // account has never been created, so it really does hold zero" (legitimate, common, safe to
+      // treat as 0) vs. "the RPC call itself failed" (rate-limit/timeout/network -- balance is
+      // UNKNOWN, not zero). The second case was silently telling real, funded users they had
+      // insufficient balance. Only a genuine "account does not exist" response means real zero.
+      let sourceRaw:bigint;
+      let destInfo:Awaited<ReturnType<typeof conn.getAccountInfo>>;
+      try{
+        const [sourceBalance,dest]=await Promise.all([
+          conn.getTokenAccountBalance(sourceAta,"confirmed").catch((e:any)=>{
+            const msg=String(e?.message??e??"");
+            if(/could not find account|invalid param|account.*not.*found/i.test(msg))return {value:{amount:"0"}} as any;
+            throw e;
+          }),
+          conn.getAccountInfo(destAta,"confirmed")
+        ]);
+        sourceRaw=BigInt(sourceBalance?.value?.amount??"0");
+        destInfo=dest;
+      }catch(e:any){
+        return res.status(503).json({error:"BALANCE_CHECK_FAILED",message:"MemeCloud could not verify this wallet's USDC balance right now (the Solana RPC provider may be rate-limited). Please try again shortly."});
+      }
       if(amountRaw>sourceRaw)return res.status(409).json({error:"INSUFFICIENT_BALANCE",message:"This wallet does not have enough USDC to cover this amount."});
       if(!destInfo){
         // Recipient has no USDC token account yet -- this wallet pays to create it (standard
@@ -1692,8 +1716,22 @@ app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
   const includeWhalesOnly=String(req.query.whales??"")==="true";
   const where:any={stage:stageParam&&["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"].includes(stageParam)?stageParam:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}};
   if(includeWhalesOnly)where.label={startsWith:"WHALE_"};
-  const candidates=await db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:200});
-  res.json({wallets:candidates.map(smartWalletSummary)});
+  const [candidates,mostRecentlyScored]=await Promise.all([
+    db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:200}),
+    // Same gap found and fixed on /v1/brain/feed this session, found here too by a full-platform
+    // audit before it ever got reported live: with zero freshness signal, this list looks equally
+    // "live" whether scoring-worker (10min tick, round-robins the whole candidate set) is healthy
+    // or has been stalled for hours -- unfiltered by design (a candidate's score staying visible
+    // while stale is fine, that's just this list's own scores aging normally), but the client
+    // should still be able to tell "not yet run in a while" from "actively scoring."
+    db.smartWalletCandidate.findFirst({orderBy:{lastScoredAt:"desc"},select:{lastScoredAt:true}})
+  ]);
+  const dataFreshnessSec=mostRecentlyScored?.lastScoredAt?Math.round((Date.now()-mostRecentlyScored.lastScoredAt.getTime())/1000):null;
+  // 30 minutes, not brain/feed's 5 -- scoring-worker's own healthy cadence is a 10min tick
+  // round-robining 50 candidates at a time, so normal operation alone can leave any single
+  // candidate's lastScoredAt lagging by more than one tick.
+  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
+  res.json({wallets:candidates.map(smartWalletSummary),pipelineDegraded,dataFreshnessSec});
 }));
 app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
   const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});

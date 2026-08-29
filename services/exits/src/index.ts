@@ -188,12 +188,26 @@ async function executeLiveExit(p:any,instruction:any){
     liveConfirmed++;await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Live position closed":"Live profit protected",instruction.reason,{positionId:p.id,txHash:existing.txHash,sellPct,pnlUsd:pnl,mode:"LIVE"});return;
   }
   if(existing && ["SIGNING","FAILED"].includes(existing.status)){
+    // Real bug found by a full-platform audit: with no throttle here, a genuinely-ambiguous exit
+    // (nothing to recover -- e.g. the request never reached Privy at all) got retried every 3s
+    // forever, on every tick, for as long as the position stayed open: a real network call to
+    // Privy's reference-lookup API every 3s indefinitely, and (see tick()'s catch below) a fresh
+    // CRITICAL RiskIncident row every 3s indefinitely, with no terminal state and no distinct
+    // signal that this position needs manual attention versus a routine transient error. Only
+    // actually re-attempt recovery once a reasonable interval has passed since the last try.
+    const secondsSinceLastAttempt=(Date.now()-existing.updatedAt.getTime())/1000;
+    if(secondsSinceLastAttempt<60){
+      throw Object.assign(new Error("AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"),{code:"AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION",throttled:true});
+    }
     const recovered=await recoverPrivyExitHash(idem.slice(0,64));
     if(recovered){
       await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"SUBMITTED",txHash:recovered}});
       if(order)await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:order.submittedAt??new Date()}});
       return executeLiveExit(p,instruction);
     }
+    // touch updatedAt so the next tick's throttle check above measures from *this* attempt, not
+    // the original one -- without this the throttle window above would never actually engage.
+    await db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:existing.status}}).catch(()=>{});
     // Never double-submit an ambiguous exit. An operator/next tick can reconcile by provider
     // reference ID; automatic resubmission is intentionally forbidden.
     throw Object.assign(new Error("AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"),{code:"AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"});
@@ -271,7 +285,15 @@ async function tick(){
       await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:rr<=0n?0:value-remainingCost,lastMarkedAt:new Date()}});marked++;
     }catch(e:any){
       errors++;console.error("[exits]",p.id,e);
-      await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code:String(e?.code??"EXIT_ERROR"),detail:{message:String(e?.message??e)}}}).catch(()=>{});
+      const code=String(e?.code??"EXIT_ERROR");
+      // Real bug found by audit: an ambiguous exit that can't yet be resolved threw on every 3s
+      // tick, and this created a fresh CRITICAL RiskIncident row every single time -- unbounded
+      // real-time DB growth and unreviewable alert noise for what is, after the first occurrence,
+      // the exact same unresolved condition. Only create a new incident if the last unresolved one
+      // for this position+code is more than 10 minutes old (still resurfaces if it's genuinely
+      // still stuck, without spamming every 3 seconds).
+      const recent=await db.riskIncident.findFirst({where:{positionId:p.id,code,resolvedAt:null,createdAt:{gte:new Date(Date.now()-10*60_000)}},select:{id:true}}).catch(()=>null);
+      if(!recent)await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code,detail:{message:String(e?.message??e)}}}).catch(()=>{});
     }
   }
 }

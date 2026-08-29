@@ -29,22 +29,31 @@ async function reloadConfig(){
 }
 await reloadConfig();
 const usdc=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-let walletsScanned=0,allocationsUpdated=0,errors=0,lastCycleMs=0,rateLimited=false,lastRateLimitAt:number|null=null,fallbackSkippedForRateLimit=0;
+let walletsScanned=0,allocationsUpdated=0,allocationsSkippedUnresolved=0,errors=0,lastCycleMs=0,rateLimited=false,lastRateLimitAt:number|null=null,fallbackSkippedForRateLimit=0;
 
 let running=false;
 
+// Returns null for an address whenever its real balance genuinely could not be determined this
+// cycle (RPC denial/429/timeout/error) -- never a fabricated 0n. A real bug this shipped in
+// production: every failure path used to write balances.set(address, 0n), which cycle() then
+// wrote straight into TradingCashAllocation.availableUsd as if it were the user's real balance.
+// Since decideCopy() refuses any trade when availableUsd<=0, an ordinary rate-limit event (now
+// routine given the shared RPC budget system) could silently zero out a fully-funded user's real
+// balance and block their real trades -- found by a full-platform audit, not a live report, but a
+// real and currently-live bug given the ongoing provider pressure. cycle() now skips the
+// TradingCashAllocation write entirely for any user with an unresolved address this cycle, leaving
+// their last-known-real balance in place rather than overwriting it with a wrong number.
 async function batchUsdcBalances(addresses:string[]){
-  const balances=new Map<string,bigint>();
+  const balances=new Map<string,bigint|null>();
   const unique=[...new Set(addresses)];
   for(let offset=0;offset<unique.length;offset+=40){
     const chunk=unique.slice(offset,offset+40);
     const shared=await sharedRpcBudget.tryAcquire("P1");
     if(!shared.granted){
-      // Same treatment as a genuine provider 429 (skip this chunk, zero the balances rather than
-      // guessing) but a distinct counter -- this is this worker correctly yielding to a
-      // higher-priority consumer of the shared account budget, not the provider itself failing.
+      // This worker correctly yielding to a higher-priority consumer of the shared account budget,
+      // not the provider itself failing -- either way, the real balance is unknown this cycle.
       sharedBudgetDenied+=chunk.length;lastSharedBudgetDenyAt=Date.now();
-      for(const address of chunk)balances.set(address,0n);
+      for(const address of chunk)balances.set(address,null);
       if(offset+40<unique.length)await new Promise(r=>setTimeout(r,75));
       continue;
     }
@@ -72,7 +81,7 @@ async function batchUsdcBalances(addresses:string[]){
       if(batchError?.rateLimited){
         fallbackSkippedForRateLimit+=chunk.length;
         errors+=chunk.length;
-        for(const address of chunk)balances.set(address,0n);
+        for(const address of chunk)balances.set(address,null);
         continue;
       }
       console.warn("[balance-worker] RPC batch fallback (non-rate-limit failure)",String(batchError?.message??batchError));
@@ -86,7 +95,7 @@ async function batchUsdcBalances(addresses:string[]){
             errors++;
             if(isRateLimitErr(e)){rateLimited=true;lastRateLimitAt=Date.now()}
             else console.error("[balance-worker] wallet",address,e);
-            balances.set(address,0n);
+            balances.set(address,null);
           }
         }));
       }
@@ -108,6 +117,13 @@ async function cycle(){
     const addressBalances=await batchUsdcBalances(wallets.map(w=>w.address));
     for(const [userId,addresses] of byUser){
       try{
+        // If ANY of this user's addresses couldn't be resolved this cycle (rate-limited, denied by
+        // the shared budget, or a genuine RPC error), their real total balance is unknown -- never
+        // write a partial/zeroed sum over their last-known-real TradingCashAllocation row. Skipping
+        // leaves the previous real value in place; a stale-but-real number is honest, a fresh-but-
+        // fabricated zero is not, and decideCopy() would incorrectly refuse a fully-funded user's
+        // real trade against a zero this worker itself invented.
+        if(addresses.some(address=>addressBalances.get(address)===null)){allocationsSkippedUnresolved++;continue}
         const totalRaw=addresses.reduce((sum,address)=>sum+(addressBalances.get(address)??0n),0n);
         const liveOpen=await db.position.findMany({where:{userId,chain:"SOLANA",mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{costUsd:true,entryTokenRaw:true,remainingTokenRaw:true}});
         const inTradesUsd=liveOpen.reduce((sum,p)=>{
@@ -123,7 +139,7 @@ async function cycle(){
     }
   }finally{lastCycleMs=Date.now()-started;running=false}
 }
-startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,errors,lastCycleMs,rateLimited,lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,fallbackSkippedForRateLimit,chain:"SOLANA",asset:"USDC",
+startHeartbeat("balance-worker",()=>({walletsScanned,allocationsUpdated,allocationsSkippedUnresolved,errors,lastCycleMs,rateLimited,lastRateLimitAgoSec:lastRateLimitAt?Math.round((Date.now()-lastRateLimitAt)/1000):null,fallbackSkippedForRateLimit,chain:"SOLANA",asset:"USDC",
   sharedRpcBudgetPriority:"P1",sharedRpcBudgetDenied:sharedBudgetDenied,
   lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null
 }));

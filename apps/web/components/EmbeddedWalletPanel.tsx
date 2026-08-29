@@ -76,6 +76,23 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
         (a: any) => a.type === "wallet" && a.chainType === "solana" && a.walletClientType === "privy"
       ) as any | undefined;
 
+      // Real bug found from a live report AFTER the first fix for this shipped: the earlier fix
+      // only guarded the "already authenticated, click the button" entry point (in start() below).
+      // But the far more common real path is "not yet authenticated -> type email -> verify code",
+      // and the moment `authenticated` flips true, the effect below calls afterAuthenticated()
+      // directly -- completely bypassing that guard. This check now lives here instead, at the one
+      // place both paths actually funnel through, so it can't be bypassed by either entry point.
+      // Privy's own login session persists in the browser independent of MemeCloud's sign-in/out;
+      // if it already has a wallet that isn't one of THIS account's own wallets, it belongs to a
+      // different MemeCloud account (or a stray earlier attempt) -- start over with a clean Privy
+      // session rather than trying to register someone else's wallet to this account.
+      if (existing && !(me?.wallets || []).some((w: any) => w.address === existing.address)) {
+        await logout().catch(() => {});
+        setStep("email");
+        setErr("That email already has a MemeCloud wallet linked to a different account. Sign in to that account to use it, or enter a different email below to create a new one here.");
+        return;
+      }
+
       let walletId: string, address: string;
       if (existing) {
         walletId = existing.id; address = existing.address;
@@ -128,23 +145,10 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
 
   async function start() {
     setErr("");
-    if (authenticated) {
-      // Guard against the same stale-session problem proactively, before even attempting
-      // registration: if this browser's Privy session already has an embedded wallet that isn't
-      // one of THIS account's own wallets, it belongs to a different MemeCloud account (or a
-      // discarded earlier attempt) -- start from a clean Privy session rather than reusing it.
-      const existing = (user?.linkedAccounts || []).find(
-        (a: any) => a.type === "wallet" && a.chainType === "solana" && a.walletClientType === "privy"
-      ) as any | undefined;
-      const belongsToThisAccount = existing && (me?.wallets || []).some((w: any) => w.address === existing.address);
-      if (existing && !belongsToThisAccount) {
-        await logout().catch(() => {});
-        setStep("email");
-        return;
-      }
-      void afterAuthenticated();
-      return;
-    }
+    // The stale-cross-account-session check now lives inside afterAuthenticated() itself (see the
+    // comment there) so it's applied consistently regardless of entry point -- this just decides
+    // whether a fresh Privy login is needed before that check can even run.
+    if (authenticated) { void afterAuthenticated(); return; }
     setStep("email");
   }
   async function submitEmail(e: React.FormEvent) {
