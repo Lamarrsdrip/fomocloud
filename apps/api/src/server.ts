@@ -617,7 +617,7 @@ app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,r
 
 app.patch("/v1/me/settings/notifications", auth, asyncRoute(async (req:AuthedRequest,res) => {
   await ensureUserDefaults(req.user.sub);
-  const keys=["pushEnabled","emailEnabled","traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast"] as const;
+  const keys=["pushEnabled","emailEnabled","traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoveryNewToken","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
   const data:any={};
   for(const k of keys) if(typeof req.body?.[k]==="boolean") data[k]=req.body[k];
   const row=await db.notificationPreference.update({where:{userId:req.user.sub},data});

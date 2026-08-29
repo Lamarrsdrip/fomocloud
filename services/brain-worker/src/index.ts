@@ -66,6 +66,55 @@ async function sampleOutcomes(){
   const rows=await db.globalBrainOpportunity.findMany({where:{createdAt:{gte:new Date(Date.now()-2*60*60_000)}},take:300});
   for(const o of rows){for(const h of horizons){if(Date.now()-o.firstSeenAt.getTime()<h*1000)continue;const prior=await db.brainOutcomeSample.findUnique({where:{opportunityId_horizonSeconds:{opportunityId:o.id,horizonSeconds:h}}});if(prior)continue;const entry=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:o.firstSeenAt}},orderBy:{observedAt:"asc"}}),obs=await db.marketPrice.findFirst({where:{chain:o.chain,mint:o.mint,observedAt:{gte:new Date(o.firstSeenAt.getTime()+h*1000)}},orderBy:{observedAt:"asc"}});if(!entry||!obs)continue;const ret=(obs.priceUsd-entry.priceUsd)/entry.priceUsd*100;await db.brainOutcomeSample.create({data:{opportunityId:o.id,chain:o.chain,mint:o.mint,horizonSeconds:h,entryPriceUsd:entry.priceUsd,observedPriceUsd:obs.priceUsd,returnPct:ret,observedAt:obs.observedAt,evidence:{score:o.score,state:o.state,action:o.action} as any}}).catch(()=>{});}}
 }
-async function tick(){if(running)return;running=true;try{const cfg=await getConfig<any>("brain"),maxAge=Math.max(5_000,Number(cfg?.snapshotMaxAgeMs??45_000));const snaps=await db.memeMarketSnapshot.findMany({where:{observedAt:{gte:new Date(Date.now()-maxAge)}},orderBy:{observedAt:"desc"},take:800});const latest=new Map<string,any>();for(const s of snaps){const k=`${s.chain}:${s.mint}`;if(!latest.has(k))latest.set(k,s)}const trader=await systemTrader(),users=await ensureBrainFollowers(trader.id);for(const s of latest.values()){const c=await context(s.chain,s.mint,s),d=evaluateOpportunity(c.evidence);const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:d.reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type} as any,lastEvaluatedAt:new Date()},update:{symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:d.reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type} as any,lastEvaluatedAt:new Date()}});scans++;if(d.action!=="IGNORE")opportunities++;if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};await maybeSignal(row,trader,users);}await sampleOutcomes();}catch(e){errors++;console.error("[brain-worker]",e)}finally{running=false}}
+// Discovery notifications, deliberately independent of trading. maybeSignal()/notifyUsers() below
+// only ever reaches users with autoCopyEnabled+globalBrainEnabled -- that's correct for the
+// auto-trade signal path, but wrong for "tell me what you found," which must work with 0 wallets
+// and Live Trading off. Fires exactly once per genuine state upgrade (never on every tick a token
+// happens to still be in that state) by comparing against the row's own lastNotifiedState.
+const STATE_RANK:Record<string,number>={SCANNING:0,BUILDING:1,BREAKOUT_FLOW:2,MONEY_RUSH:3};
+const STATE_PREF:Record<string,string>={BUILDING:"discoveryHeatingUp",BREAKOUT_FLOW:"discoveryStrong",MONEY_RUSH:"discoveryHighConviction"};
+const STATE_TITLE:Record<string,string>={BUILDING:"is heating up",BREAKOUT_FLOW:"looks strong",MONEY_RUSH:"is a high-conviction opportunity"};
+let discoveryNotifiedUsers:any[]|null=null,discoveryNotifiedUsersAt=0;
+async function discoverySubscribers(){
+  if(discoveryNotifiedUsers&&Date.now()-discoveryNotifiedUsersAt<60_000)return discoveryNotifiedUsers;
+  discoveryNotifiedUsers=await db.user.findMany({where:{status:"ACTIVE",notificationPrefs:{is:{OR:[{discoveryHeatingUp:true},{discoveryStrong:true},{discoveryHighConviction:true}]}}},include:{notificationPrefs:true}});
+  discoveryNotifiedUsersAt=Date.now();
+  return discoveryNotifiedUsers;
+}
+async function notifyDiscoveryUpgrade(row:any,newState:string){
+  const pref=STATE_PREF[newState];if(!pref)return;
+  const subs=await discoverySubscribers();
+  const title=`${row.symbol||"A token"} ${STATE_TITLE[newState]||"moved to "+newState}`;
+  const body=`${row.reasons?.[0]||`Score ${Math.round(row.score)}/100`} · ${row.chain} · ${row.mint}`;
+  for(const u of subs){
+    if(!(u.notificationPrefs as any)?.[pref])continue;
+    const key=`discovery:${row.id}:${newState}:${u.id}`;
+    const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,score:row.score,state:newState} as any}}).catch(()=>null);
+    if(e)await notificationQueue.add("notify",{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{url:"/app/?view=discover",mint:row.mint,chain:row.chain},deliveryKey:key},{jobId:key,removeOnComplete:1000,attempts:2}).catch(()=>{});
+  }
+}
+async function tick(){
+  if(running)return;running=true;
+  try{
+    const cfg=await getConfig<any>("brain"),maxAge=Math.max(5_000,Number(cfg?.snapshotMaxAgeMs??45_000));
+    const snaps=await db.memeMarketSnapshot.findMany({where:{observedAt:{gte:new Date(Date.now()-maxAge)}},orderBy:{observedAt:"desc"},take:800});
+    const latest=new Map<string,any>();for(const s of snaps){const k=`${s.chain}:${s.mint}`;if(!latest.has(k))latest.set(k,s)}
+    const trader=await systemTrader(),users=await ensureBrainFollowers(trader.id);
+    for(const s of latest.values()){
+      const c=await context(s.chain,s.mint,s),d=evaluateOpportunity(c.evidence);
+      const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
+      const priorNotifiedRank=STATE_RANK[existing?.lastNotifiedState??"SCANNING"]??0;
+      const newRank=STATE_RANK[d.state]??0;
+      const upgraded=newRank>priorNotifiedRank&&newRank>0;
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:d.reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type} as any,lastEvaluatedAt:new Date(),...(upgraded?{lastNotifiedState:d.state}:{})};
+      const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
+      scans++;if(d.action!=="IGNORE")opportunities++;
+      if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
+      if(upgraded)await notifyDiscoveryUpgrade(row,d.state).catch(e=>console.error("[brain-worker] discovery notify failed",row.mint,e));
+      await maybeSignal(row,trader,users);
+    }
+    await sampleOutcomes();
+  }catch(e){errors++;console.error("[brain-worker]",e)}finally{running=false}
+}
 startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:750}));
 setInterval(()=>void tick(),750);void tick();console.log("[brain-worker] Global Brain online");

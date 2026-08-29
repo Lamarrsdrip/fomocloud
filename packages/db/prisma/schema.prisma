@@ -232,6 +232,17 @@ model NotificationPreference {
   positionClosed    Boolean @default(true)
   securityAlerts    Boolean @default(true)
   platformBroadcast Boolean @default(true)
+  // Global Brain discovery notifications -- deliberately independent of trading wallets/Live
+  // Trading. A user with zero wallets and auto-copy off must still be able to get these; the old
+  // notifyUsers() path was gated behind autoCopyEnabled+globalBrainEnabled, contradicting that.
+  // Off-by-default for the noisier/lower-severity tiers so the default experience isn't a spam
+  // firehose; on-by-default for genuinely strong signals.
+  discoveryNewToken      Boolean @default(false)
+  discoverySmartWallet   Boolean @default(true)
+  discoveryWhaleActivity Boolean @default(true)
+  discoveryHeatingUp     Boolean @default(false)
+  discoveryStrong        Boolean @default(true)
+  discoveryHighConviction Boolean @default(true)
   user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -950,6 +961,10 @@ model GlobalBrainOpportunity {
   survivorScore         Float?
   reasons               Json?
   evidence              Json?
+  // The highest state a discovery notification has already been sent for. Lets brain-worker fire
+  // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
+  // 750ms tick a token happens to still be in that state.
+  lastNotifiedState     String?
   firstSeenAt           DateTime @default(now())
   lastEvaluatedAt       DateTime @default(now())
   createdAt             DateTime @default(now())
