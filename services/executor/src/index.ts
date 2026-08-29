@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
@@ -66,7 +66,7 @@ async function tokenDecimals(mint:string){
 
 async function resolveSourceBuyPriceUsd(signal:any){
   if(signal.sourcePriceUsd&&Number(signal.sourcePriceUsd)>0)return {price:Number(signal.sourcePriceUsd),method:signal.sourcePriceMethod||"TX_RECORDED"};
-  if(signal.chain!=="SOLANA"||signal.action!=="BUY")return null;
+  if(!chainSupports(signal.chain,"EXECUTION_SUPPORTED")||signal.action!=="BUY")return null;
   const outputDecimals=await tokenDecimals(signal.outputMint);
   const tokenAmount=Number(BigInt(signal.outputRaw))/(10**outputDecimals);
   if(!Number.isFinite(tokenAmount)||tokenAmount<=0)return null;
@@ -468,7 +468,7 @@ const worker=new Worker("signals",async job=>{
     // Every Solana copy decision -- simulation or future LIVE -- uses the user's actual
     // requested size to obtain the authoritative executable quote. A cached market mark may help
     // liquidity/sizing checks, but it is never the final chase value.
-    if(signal.chain!=="SOLANA"){
+    if(!chainSupports(signal.chain,"EXECUTION_SUPPORTED")){
       await saveDecision({allowed:false,action:"WAIT_ROUTE",reason:"EXECUTION_ADAPTER_NOT_CONFIGURED",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd:currentPriceUsd,walletChasePct:chase,explanation:"This chain is adapter-ready but does not yet have a verified execution route in this build."});
       skippedCount++; continue;
     }

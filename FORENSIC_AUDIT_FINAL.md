@@ -19,14 +19,54 @@ Repo: Lamarrsdrip/fomocloud. HEAD at last update: `baf114a`.
 | P0-2 | Verify all commit hashes claimed in continuation prompt exist | IMPLEMENTED | All 22 hashes (49329c5...8eae454) confirmed to exist via `git cat-file -e`, with real commit messages matching claims. |
 | P0-3 | Enumerate services/packages present | IMPLEMENTED | 15 services (incl. brain-worker, evm-flow-worker, flow-worker, social-worker), 16 packages confirmed present after pull. |
 
-## Audit-in-progress (5 forks launched, running)
+## Audit Pass 1 — COMPLETE (5 forks, all reported)
 | Fork | Scope | Status |
 |---|---|---|
-| A | Financial precision / ledger / portfolio truth (M-30,31,32 / C-9) | RUNNING |
-| B | Live execution + exit engine safety (M-26,27,28,29 / C-10,11) | RUNNING |
-| C | Auth / IDOR / admin security (M-37,38,39,61 / C-24) | RUNNING |
-| D | Discovery/Brain/Smart-Wallet product alignment (M-3..21 / PC-A,B,C,E,F,G,H,K) | RUNNING |
-| E | RPC resilience / EVM hardening / ingestion durability (M-20,21,22,25 / C-EVM hardening, durable ingestion) | RUNNING |
+| A | Financial precision / ledger / portfolio truth (M-30,31,32 / C-9) | REPORTED |
+| B | Live execution + exit engine safety (M-26,27,28,29 / C-10,11) | REPORTED |
+| C | Auth / IDOR / admin security (M-37,38,39,61 / C-24) | REPORTED |
+| D | Discovery/Brain/Smart-Wallet product alignment (M-3..21 / PC-A,B,C,E,F,G,H,K) | REPORTED |
+| E | RPC resilience / EVM hardening / ingestion durability (M-20,21,22,25 / C-EVM hardening, durable ingestion) | REPORTED |
+
+### Fork A findings (financial precision / ledger / portfolio)
+- M-31/C-9 Immutable ledger: **MISSING**. No `Ledger`/`LedgerEntry` model in schema.prisma. Money fields mutated directly on TradingCashAllocation/Position/PositionExit/Deposit with no append-only event trail.
+- M-30 Float precision: **PARTIAL**. Raw token amounts correctly BigInt/String end-to-end. USD-denominated fields (costUsd, realizedPnlUsd, availableUsd, etc.) are `Float` in schema, computed via `Number(BigInt(raw))/1_000_000`. Not an active bug at current trade sizes (within Number's exact-integer range) but architecturally exactly the gap the spec flags -- no Decimal/integer-micro-USD canonical ledger.
+- M-32 Portfolio value duplication: **IMPLEMENTED**. Single source (`apps/api/src/server.ts:706-729,1592-1594`), frontend renders API fields directly, zero competing frontend calculation found.
+- Label conflation (cash vs total vs P&L): **NOT FOUND** -- already correctly separated in `apps/app/page.tsx:502-504` and `admin/page.tsx:113` (commit 1758886 verified in current code).
+- Balance fabrication on RPC failure: **IMPLEMENTED**. `services/balance-worker/src/index.ts:113,217` sets `null` (not 0) on RPC failure and skips the DB write entirely rather than zeroing, preserving last-known-good (commit 8eae454 verified).
+
+### Fork B findings (live execution / exit engine)
+- BUY-path crash-safety: **IMPLEMENTED**. `decisionKey`-based idempotency, Privy `reference_id` ambiguous-broadcast recovery, `$transaction` atomic writes. One minor gap: initial `db.order.create` lacks the explicit P2002 handler the SOURCE_SELL path has (safe today via outer catch, just less explicit).
+- Ambiguous-broadcast recovery: **IMPLEMENTED** both buy and sell directions, with 60s reconciliation throttle.
+- Quote-as-fill conflation: **NOT FOUND** (correctly separated -- confirmation always reads real on-chain deltas before marking CONFIRMED).
+- Duplicate sell protection: **FIXED THIS SESSION** (commit 0828d7b) -- `services/exits/src/index.ts` executeLiveExit's Order creation had no P2002 race handler unlike executor.ts's SOURCE_SELL path; now mirrors it.
+- Stale/missing market data never triggers destructive exit: **IMPLEMENTED**, verified in code (`services/exits/src/index.ts:254,259-264`).
+- Multi-write transaction consistency: **IMPLEMENTED** (`$transaction` on every confirmation write).
+- Caveat: none of this was LIVE chaos-tested (no induced-crash test found in repo) -- status is code-verified/IMPLEMENTED, not LIVE VERIFIED.
+
+### Fork C findings (auth / IDOR / admin security)
+- Access-token-in-localStorage: **SAFE**. Real long-lived credential is httpOnly `fomo_refresh` cookie; localStorage only holds a 60m access token. helmet() applied. Refresh-race bug was a Prisma Mongo `revokedAt:null` vs `{isSet:false}` bug, fixed+regression-tested. Minor NEEDS-VERIFICATION: cross-tab concurrent refresh could still race (pre-existing edge case, not introduced by the fix).
+- IDOR: **SAFE**, verified across ~10 checked routes -- every `/v1/me/*` route scopes by `req.user.sub` (server-derived JWT claim), never a client-supplied ID alone.
+- Admin RBAC: **SAFE**. `requireAdmin` (OWNER/ADMIN/SUPPORT) gates read-only routes only; `adminOnly` (OWNER-only) gates every mutation including live-trading enable/disable. Secrets redacted before SUPPORT/ADMIN ever see config responses.
+- Secrets exposure: **SAFE** (scope: server.ts only, not exhaustive repo-wide).
+- Amount/negative-value guards: **SAFE**, `Number.isFinite && >0` checks present on manual trade + wallet send routes.
+
+### Fork D findings (discovery/brain/smart-wallet product alignment) -- HIGHEST PRIORITY, USER'S CENTRAL CONCERN
+- Discover feed source: **PARTIAL**. Reads qualified `GlobalBrainOpportunity` (not raw DiscoveryToken) -- good -- but WHERE clause is loose (any row with any recent inflow/buyer or <10min-old counts, just ranked low). Not literally "random new coins" but not strictly "only meaningful intelligence" either.
+- Stage funnel: **PARTIAL**. No stored RAW_DISCOVERED->MONEY_RUSH enum; `classifyLifecycle()` computes a real, tested progression (FOUND/WATCHING/INTERESTING/HEATING_UP/STRONG/HIGH_CONVICTION/COOLING/STALE) on read, not persisted as named stages.
+- Wallet discovery channels: **DEVIATES**. Only token-first (`scan()`) and a "flow-first" function that actually skips every unknown wallet (`scanFromChainFlow` explicitly `if(!known)continue`). No true wallet-first/convergence-first discovery of brand-new addresses exists. **Remaining work, not yet fixed.**
+- Scoring gate (wealth vs skill): **MATCHES CONCEPT**. `scoreWallet()` has no wealth/balance term; built from win rate, PnL efficiency, sample size, forward returns, chase/insider/rug penalties.
+- Admin PROVEN promotion bypass: **FIXED THIS SESSION** (commit 0828d7b).
+- Forward-proof contamination: **FIXED THIS SESSION** (commit 0828d7b).
+- Notification preference routing: **FIXED THIS SESSION** (commit 0828d7b), plus discoveryWhaleActivity/discoveryNewToken (previously wired to nothing) now implemented.
+- UNKNOWN risk -> 0: **DEVIATES, NOT YET FIXED**. `services/scoring-worker/src/index.ts:65-66` (`insiderRiskPct??0`, `rugExposurePct??0`) and `packages/discovery/src/index.ts:13-14` silently treat missing evidence as 0/safe. No VERIFIED/PARTIAL/UNKNOWN/STALE evidence-quality field exists anywhere.
+
+### Fork E findings (RPC resilience / EVM hardening / ingestion durability)
+- EVM WS reconnect/watchdog: **MISSING, confirmed**. `services/evm-flow-worker/src/index.ts:36` opens a bare WebSocketProvider with zero reconnect/watchdog/reorg handling, unlike Solana flow-worker's real 90s watchdog. Currently dormant/harmless only because BNB_RPC_WS/ETH_RPC_WS are unset in production -- a landmine, not yet fixed.
+- Chain-agnostic "USDC" string bug: **CONFIRMED**. `services/brain-worker/src/index.ts:77` writes literal string `"USDC"` as inputMint for non-Solana chains. Not currently exploitable (executor hard-gates `signal.chain!=="SOLANA"`, zero EVM execution path exists), but bad data written to DB today, landmine for whenever EVM execution is added. **Not yet fixed.**
+- Capability registry (DISCOVERY/EXECUTION/QUOTE/SELL_SUPPORTED per chain): **MISSING entirely**. Today's safety is accidental (nothing else was ever built for EVM), not by explicit design. **Not yet fixed.**
+- Solana flow-worker durable ingestion: **PARTIAL, deliberate**. Dropped events under backoff/budget-denial are a reasoned load-shedding choice (documented in comments), real 90s watchdog reconnect exists, but no requeue/dead-letter/durable cursor -- a dropped signature is gone forever, not silently miscounted but genuinely unrecovered.
+- RPC failover: **MOSTLY IMPLEMENTED, one confirmed gap**. fallbackRpc genuinely consumed, priority-tier reserve ratios really enforced (not just labels). Gap: health check (`pickHealthyRpc`) only calls generic `getHealth`, never validates a required indexed method (e.g. getTokenSupply/getProgramAccounts) before selecting a candidate -- the code's own comment documents having already been bitten by exactly this. **Not yet fixed.**
 
 ---
 

@@ -4,6 +4,45 @@ export type Chain = "SOLANA" | "BASE" | "ETHEREUM" | "BNB" | "ARBITRUM" | "AVALA
 export type SignalAction = "BUY" | "SELL";
 export type ExecutionMode = "simulation" | "live";
 
+// Real bug found by forensic audit: before this registry existed, "a chain is safe to execute on"
+// was an ACCIDENT of what code happened to be written (only Solana ever got an executor/quote/sell
+// path), enforced only by scattered ad-hoc `signal.chain!=="SOLANA"` checks in individual files. One
+// of those files (services/brain-worker) had already drifted -- it wrote the literal string
+// `"USDC"` as a Signal's inputMint for any non-Solana chain instead of skipping signal creation,
+// because nothing centrally said "this chain isn't execution-certified, don't create a real trading
+// signal for it at all." That string is not a valid mint/contract address on any chain; it was
+// silently harmless only because no EVM executor exists yet to consume it. This registry makes
+// "discovery-only" an explicit, single-source fact instead of an emergent property of what's
+// unimplemented, so the next EVM feature added has one place to check rather than needing to
+// rediscover every implicit chain gate scattered across the codebase.
+export type ChainCapability = "DISCOVERY_SUPPORTED" | "WALLET_PROFILING_SUPPORTED" | "MARKET_DATA_SUPPORTED" | "QUOTE_SUPPORTED" | "BUY_SUPPORTED" | "SELL_SUPPORTED" | "CONFIRM_SUPPORTED" | "RECONCILE_SUPPORTED" | "EXECUTION_SUPPORTED";
+const FULLY_CERTIFIED: Record<ChainCapability, boolean> = {
+  DISCOVERY_SUPPORTED: true, WALLET_PROFILING_SUPPORTED: true, MARKET_DATA_SUPPORTED: true,
+  QUOTE_SUPPORTED: true, BUY_SUPPORTED: true, SELL_SUPPORTED: true, CONFIRM_SUPPORTED: true,
+  RECONCILE_SUPPORTED: true, EXECUTION_SUPPORTED: true,
+};
+const DISCOVERY_ONLY: Record<ChainCapability, boolean> = {
+  DISCOVERY_SUPPORTED: true, WALLET_PROFILING_SUPPORTED: false, MARKET_DATA_SUPPORTED: false,
+  QUOTE_SUPPORTED: false, BUY_SUPPORTED: false, SELL_SUPPORTED: false, CONFIRM_SUPPORTED: false,
+  RECONCILE_SUPPORTED: false, EXECUTION_SUPPORTED: false,
+};
+// Only flip a chain to FULLY_CERTIFIED once its executor/quote/sell/reconcile adapters actually
+// exist and have been tested -- adding a chain here with no corresponding executor code is exactly
+// the ambiguity this registry exists to prevent.
+export const CHAIN_CAPABILITY_REGISTRY: Record<Chain, Record<ChainCapability, boolean>> = {
+  SOLANA: FULLY_CERTIFIED,
+  BASE: DISCOVERY_ONLY,
+  ETHEREUM: DISCOVERY_ONLY,
+  BNB: DISCOVERY_ONLY,
+  ARBITRUM: DISCOVERY_ONLY,
+  AVALANCHE: DISCOVERY_ONLY,
+  SUI: DISCOVERY_ONLY,
+  HYPERLIQUID: DISCOVERY_ONLY,
+};
+export function chainSupports(chain: Chain, capability: ChainCapability): boolean {
+  return Boolean(CHAIN_CAPABILITY_REGISTRY[chain]?.[capability]);
+}
+
 export const CopySettingsSchema = z.object({
   enabled: z.boolean().default(false),
   sizingMode: z.enum(["FIXED", "PERCENT"]).default("FIXED"),
@@ -297,6 +336,29 @@ async function probeOnce(url: string): Promise<boolean> {
   return body?.result === "ok";
 }
 
+// Well-known, always-present mainnet USDC mint -- used purely as a cheap probe target, not a
+// trading constant. getTokenSupply is an "indexed" RPC method some free-tier providers block
+// entirely while still answering getHealth successfully (this is the exact failure the comment
+// below documents having already been bitten by). Any indexed method would do; this one is stable,
+// cheap, and never returns an error for a functioning full node.
+const RPC_PROBE_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+async function probeIndexedMethod(url: string): Promise<boolean> {
+  try {
+    const res = await Promise.race([
+      fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTokenSupply", params: [RPC_PROBE_USDC_MINT] }) }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Timed out")), 5000)),
+    ]);
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => null);
+    // A provider that blocks indexed methods responds with a JSON-RPC error object (often 401/403
+    // dressed as a 200, or a "Method not found"/"not supported" error), not a real result. Only a
+    // present `result.value` counts as genuinely supporting indexed methods.
+    return Boolean(body?.result?.value) && !body?.error;
+  } catch {
+    return false;
+  }
+}
+
 export async function pickHealthyRpc(candidates: string[], logPrefix = "[rpc]"): Promise<string> {
   if (candidates.length === 0) throw new Error("SOLANA_RPC_REQUIRED");
   for (const url of candidates) {
@@ -311,8 +373,15 @@ export async function pickHealthyRpc(candidates: string[], logPrefix = "[rpc]"):
       // smooth over a one-off blip without meaningfully slowing down the common case.
       let healthy = await probeOnce(url);
       if (!healthy) { await new Promise(r => setTimeout(r, 400)); healthy = await probeOnce(url).catch(() => false); }
-      if (healthy) return url;
-      console.warn(`${logPrefix} RPC candidate unhealthy after retry, trying next if available`, host);
+      if (!healthy) { console.warn(`${logPrefix} RPC candidate unhealthy after retry, trying next if available`, host); continue; }
+      // Real gap found by forensic audit: getHealth passing was previously treated as sufficient,
+      // but that's exactly the failure mode the comment above already names -- a candidate that
+      // answers getHealth "ok" while rejecting the indexed methods workers actually need (e.g.
+      // getTokenSupply, getProgramAccounts) would still be selected here and only fail on first real
+      // use downstream. Require a real indexed-method probe to pass too before trusting a candidate.
+      const indexedOk = await probeIndexedMethod(url);
+      if (!indexedOk) { console.warn(`${logPrefix} RPC candidate passed getHealth but rejects indexed methods, trying next if available`, host); continue; }
+      return url;
     } catch (e: any) {
       console.warn(`${logPrefix} RPC candidate unreachable, trying next if available`, host, e?.message);
     }

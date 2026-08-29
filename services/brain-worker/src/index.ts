@@ -5,6 +5,7 @@ import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets} from "@memecloud/brain";
+import {chainSupports} from "@memecloud/shared";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const signalQueue=new Queue("signals",{connection:redis});
@@ -66,6 +67,13 @@ async function maybeSignal(opp:any,trader:any,users:any[]){
   const cfg=await getConfig<any>("brain");
   const threshold=Math.max(1,Math.min(100,Number(cfg?.autoEntryScore??76)));
   if(opp.action!=="BUY_NOW"||opp.score<threshold)return;
+  // Real bug found by forensic audit: this used to create a real trading Signal for ANY chain
+  // reaching BUY_NOW, writing the literal string "USDC" as inputMint for non-Solana chains -- not a
+  // valid mint/contract address anywhere. Discovery/intelligence must always run for every chain
+  // (notifyUsers/notifyDiscoveryUpgrade above are unaffected by this gate), but creating a Signal
+  // meant to drive real execution must never happen for a chain that isn't execution-certified.
+  // See @memecloud/shared's CHAIN_CAPABILITY_REGISTRY -- only SOLANA is EXECUTION_SUPPORTED today.
+  if(!chainSupports(opp.chain,"EXECUTION_SUPPORTED"))return;
   // One entry per genuine qualification, not one per 30s clock tick this opportunity happens to
   // still be BUY_NOW for -- see the lastSignaledState schema comment. The 30s bucket in the key
   // below now only protects against firing twice within the same tick/near-simultaneous evaluation,
@@ -74,7 +82,7 @@ async function maybeSignal(opp:any,trader:any,users:any[]){
   const bucket=Math.floor(Date.now()/30_000),key=crypto.createHash("sha256").update(`BRAIN:${opp.chain}:${opp.mint}:${bucket}`).digest("hex");
   const existing=await db.signal.findUnique({where:{idempotencyKey:key}});if(existing)return;
   const snap=await db.memeMarketSnapshot.findFirst({where:{chain:opp.chain,mint:opp.mint},orderBy:{observedAt:"desc"}});if(!snap)return;
-  const inputMint=opp.chain==="SOLANA"?USDC_SOL:"USDC";
+  const inputMint=USDC_SOL;
   const signal=await db.signal.create({data:{idempotencyKey:key,chain:opp.chain,traderId:trader.id,sourceWallet:"GLOBAL_BRAIN",sourceTx:`brain:${opp.id}:${bucket}`,action:"BUY",inputMint,outputMint:opp.mint,inputRaw:"0",outputRaw:"0",sourcePriceUsd:snap.priceUsd,sourcePriceMethod:"GLOBAL_BRAIN_MARK",sourceMarketCapUsd:snap.marketCapUsd,observedAt:new Date(),status:"DETECTED"}});
   await db.globalBrainOpportunity.update({where:{id:opp.id},data:{lastSignaledState:opp.state}}).catch(()=>{});
   await signalQueue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:250},removeOnComplete:1000});signals++;

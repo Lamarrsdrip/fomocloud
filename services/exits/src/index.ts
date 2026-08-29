@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
+import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
 import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
@@ -157,7 +157,7 @@ async function executeLiveExit(p:any,instruction:any){
   // whether the platform opens NEW real positions; it must never stop the risk engine from
   // managing money that is already at risk. A position already in mode:"LIVE" here has real
   // funds on-chain regardless of the current toggle state, so its exits always run.
-  if(p.chain!=="SOLANA"||!rpc||!signer)throw Object.assign(new Error("LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"),{code:"LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"});
+  if(!chainSupports(p.chain,"SELL_SUPPORTED")||!rpc||!signer)throw Object.assign(new Error("LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"),{code:"LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED"});
   const permitted=await db.wallet.findFirst({where:{userId:p.userId,chain:"SOLANA",tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
   if(!permitted)throw Object.assign(new Error("TRADING_PERMISSION_REQUIRED"),{code:"TRADING_PERMISSION_REQUIRED"});
   const remaining=BigInt(p.remainingTokenRaw);if(remaining<=0n)return;
