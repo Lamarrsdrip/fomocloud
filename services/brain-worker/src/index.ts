@@ -267,5 +267,30 @@ async function tick(){
     await sampleOutcomes();
   }catch(e){errors++;console.error("[brain-worker]",e)}finally{running=false}
 }
-startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:750}));
-setInterval(()=>void tick(),750);void tick();console.log("[brain-worker] Global Brain online");
+// Real gap found by forensic audit (M-12/PC-D): admin had no way to WATCH a wallet at all, let alone
+// have that watch continuously monitored. Rides the same chainFlowObservation stream
+// flow-worker/evm-flow-worker already write to unconditionally, so detection continues as long as
+// those ingestion workers are running -- independent of any admin session or open browser tab.
+let lastWatchlistCheckAt=new Date(Date.now()-5*60_000),watchlistAlerts=0,watchlistErrors=0;
+async function checkWatchlist(){
+  const since=lastWatchlistCheckAt,now=new Date();
+  // Advance the cursor before querying so a slow query can't leave a re-checked gap on the next
+  // call; a crash between advancing and finishing this pass can miss/duplicate at most one interval
+  // (10s) of alerts -- acceptable for an informational admin notice, unlike the real-money paths
+  // elsewhere in this codebase which use actual idempotency keys.
+  lastWatchlistCheckAt=now;
+  try{
+    const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},select:{address:true}});
+    if(!watched.length)return;
+    const addresses=watched.map(w=>w.address);
+    const buys=await db.chainFlowObservation.findMany({where:{walletAddress:{in:addresses},side:"BUY",observedAt:{gt:since,lte:now}},orderBy:{observedAt:"asc"},take:500});
+    for(const b of buys){
+      await db.adminAlert.create({data:{type:"WATCHED_WALLET_BUY",chain:b.chain,mint:b.mint,walletAddress:b.walletAddress,message:`Watched wallet ${b.walletAddress.slice(0,4)}…${b.walletAddress.slice(-4)} entered ${b.mint}${b.amountUsd?` (~$${Math.round(b.amountUsd).toLocaleString()})`:""}`,metadata:{amountUsd:b.amountUsd,txHash:b.txHash}}}).catch(()=>{});
+      watchlistAlerts++;
+    }
+  }catch(e){watchlistErrors++;console.error("[brain-worker] watchlist check failed",e)}
+}
+startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:750,watchlistAlerts,watchlistErrors}));
+setInterval(()=>void tick(),750);void tick();
+setInterval(()=>void checkWatchlist(),10_000);void checkWatchlist();
+console.log("[brain-worker] Global Brain online");

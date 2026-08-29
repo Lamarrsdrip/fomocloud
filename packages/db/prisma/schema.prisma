@@ -812,6 +812,16 @@ enum CandidateStage {
 
 model SmartWalletCandidate {
   id                 String         @id @default(auto()) @map("_id") @db.ObjectId
+  // Real gap found by forensic audit (M-12/M-13/PC-D): there was no way for admin to WATCH a wallet
+  // at all, distinct from the auto-pipeline's PROVEN/PAPER_TRACKING/REJECTED `stage`. A separate
+  // boolean (not a `stage` value) so admin watch/unwatch never fights with or gets silently
+  // overwritten by the objective scoring-worker pipeline -- "WATCH != PROVEN" holds structurally,
+  // not just by convention. Continuous monitoring of a watched wallet requires no open browser tab:
+  // it rides the same chainFlowObservation stream flow-worker/evm-flow-worker already write to
+  // unconditionally (see brain-worker's checkWatchlist()), so detection continues as long as the
+  // ingestion workers are running, independent of any admin session.
+  adminWatched       Boolean        @default(false)
+  adminWatchedAt     DateTime?
   chain              Chain
   address            String
   stage              CandidateStage @default(DISCOVERED)
@@ -845,6 +855,26 @@ model SmartWalletCandidate {
   @@unique([chain, address])
   @@index([stage, copyabilityScore])
   @@index([source, createdAt])
+  @@index([adminWatched])
+}
+
+// Real gap found by forensic audit (M-12/PC-D): "Admin alerts: Wallet x entered TOKEN" had nowhere
+// to live -- AuditLog is for ADMIN actions (who did what), RiskIncident is scoped to trading-risk
+// severity/position context, neither fits a system-generated "here's what a watched wallet just
+// did" notice. A small, dedicated model instead of forcing this into either.
+model AdminAlert {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  type          String
+  chain         Chain
+  mint          String?
+  walletAddress String?
+  message       String
+  metadata      Json?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([type, createdAt])
 }
 
 model DiscoveryToken {

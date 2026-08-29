@@ -1855,10 +1855,42 @@ app.get("/v1/admin/intelligence/snapshots", requireAdmin, asyncRoute(async (req:
 app.get("/v1/admin/risk-incidents", requireAdmin, asyncRoute(async (_req,res) => {
   res.json({incidents:await db.riskIncident.findMany({orderBy:{createdAt:"desc"},take:250})});
 }));
+// Real gap found by forensic audit (M-12/PC-D): there was no admin-facing view of watched wallets
+// at all. Recent activity is pulled live from chainFlowObservation, the same continuous stream
+// flow-worker/evm-flow-worker already write to unconditionally -- this route doesn't drive the
+// monitoring itself (that runs in brain-worker's checkWatchlist regardless of whether anyone ever
+// opens this page), it just surfaces what's already been detected.
+app.get("/v1/admin/discovery/watchlist", requireAdmin, asyncRoute(async (_req,res) => {
+  const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},orderBy:{adminWatchedAt:"desc"}});
+  const addresses=watched.map(w=>w.address);
+  const recentActivity=addresses.length?await db.chainFlowObservation.findMany({where:{walletAddress:{in:addresses},observedAt:{gte:new Date(Date.now()-24*3600_000)}},orderBy:{observedAt:"desc"},take:200}):[];
+  const byAddress=new Map<string,typeof recentActivity>();
+  for(const row of recentActivity){const list=byAddress.get(row.walletAddress)??[];list.push(row);byAddress.set(row.walletAddress,list)}
+  res.json({watchlist:watched.map(w=>({...w,recentActivity:byAddress.get(w.address)??[]}))});
+}));
+app.get("/v1/admin/alerts", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
+  const unresolvedOnly=String(req.query.unresolved??"")==="true";
+  const alerts=await db.adminAlert.findMany({where:unresolvedOnly?{resolvedAt:null}:undefined,orderBy:{createdAt:"desc"},take:250});
+  res.json({alerts});
+}));
+app.post("/v1/admin/alerts/:id/resolve", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
+  const alert=await db.adminAlert.update({where:{id:routeParam(req.params.id)},data:{resolvedAt:new Date()}}).catch(()=>null);
+  if(!alert)return res.status(404).json({error:"ALERT_NOT_FOUND"});
+  await audit(req.user.sub,"ADMIN","ADMIN_ALERT_RESOLVED",alert.id,{});
+  res.json({alert});
+}));
 app.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const action=String(req.body?.action??"").toUpperCase();
-  if(!["PROVEN","REJECTED","PAUSED"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
+  if(!["PROVEN","REJECTED","PAUSED","WATCH","UNWATCH"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
   const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
+  // WATCH/UNWATCH deliberately never touch `stage` -- a separate boolean so admin watch/unwatch can
+  // never fight with or get silently overwritten by the objective scoring-worker pipeline. "WATCH
+  // != PROVEN" holds structurally here, not just as a rule someone has to remember to follow.
+  if(action==="WATCH"||action==="UNWATCH"){
+    const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{adminWatched:action==="WATCH",adminWatchedAt:action==="WATCH"?new Date():null}});
+    await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_DECISION",c.id,{action});
+    return res.json({candidate:updated});
+  }
   // Real bug found by audit: this route let one admin click set PROVEN/enabled=true with zero
   // server-side evidence check -- admin action alone manufactured "proven" status. PROVEN must mean
   // objectively proven: enforce the exact same threshold scoring-worker uses to auto-promote, using
