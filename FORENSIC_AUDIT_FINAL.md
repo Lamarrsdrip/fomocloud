@@ -218,6 +218,8 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 13 | Discover main feed tightened to score>=56 (was: any nonzero activity); explicit separate New Token Radar added to API + UI | 7947dc8 | M-5, PC-E, PC-J, M-42 (partial) |
 | 14 | Real admin watchlist: adminWatched field (separate from `stage`), WATCH/UNWATCH actions, continuous backend monitoring (checkWatchlist), AdminAlert model + routes, minimal admin UI | 74714d2 | M-12, M-13 (extended), PC-D |
 | 15 | packages/providers: replaced no-op test script with 6 real tests for Birdeye field normalization (pure, bug-prone logic previously untested) | 049a1a8 | M-51 (partial) |
+| 16 | packages/notifications: replaced no-op test script with 8 real tests for email rendering (formatFrom/htmlToPlainFallback/renderEmail) | 2b0c6a2 | M-51 (partial) |
+| 17 | Separate 7D P&L tracking for smart wallets (was: only ever a single 30d window fetched anywhere) | 5fb7dac | Section 8/11 of master spec |
 
 ## M-51 fake-test audit (full findings)
 Workspace-wide scan of every `package.json` test script found 22 packages/services using `echo ... tests` (a green no-op). Triaged:
