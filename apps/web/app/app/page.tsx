@@ -306,14 +306,18 @@ function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string}
  }
  return <div className="token-detail">
   <button className="soft-action" onClick={close}><ArrowLeft size={13}/> Back</button>
-  <div className="token-detail-head"><TokenAvatar symbol={o?.symbol||o?.name} size={48}/><div><h2>{o?.symbol||o?.name||"Token"}</h2><small>{sel.chain}</small></div></div>
+  <div className="token-detail-head"><TokenAvatar symbol={o?.symbol||o?.name} size={48}/><div><h2>{o?.symbol||o?.name||"Token"}</h2><small>{sel.chain}{o?.firstSeenAt?` · Found ${timeAgo(o.firstSeenAt)}`:""}</small></div>{o?.lifecycleStatus&&<span className="status-badge" style={{marginLeft:"auto"}}>{lifecycleLabel(o.lifecycleStatus)}</span>}</div>
   <div className="review-grid">
    <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
    <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Unknown"}</b></div>
    <div><span>Money in last 60s</span><b>{money(o?.inflow60sUsd||0)}</b></div>
+   <div><span>Unique buyers (60s)</span><b>{o?.buyers60s??0}</b></div>
    <div><span>Whales buying</span><b>{o?whaleCount(o):0}</b></div>
+   <div><span>Smart wallets entered</span><b>{o?.evidence?.convergentCount??0}</b></div>
+   <div><span>Volume acceleration</span><b>{o?.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"Unknown"}</b></div>
+   <div><span>MemeCloud confidence</span><b>{o?.score!=null?`${Math.round(o.score)}%`:"Unknown"}</b></div>
   </div>
-  {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud likes this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
+  {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud found this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
   <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade{canTradeLive?"":" — simulation"}</h2></div></div>
    <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
    <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={()=>buy(false)}>{busy?"Buying…":canTradeLive?`Buy ${money(amount)} (live)`:`Buy ${money(amount)} (simulation)`}</button>
