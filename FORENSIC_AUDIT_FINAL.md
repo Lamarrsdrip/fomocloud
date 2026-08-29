@@ -216,6 +216,15 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 11 | Brain score split into Momentum/SmartMoney/Execution/Risk/Evidence breakdown (additive, doesn't change trading decision), persisted + surfaced in Token Detail UI | 820591b, 93209a9 | M-16, M-17, M-44, C-8 |
 | 12 | Convergence weighted by wallet quality (PROVEN=2x, PAPER_TRACKING=1x) instead of raw uniform count | 2dd184b | M-15, PC-H |
 | 13 | Discover main feed tightened to score>=56 (was: any nonzero activity); explicit separate New Token Radar added to API + UI | 7947dc8 | M-5, PC-E, PC-J, M-42 (partial) |
+| 14 | Real admin watchlist: adminWatched field (separate from `stage`), WATCH/UNWATCH actions, continuous backend monitoring (checkWatchlist), AdminAlert model + routes, minimal admin UI | 74714d2 | M-12, M-13 (extended), PC-D |
+| 15 | packages/providers: replaced no-op test script with 6 real tests for Birdeye field normalization (pure, bug-prone logic previously untested) | 049a1a8 | M-51 (partial) |
+
+## M-51 fake-test audit (full findings)
+Workspace-wide scan of every `package.json` test script found 22 packages/services using `echo ... tests` (a green no-op). Triaged:
+- **Acceptable as-is**: `db`, `fees`, `ops`, `market`, `router`, `social`, `intelligence` — genuinely tiny (6-48 lines), pure I/O/type-wrapper files with no meaningful pure logic to unit test.
+- **Acceptable — real logic lives and is tested elsewhere**: `executor`, `exits` (financial math is `calculateExitAccounting` in packages/shared, real-tested in `accounting.test.ts`), `brain-worker` (logic in packages/brain, 23 tests), `scoring-worker`/`discovery-worker` (logic in packages/discovery, 6 tests incl. this session's 2 new), `paper-worker` (explicitly shares strategy package's tests per its own script comment).
+- **Fixed this session**: `providers` (6 new tests, see fix #15) — real, pure, previously-uncovered parsing logic that has already caused production bugs.
+- **Not yet audited in depth**: `notifications` (174 lines — email/push rendering logic, worth a closer look), `evm-flow-worker`, `forward-worker`, `flow-worker`, `notification-worker`, `analytics-worker`, `market-worker`, `social-worker`, `listener`, `apps/web` — likely mostly I/O orchestration but not individually verified line-by-line.
 
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
@@ -223,8 +232,7 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | M-30 | Float→Decimal/integer-micro-USD migration for canonical USD fields | LARGE, RISKY | Not an active bug at current trade sizes but architecturally exactly what's flagged; needs careful schema migration + every read/write site updated |
 | M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
 | M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
-| M-11/PC-C | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected UI) | LARGE | Frontend build |
-| M-12/PC-D | Persistent, continuously-monitoring admin watchlist | MEDIUM-LARGE | Backend + frontend |
+| M-11/PC-C | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected as a real organized UI) | LARGE | Backend watchlist now real (fix #14); this is the fuller dedicated-desk UI redesign, not started |
 | M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); rest not started |
 | M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
 | M-51/M-52/M-53/C-25 | Test-script audit, chaos testing, process-crash testing | LARGE | Not started |
