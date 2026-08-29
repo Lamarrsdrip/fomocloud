@@ -839,6 +839,15 @@ model SmartWalletCandidate {
   realizedPnlUsd     Float          @default(0)
   totalPnlUsd        Float          @default(0)
   volumeUsd          Float          @default(0)
+  // Real gap found by forensic audit: only a single 30d window was ever fetched anywhere
+  // (realizedPnlUsd/totalPnlUsd/volumeUsd above ARE that 30d window) -- the master spec explicitly
+  // calls for 7D and 30D as separate, independently-visible dimensions (a wallet cooling off in the
+  // last week but still showing a strong 30d number, or vice versa, is real and different evidence).
+  // Additive: does not change what feeds scoreWallet/shouldProve, which stay tied to the 30d window
+  // already proven correct -- these are extra, honestly-labeled evidence for the admin desk.
+  realizedPnl7dUsd   Float?
+  winRate7dPct       Float?
+  sampleTrades7d     Int?
   averageWinnerPct   Float?
   averageLoserPct    Float?
   averageChasePct    Float?

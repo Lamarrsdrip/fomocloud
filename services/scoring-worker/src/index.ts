@@ -52,6 +52,13 @@ async function tick(){
       try{
         const raw=await b.walletPnlSummary(c.address,"30d","solana");
         const p=b.normalizeWalletPnl(raw);
+        // Real gap found by forensic audit: only the 30d window above was ever fetched anywhere.
+        // 7D is separate, additional evidence (a wallet cooling off this week but still showing a
+        // strong 30d number, or vice versa, is real and different) -- deliberately NOT fed into
+        // scoreWallet/shouldProve, which stay tied to the 30d window already proven correct. A
+        // failure here must never break the real 30d-driven scoring pass below.
+        const raw7d=await b.walletPnlSummary(c.address,"7d","solana").catch(()=>null);
+        const p7d=raw7d?b.normalizeWalletPnl(raw7d):null;
         const obs=await db.sourceSignalObservation.findMany({where:{sourceWallet:c.address,horizonSeconds:3600,returnPct:{not:null}},orderBy:{observedAt:"desc"},take:100});
         const paper=await db.paperCopyTrade.findMany({where:{sourceWallet:c.address,status:{in:["OPEN","PARTIAL","CLOSED"]}},orderBy:{createdAt:"desc"},take:100});
         const userChases=await db.copyDecision.findMany({where:{signal:{sourceWallet:c.address},walletChasePct:{not:null}},select:{walletChasePct:true},take:100,orderBy:{createdAt:"desc"}});
@@ -99,7 +106,7 @@ async function tick(){
         // read) and clearly, not marginally, fails to qualify, so a wallet oscillating near the
         // paper-tracking bar isn't permanently locked out by one noisy sample.
         else if((stage==="DISCOVERED"||stage==="ANALYZING")&&c.lastScoredAt&&p.tradeCount>=15&&s.copyabilityScore<paperMin-15){stage="REJECTED";autoRejected=true;rejected++}
-        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
+        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,realizedPnl7dUsd:p7d?p7d.realizedPnlUsd:undefined,winRate7dPct:p7d?.winRate,sampleTrades7d:p7d?Math.round(p7d.tradeCount):undefined,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
         if(demoted){
           const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
           if(traderId){
