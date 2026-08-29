@@ -103,10 +103,19 @@ async function scan(){
         for(const row of top){
           const w=client.normalizeTrader(row);if(!w.address)continue;
           candidatesSeen++;
+          // Real, direct per-wallet signal Birdeye already returns and was previously discarded: a
+          // wallet Birdeye itself tags as the token's deployer or a bundler/sniper is fundamentally
+          // different from an organically profitable trader, whatever its PnL curve looks like.
+          // Floored at 85 (not 100) since this is Birdeye's own classification, not on-chain proof
+          // MemeCloud verified directly -- still a hard, dominant signal, just not asserted as
+          // absolute certainty.
+          const walletTagRisk=w.tags.some(t=>["dev","bundler","sniper"].includes(t.toLowerCase()))?85:0;
+          const insiderRiskPct=Math.min(100,Math.max(walletTagRisk,Number(tokenRisk.creatorHoldingPct??0)*1.5));
+          const rugExposurePct=Math.min(100,Number(tokenRisk.bundledSupplyPct??0)+Math.max(0,Number(tokenRisk.top10EffectivePct??0)-70));
           await db.smartWalletCandidate.upsert({
             where:{chain_address:{chain:"SOLANA",address:w.address}},
-            update:{sourceToken:mint,totalPnlUsd:w.totalPnlUsd??undefined,realizedPnlUsd:w.realizedPnlUsd??undefined,volumeUsd:w.volumeUsd??undefined,sampleTrades:w.tradeCount?Math.round(w.tradeCount):undefined,metadata:{lastDiscoveryToken:mint,lastTopTrader:row,tokenRisk,insiderRiskPct:Math.min(100,Number(tokenRisk.creatorHoldingPct??0)*1.5),rugExposurePct:Math.min(100,Number(tokenRisk.bundledSupplyPct??0)+Math.max(0,Number(tokenRisk.top10EffectivePct??0)-70))}},
-            create:{chain:"SOLANA",address:w.address,stage:"DISCOVERED",source:"BIRDEYE_TOP_TRADER",sourceToken:mint,totalPnlUsd:w.totalPnlUsd??0,realizedPnlUsd:w.realizedPnlUsd??0,volumeUsd:w.volumeUsd??0,sampleTrades:w.tradeCount?Math.round(w.tradeCount):0,metadata:{lastDiscoveryToken:mint,lastTopTrader:row,tokenRisk,insiderRiskPct:Math.min(100,Number(tokenRisk.creatorHoldingPct??0)*1.5),rugExposurePct:Math.min(100,Number(tokenRisk.bundledSupplyPct??0)+Math.max(0,Number(tokenRisk.top10EffectivePct??0)-70))}}
+            update:{sourceToken:mint,totalPnlUsd:w.totalPnlUsd??undefined,realizedPnlUsd:w.realizedPnlUsd??undefined,volumeUsd:w.volumeUsd??undefined,sampleTrades:w.tradeCount?Math.round(w.tradeCount):undefined,metadata:{lastDiscoveryToken:mint,lastTopTrader:row,tokenRisk,walletTags:w.tags,insiderRiskPct,rugExposurePct}},
+            create:{chain:"SOLANA",address:w.address,stage:"DISCOVERED",source:"BIRDEYE_TOP_TRADER",sourceToken:mint,totalPnlUsd:w.totalPnlUsd??0,realizedPnlUsd:w.realizedPnlUsd??0,volumeUsd:w.volumeUsd??0,sampleTrades:w.tradeCount?Math.round(w.tradeCount):0,metadata:{lastDiscoveryToken:mint,lastTopTrader:row,tokenRisk,walletTags:w.tags,insiderRiskPct,rugExposurePct}}
           });
         }
       }catch(e){errors++;console.error("[discovery] top traders",mint,e)}
