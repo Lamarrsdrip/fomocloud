@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports } from "@memecloud/shared";
+import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
 import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
@@ -187,7 +187,7 @@ async function executeLiveExit(p:any,instruction:any){
       db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}}),
       db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"CONFIRMED"}}),
       ...(order?[db.order.update({where:{id:order.id},data:{status:"CONFIRMED",actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}})]:[]),
-      db.ledgerEntry.create({data:{userId:p.userId,type:"SELL_PROCEEDS",amountUsd:proceeds,chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live exit confirmed on-chain, tx ${existing.txHash}`}})
+      db.ledgerEntry.create({data:{userId:p.userId,type:"SELL_PROCEEDS",amountUsdMicros:usdToMicros(proceeds),chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live exit confirmed on-chain, tx ${existing.txHash}`}})
     ]);
     liveConfirmed++;await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Live position closed":"Live profit protected",instruction.reason,{positionId:p.id,txHash:existing.txHash,sellPct,pnlUsd:pnl,mode:"LIVE"});return;
   }

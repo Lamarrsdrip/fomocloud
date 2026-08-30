@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports } from "@memecloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
@@ -121,7 +121,7 @@ async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitt
     // it documents -- never a separate, un-atomic write that could drift from what actually happened.
     // Only written once per real confirmed buy (`already` guards the position create above the same
     // way; this entry is skipped on the idempotent-resume path where it would already exist).
-    ...(already?[]:[db.ledgerEntry.create({data:{userId:follow.userId,type:"BUY_SPEND",amountUsd:-actualUsd,chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Live copy buy confirmed on-chain, tx ${txHash}`}})])
+    ...(already?[]:[db.ledgerEntry.create({data:{userId:follow.userId,type:"BUY_SPEND",amountUsdMicros:usdToMicros(-actualUsd),chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Live copy buy confirmed on-chain, tx ${txHash}`}})])
   ]);
   if(!already)await userEvent(follow.userId,"TRADE_COPIED",`${signal.trader.displayName}: live trade confirmed`,`Bought $${actualUsd.toFixed(2)} of the token. The transaction is confirmed on Solana.`,{signalId:signal.id,orderId:order.id,txHash,mode:"LIVE"});
   return {actualUsd,actualEntry};
@@ -189,7 +189,7 @@ async function finalizeLiveSell(order:any,attemptKey:string,txHash:string,permit
     db.positionExit.create({data:{id:exitId,positionId:position.id,reason:"SOURCE_SELL_MIRROR_LIVE",tokenRaw:cappedSoldRaw.toString(),proceedsUsd:accounting.netProceedsUsd,pnlUsd:accounting.realizedPnlUsd,txHash}}),
     db.position.update({where:{id:position.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:accounting.realizedPnlUsd},profitTakenUsd:{increment:Math.max(0,accounting.realizedPnlUsd)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}}),
     db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-    db.ledgerEntry.create({data:{userId:position.userId,type:"SELL_PROCEEDS",amountUsd:accounting.netProceedsUsd,chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live source-sell mirror confirmed on-chain, tx ${txHash}`}}),
+    db.ledgerEntry.create({data:{userId:position.userId,type:"SELL_PROCEEDS",amountUsdMicros:usdToMicros(accounting.netProceedsUsd),chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live source-sell mirror confirmed on-chain, tx ${txHash}`}}),
     db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}})
   ]);
   return {isClosed,proceedsUsd:accounting.netProceedsUsd,pnlUsd:accounting.realizedPnlUsd};

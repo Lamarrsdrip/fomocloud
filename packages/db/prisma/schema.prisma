@@ -234,10 +234,14 @@ model LedgerEntry {
   id              String          @id @default(auto()) @map("_id") @db.ObjectId
   userId          String          @db.ObjectId
   type            LedgerEntryType
-  // Positive = money/value entering the user's trading cash (deposit, sell proceeds); negative =
-  // leaving it (buy spend, fees, withdrawal). Always in USD for now (this platform's real-money
-  // execution is USDC-denominated) -- never fabricated from a price this code doesn't actually have.
-  amountUsd       Float
+  // Integer micro-USD (1_000_000 = $1.00), not Float -- Prisma's MongoDB connector does not support
+  // the `Decimal` scalar (verified: hard error from `prisma generate`), so BigInt micro-units is the
+  // spec's other approved authoritative-money representation, applied here from the start since this
+  // model has zero existing consumers to risk. Positive = money entering the user's trading cash
+  // (deposit, sell proceeds); negative = leaving it (buy spend, fees, withdrawal). USD-only for now
+  // (this platform's real-money execution is USDC-denominated) -- never fabricated from a price this
+  // code doesn't actually have.
+  amountUsdMicros BigInt
   chain           Chain
   asset           String
   // Points at the authoritative record this entry documents (Deposit, Order, PositionExit, ...) --
@@ -577,6 +581,15 @@ model Position {
   entryInputRaw     String
   entryTokenRaw     String
   remainingTokenRaw String
+  // M-30 attempted fix: Prisma's MongoDB connector does NOT support the `Decimal` scalar at all
+  // (verified: `prisma generate` hard-errors "The current connector does not support the Decimal
+  // type" on every field it was tried on here) -- a genuine external tooling limitation, not
+  // something fixable in this codebase. Left as Float for these fields; see LedgerEntry.amountUsdMicros
+  // for the BigInt-micro-USD pattern (the master spec's other approved option) applied to the new
+  // ledger. Migrating Position/PositionExit/TradingCashAllocation to the same pattern is real,
+  // scoped, remaining work -- tracked in FORENSIC_AUDIT_FINAL.md, not done in this pass because it
+  // touches ~14 files of live real-money execution code with no way to verify against a running
+  // database/frontend from this environment, and deserves more care than a single blind pass.
   costUsd           Float
   avgEntryPriceUsd  Float?
   currentPriceUsd   Float?

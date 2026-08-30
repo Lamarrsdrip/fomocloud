@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
+import {RpcBudget,solanaRpcCandidates,pickHealthyRpc,usdToMicros} from "@memecloud/shared";
 import {depositStatus,extractInboundDeposits,rawToDecimalString,SOL_NATIVE_MINT} from "./deposits.js";
 
 const rpcRedis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
@@ -151,7 +151,7 @@ async function recordDeposit(wallet:{id:string;userId:string;address:string;crea
     // deposit would need a price conversion this function doesn't have, and a fabricated price has
     // no place in an accounting ledger. Non-USDC deposits are still fully recorded in Deposit itself;
     // they just don't get a USD-denominated ledger line until/unless a real price source is wired in.
-    const ledgerEntry=candidate.assetMint===usdc.toBase58()?db.ledgerEntry.create({data:{userId:wallet.userId,type:"DEPOSIT" as const,amountUsd:Number(amount),chain:"SOLANA" as const,asset:"USDC",referenceType:"Deposit",referenceId:depositId,note:`USDC deposit confirmed, tx ${sig.signature}`}}):null;
+    const ledgerEntry=candidate.assetMint===usdc.toBase58()?db.ledgerEntry.create({data:{userId:wallet.userId,type:"DEPOSIT" as const,amountUsdMicros:usdToMicros(Number(amount)),chain:"SOLANA" as const,asset:"USDC",referenceType:"Deposit",referenceId:depositId,note:`USDC deposit confirmed, tx ${sig.signature}`}}):null;
     try{
       if(recent){
         await db.$transaction([

@@ -157,6 +157,21 @@ function rawFraction(part: bigint, whole: bigint) {
   return Number((part * 1_000_000_000n) / whole) / 1_000_000_000;
 }
 
+// Real gap found by forensic audit (M-30): Prisma's MongoDB connector does not support `Decimal`
+// (verified: hard error from `prisma generate`), so LedgerEntry stores money as integer micro-USD
+// (BigInt) instead -- the master spec's other approved authoritative-money representation. A naive
+// `BigInt(usd * 1_000_000)` can produce an off-by-a-fraction result on values whose float64
+// representation isn't exact (e.g. 0.1 * 1_000_000 can land on 99999.99999999999 before truncation)
+// -- Math.round before BigInt conversion is what actually makes this exact for any realistic dollar
+// amount, not just "usually right."
+export function usdToMicros(usd: number): bigint {
+  if (!Number.isFinite(usd)) throw new Error("USD_TO_MICROS_NON_FINITE");
+  return BigInt(Math.round(usd * 1_000_000));
+}
+export function microsToUsd(micros: bigint): number {
+  return Number(micros) / 1_000_000;
+}
+
 export function calculateExitAccounting(params: {
   entryTokenRaw: string;
   remainingTokenRaw: string;
