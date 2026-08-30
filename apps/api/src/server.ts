@@ -30,6 +30,21 @@ const configuredOrigins = (
   "http://localhost:3000"
 ).split(",").map(x => x.trim()).filter(Boolean);
 
+// Manual trades do not have a smart-wallet thesis. Record that fact explicitly instead of making
+// the position look as if wallet, narrative or cluster intelligence had been verified.
+function manualEntryThesis(mode:"SIMULATION"|"LIVE", mint:string, executablePriceUsd:number, priceImpactPct:unknown, observedAt:Date){
+  return {
+    source:"MANUAL_USER_TRADE",
+    walletCohort:{status:"NOT_APPLICABLE",reason:"User-initiated trade"},
+    walletClusters:{status:"NOT_APPLICABLE",reason:"User-initiated trade"},
+    marketEvidence:{status:"UNKNOWN",reason:"Manual route does not claim a rich intelligence snapshot"},
+    riskEvidence:{status:"PARTIAL",reason:"Executable sell route was verified; wider token evidence was not claimed"},
+    narrativeEvidence:{status:"UNKNOWN",reason:"Manual route does not claim narrative evidence"},
+    executionEvidence:{mode,mint,executablePriceUsd,priceImpactPct:priceImpactPct??null,sellRouteVerified:true},
+    provenance:{observedAt,entryDecision:"MANUAL_USER_REQUEST",schema:"ENTRY_THESIS_V1"}
+  };
+}
+
 app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
@@ -271,7 +286,7 @@ app.get("/v1/me/dashboard", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const todayStart=new Date(); todayStart.setHours(0,0,0,0);
   const [allocationRows,positionRows,follows,snapshots,settings,dayBaseline]=await Promise.all([
     db.tradingCashAllocation.findMany({where:{userId:req.user.sub},orderBy:{chain:"asc"}}),
-    db.position.findMany({where:{userId:req.user.sub},include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},exits:{where:{createdAt:{gte:todayStart}},select:{proceedsUsdMicros:true,pnlUsdMicros:true}}},orderBy:{openedAt:"desc"}}),
+    db.position.findMany({where:{userId:req.user.sub},include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},entryThesis:true,exits:{where:{createdAt:{gte:todayStart}},select:{proceedsUsdMicros:true,pnlUsdMicros:true}}},orderBy:{openedAt:"desc"}}),
     db.userFollow.findMany({where:{userId:req.user.sub}}),
     db.pnLSnapshot.findMany({where:{userId:req.user.sub},orderBy:{createdAt:"desc"},take:120}),
     db.globalTradingSettings.findUnique({where:{userId:req.user.sub}}),
@@ -336,7 +351,7 @@ app.get("/v1/me/positions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const status=String(req.query.status??"");
   const positionRows=await db.position.findMany({
     where:{userId:req.user.sub,...(status?{status:status as any}:{})},
-    include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},exits:{orderBy:{createdAt:"desc"}}},
+    include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},entryThesis:true,exits:{orderBy:{createdAt:"desc"}}},
     orderBy:{openedAt:"desc"},take:250
   });
   // M-30: BigInt micro-USD storage -- convert every position AND every included exit row before
@@ -423,7 +438,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
       const decision=await db.copyDecision.create({data:{signalId:signal.id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual simulation buy from Discover."}});
       const [order,position]=await db.$transaction([
         db.order.create({data:{idempotencyKey:key,decisionId:decision.id,userId:req.user.sub,chain:"SOLANA",mode:"SIMULATION",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:now,venue:"JUPITER_QUOTE",quoteJson:{simulation:true,realQuote:true,manual:true,priceImpactPct:quote.priceImpactPct} as any}}),
-        db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:200,status:"OPEN",lastMarkedAt:now}})
+        db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:200,status:"OPEN",lastMarkedAt:now,entryThesis:{create:manualEntryThesis("SIMULATION",mint,executablePriceUsd,quote.priceImpactPct,now)}}})
       ]);
       await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual simulation buy placed",body:`$${amountUsd.toFixed(2)} simulation buy from a real executable quote. No live funds moved.`,data:{orderId:order.id,positionId:position.id,mint} as any}});
       await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd,mode:"SIMULATION"});
@@ -456,7 +471,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
       if(!position){
         [,position]=await db.$transaction([
           db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
+          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:manualEntryThesis("LIVE",mint,actualEntry,quote.priceImpactPct,new Date())}}})
         ]);
       }
       await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"CONFIRMED",txHash:hash}});
@@ -493,7 +508,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
     const actualEntry=actualUsd/actualTokens;
     const [,position]=await db.$transaction([
       db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
+      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:manualEntryThesis("LIVE",mint,actualEntry,quote.priceImpactPct,new Date())}}})
     ]);
     await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash:hash}});
     order=await db.order.findUnique({where:{id:order.id}});

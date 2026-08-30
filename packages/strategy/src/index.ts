@@ -2,6 +2,7 @@ export type TokenAgeClass = "JUST_LAUNCHED" | "NEW" | "EARLY" | "ESTABLISHED";
 export type TrendState = "HYPER" | "ACCELERATING" | "HEALTHY" | "PULLBACK" | "COOLING" | "BROKEN";
 export type RiskState = "LOWER_RISK" | "WATCH" | "HIGH_RISK" | "BLOCKED";
 export type EntryAction = "BUY_NOW" | "BUY_SMALLER" | "WAIT_PULLBACK" | "SKIP";
+export type ThesisState = "THESIS_STRENGTHENING" | "THESIS_HEALTHY" | "THESIS_WEAKENING" | "DISTRIBUTION" | "BROKEN" | "UNKNOWN";
 
 export type MarketSnapshot = {
   ageMinutes: number;
@@ -88,6 +89,15 @@ export type QualityAssessment = {
   score: number;
   reasons: string[];
   warnings: string[];
+};
+
+export type ThesisReference = {
+  marketEvidence?: unknown;
+};
+
+export type ThesisAssessment = {
+  state: ThesisState;
+  reasons: string[];
 };
 
 export type ExitInstruction =
@@ -344,6 +354,56 @@ export function evaluateEntry(m:MarketSnapshot, sourceQualityScore=70):EntryDeci
   if (opportunityQuality.score >= 55 && trend !== "BROKEN")
     return {action:"WAIT_PULLBACK",opportunityQuality,entryQuality,confidence,sizeMultiplier:0,chaseCapPct:chaseCap,reasons,warnings};
   return {action:"SKIP",opportunityQuality,entryQuality,confidence,sizeMultiplier:0,chaseCapPct:chaseCap,reasons,warnings};
+}
+
+function evidenceNumber(evidence:unknown, key:string):number|undefined {
+  if (!evidence || typeof evidence !== "object") return undefined;
+  const value=(evidence as Record<string,unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Compare current conditions with the immutable entry thesis. This is intentionally evidence-led:
+ * a source sell alone does not kill a runner, while source distribution plus liquidity/flow damage
+ * can. Positions without a thesis remain UNKNOWN rather than receiving invented conviction.
+ */
+export function evaluatePositionThesis(m:MarketSnapshot, thesis?:ThesisReference|null):ThesisAssessment {
+  if (!thesis) return {state:"UNKNOWN",reasons:["No immutable entry thesis exists for this legacy position"]};
+  const baselineLiquidity=evidenceNumber(thesis.marketEvidence,"liquidityUsd");
+  const baselineFlow=evidenceNumber(thesis.marketEvidence,"smartMoneyNetFlow5mUsd");
+  const baselineVolume=evidenceNumber(thesis.marketEvidence,"volumeAcceleration1m");
+  const reasons:string[]=[];
+  const sourceExiting=(m.sourceTraderSoldPct ?? 0) >= 90;
+  const creatorDistribution=(m.creatorNetSell5mPct ?? 0) >= 20;
+  const liquidityDamaged=(m.liquidityChange5mPct ?? 0) <= -25 || (baselineLiquidity != null && m.liquidityUsd < baselineLiquidity*.55);
+  if ((sourceExiting && liquidityDamaged) || (creatorDistribution && liquidityDamaged))
+    return {state:"BROKEN",reasons:[sourceExiting?"Source wallet fully exited while liquidity deteriorated":"Creator distribution coincides with serious liquidity damage"]};
+
+  const distributionSignals=[
+    (m.sourceTraderSoldPct ?? 0) >= 50,
+    creatorDistribution,
+    (m.smartMoneyNetFlow5mUsd ?? 0) < 0,
+    (m.liquidityChange5mPct ?? 0) < -12
+  ].filter(Boolean).length;
+  if (distributionSignals >= 2) return {state:"DISTRIBUTION",reasons:["Multiple entry-thesis participants or market supports are distributing"]};
+
+  const strengtheningSignals=[
+    m.sourceTraderStillHolding === true,
+    baselineFlow != null ? (m.smartMoneyNetFlow5mUsd ?? 0) > Math.max(0,baselineFlow) : (m.smartMoneyNetFlow5mUsd ?? 0) > 0,
+    baselineVolume != null ? m.volumeAcceleration1m > baselineVolume*1.1 : m.volumeAcceleration1m >= 1.5,
+    (m.liquidityChange5mPct ?? 0) > 0
+  ].filter(Boolean).length;
+  if (strengtheningSignals >= 3) return {state:"THESIS_STRENGTHENING",reasons:["Source conviction, smart flow and market participation are improving from entry"]};
+
+  const weakeningSignals=[
+    m.sourceTraderStillHolding === false,
+    (m.smartMoneyNetFlow5mUsd ?? 0) < 0,
+    (m.liquidityChange5mPct ?? 0) < -8,
+    baselineVolume != null && m.volumeAcceleration1m < baselineVolume*.6
+  ].filter(Boolean).length;
+  if (weakeningSignals >= 2) return {state:"THESIS_WEAKENING",reasons:["Entry supports are weakening, but the thesis is not yet broken"]};
+  reasons.push("Entry supports remain broadly intact");
+  return {state:"THESIS_HEALTHY",reasons};
 }
 
 export function adaptiveTrailPct(m:MarketSnapshot):number {

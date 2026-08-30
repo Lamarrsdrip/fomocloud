@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dynamicChaseCapPct, evaluateEntry, evaluateExit, MarketSnapshot, priceDrawdownFromPeakPct } from "./index.js";
+import { dynamicChaseCapPct, evaluateEntry, evaluateExit, evaluatePositionThesis, MarketSnapshot, priceDrawdownFromPeakPct } from "./index.js";
 
 const strong:MarketSnapshot = {
   ageMinutes:10, liquidityUsd:250000, marketCapUsd:600000, sourceMarketCapUsd:450000,
@@ -45,4 +45,10 @@ test("drawdown is always calculated from peak price, not profit percentage", ()=
   assert.ok(Math.abs(priceDrawdownFromPeakPct(51,49) - 3.921568627) < 0.000001);
   assert.equal(priceDrawdownFromPeakPct(51,51),0);
   assert.equal(priceDrawdownFromPeakPct(0,49),0);
+});
+
+test("thesis sees source exit plus liquidity damage as broken, but lets strengthening runners live", ()=>{
+  const thesis={marketEvidence:{liquidityUsd:250000,smartMoneyNetFlow5mUsd:30000,volumeAcceleration1m:2.0}};
+  assert.equal(evaluatePositionThesis({...strong,sourceTraderSoldPct:95,sourceTraderStillHolding:false,liquidityChange5mPct:-30},thesis).state,"BROKEN");
+  assert.equal(evaluatePositionThesis({...strong,sourceTraderStillHolding:true,smartMoneyNetFlow5mUsd:50000,volumeAcceleration1m:2.5,liquidityChange5mPct:20},thesis).state,"THESIS_STRENGTHENING");
 });

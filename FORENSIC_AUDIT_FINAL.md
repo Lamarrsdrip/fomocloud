@@ -241,8 +241,8 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | ED-18 | Contextual chase rather than universal ceiling | PENDING AUDIT | Requires entry-authority audit. |
 | ED-19 | Test/add/accumulate/trim/distribution classification | PENDING AUDIT | Requires flow behavior model. |
 | ED-20 | Temporal convergence velocity | PENDING AUDIT | Requires Brain evidence audit/implementation. |
-| ED-21 | Immutable entry-thesis snapshot | PENDING AUDIT | Requires schema and execution trace. |
-| ED-22 | Thesis-aware position management | PENDING AUDIT | Requires exits/position trace. |
+| ED-21 | Immutable entry-thesis snapshot | IMPLEMENTED, TESTED | One-to-one `EntryThesis` is atomically nested with every automated/manual position creation. It records opportunity/entry scores, source wallet, market/risk/narrative/execution evidence and provenance; manual paths explicitly preserve UNKNOWN/NOT_APPLICABLE evidence. API exposes it with positions. Production schema application remains VPS-blocked. |
+| ED-22 | Thesis-aware position management | IMPLEMENTED, TESTED | Exits compares fresh flow/liquidity/source activity with immutable entry evidence and persists `THESIS_STRENGTHENING/HEALTHY/WEAKENING/DISTRIBUTION/BROKEN`. Distribution reduces 35%; objectively broken thesis exits. Deterministic strategy test covers strengthening vs source-exit/liquidity-break. |
 | ED-23 | Peak-price drawdown semantics everywhere | PARTIAL — IMPLEMENTED, TESTED for decision producers | Canonical `priceDrawdownFromPeakPct(peak,current)` now powers paper and live exit market snapshots; deterministic +5,000% runner test proves $51 → $49 is ~3.9%, not 200 percentage points. Analytics/UI producer audit remains open. |
 | ED-24 | Uncapped runner behavior | PARTIAL | Existing runner accounting tests exist; 1,000%–10,000% thesis-aware cases are not verified. |
 | ED-25 | Meme-culture / memetic-strength intelligence | PENDING AUDIT | No utility-bias claim without code proof. |
@@ -263,8 +263,8 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | ED-40 | Cheap-filter-first cost tiers | PENDING AUDIT | Requires discovery pipeline audit. |
 | ED-41 | Reawaken previously quiet tokens | PENDING AUDIT | Requires lifecycle transition test. |
 | ED-42 | Evidence-defined Money Rush | PARTIAL | Persisted state/reasons exist; semantic acceptance test still required. |
-| ED-43 | User-facing degen explanation | IMPLEMENTED + PARTIAL | New Hunt terminal exposes real Money Rush, wallet/flow and decision evidence; full entry-quality explanation waits on ED-17. |
-| ED-44 | After-entry thesis UI | PENDING AUDIT | Depends on ED-21/22 data model. |
+| ED-43 | User-facing degen explanation | IMPLEMENTED + PARTIAL | New Hunt terminal exposes real Money Rush, wallet/flow and decision evidence. Automated decision/quote records now retain separate opportunity and entry assessments. |
+| ED-44 | After-entry thesis UI | IMPLEMENTED + PARTIAL | Portfolio position cards show current thesis state and reason; detailed wallet-cohort/cluster timeline remains dependent on ED-5/19 evidence. |
 | ED-45 | Admin Degen Intelligence Desk | PARTIAL | Existing Smart Money/admin desks exist; full clusters/narratives/deployers/missed-opportunities desks remain open. |
 | ED-46 | Observation-only live acceptance test | BLOCKED | VPS unavailable. |
 | ED-47 | Deterministic historical degen scenarios | PENDING AUDIT | Test suite expansion required. |
@@ -344,6 +344,7 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | 62 | Corrected watched-wallet forward outcomes: source-signal observation now persists `targetAt`, tolerance, actual delay and `OK/LATE/MISSING/INVALID`; it queries only bounded historical prices and scoring accepts only timely `OK` one-hour evidence. Three focused horizon tests replace the former no-op test script. | Current uncommitted pass | ED-7, ED-16 |
 | 63 | Advanced user-facing Hunt terminal: original high-contrast live-flow visual system, Money Rush/top-flow/whale/acceleration filters, visible wallet/flow aggregation, a first-class Smart Money nav destination, and truthful Opportunity Quality/current-decision language in token detail. It deliberately does not fabricate an Entry Quality value until ED-17 is implemented. | Current uncommitted pass | M-42, M-43, ED-43 |
 | 64 | Split token opportunity from executable entry timing in the actual strategy authority, and replace profit-percentage drawdown with one canonical peak-price calculation in paper/live exits. | Current uncommitted pass | ED-17, ED-23, M-28 |
+| 65 | Immutable EntryThesis plus thesis-aware runner management: atomically persist automated/manual entry evidence, compare current evidence in exits, persist current thesis state, and expose it on Portfolio cards. | Current uncommitted pass | ED-21, ED-22, ED-44 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
