@@ -248,6 +248,8 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 43 | Admin Smart Money desk: added View Activity drill-in per wallet row (currently-tracked tokens + recent on-chain activity, via the existing /v1/smart-wallets/:id endpoint which had no admin-side UI consumer) | 44b6d76 | M-11, PC-C (partial) |
 | 44 | M-50 (increment 2): extracted TraderDetail (fully self-contained) into components/TraderDetail.tsx | 45bb216 | M-50 (partial) |
 | 45 | M-50 (increment 3): extracted CommunityView (no props, fetches own data) into components/CommunityView.tsx; extracted the shared Empty component (was a page-local function reused by ~8 views) into components/Empty.tsx. app/app/page.tsx now 714 lines (was 800) | 214c2ab | M-50 (partial) |
+| 46 | M-50 (increment 4): extracted CustomTrader into components/CustomTrader.tsx | d98086c | M-50 (partial) |
+| 47 | M-50 (increment 5): extracted TokenAvatar (was duplicated implicitly across 5 call sites) into components/TokenAvatar.tsx; removed StatusLine, genuine dead code with zero call sites anywhere. app/app/page.tsx now 699 lines (was 800 at session start) | 868396d | M-50 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
