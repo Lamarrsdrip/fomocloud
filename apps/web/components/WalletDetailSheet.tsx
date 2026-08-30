@@ -8,12 +8,36 @@ import { apiFetch, plainError } from "../lib/api";
 
 type Tab = "receive" | "send" | "history" | "access" | "security";
 
-// Deliberately no client-side balance display here: the only real balance sources available
-// client-side are USD-denominated (TradingCashAllocation), not native SOL/USDC on-chain amounts,
-// and showing a number that isn't actually verified against the chain would be exactly the kind
-// of fabricated-looking UI this project has repeatedly ruled out. The Send form instead shows the
-// real INSUFFICIENT_BALANCE error from the backend (which does check on-chain balance) if it
-// happens, rather than guessing a number up front.
+// Real gap found by forensic audit (M-33): this used to deliberately show NO balance because the
+// only data available client-side was USD-denominated (TradingCashAllocation), not real on-chain
+// SOL/USDC amounts -- showing a number not actually verified against the chain would have been
+// exactly the fabricated-looking UI this project rules out. services/balance-worker has synced
+// real on-chain WalletAssetBalance rows every cycle since commit 8eae454; GET
+// /v1/me/wallets/:id/balances (added alongside this) finally exposes that. dataFreshnessSec is
+// surfaced explicitly so a stale sync reads as stale, never silently as live.
+function useWalletBalances(walletId: string) {
+  const [data, setData] = useState<{ balances: any[]; dataFreshnessSec: number | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiFetch<any>(`/v1/me/wallets/${walletId}/balances`).then((x) => { if (live) setData(x); }).catch(() => { if (live) setData({ balances: [], dataFreshnessSec: null }); });
+    return () => { live = false; };
+  }, [walletId]);
+  return data;
+}
+function BalanceHeader({ walletId }: { walletId: string }) {
+  const data = useWalletBalances(walletId);
+  if (!data) return null;
+  const usdc = data.balances.find((b) => b.symbol === "USDC");
+  const sol = data.balances.find((b) => b.symbol === "SOL");
+  const stale = data.dataFreshnessSec != null && data.dataFreshnessSec > 300;
+  return (
+    <div className="review-grid" style={{ marginBottom: 12 }}>
+      <div><span>USDC</span><b>{usdc ? Number(usdc.amount).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "Unknown"}</b></div>
+      <div><span>SOL</span><b>{sol ? Number(sol.amount).toLocaleString(undefined, { maximumFractionDigits: 4 }) : "Unknown"}</b></div>
+      <div><span>Synced</span><b style={{ fontSize: 11, color: stale ? "#f7b95f" : undefined }}>{data.dataFreshnessSec == null ? "Unknown" : stale ? "Delayed" : "Just now"}</b></div>
+    </div>
+  );
+}
 export function WalletDetailSheet({ wallet, onClose, onSent }: { wallet: { id: string; address: string }; onClose: () => void; onSent?: () => void }) {
   const [tab, setTab] = useState<Tab>("receive");
 
@@ -25,6 +49,7 @@ export function WalletDetailSheet({ wallet, onClose, onSent }: { wallet: { id: s
           <b>{wallet.address.slice(0, 6)}…{wallet.address.slice(-5)}</b>
           <button type="button" className="wallet-chooser-close" onClick={onClose} aria-label="Close"><X size={16} /></button>
         </div>
+        <BalanceHeader walletId={wallet.id} />
         <div className="config-tabs" style={{ marginBottom: 14 }}>
           <button className={tab === "receive" ? "active" : ""} onClick={() => setTab("receive")}>Receive</button>
           <button className={tab === "send" ? "active" : ""} onClick={() => setTab("send")}>Send</button>

@@ -1073,6 +1073,29 @@ app.post("/v1/me/wallets/:id/disable-automation", auth, asyncRoute(async (req:Au
 }));
 
 // ------------------------ WALLET TRANSACTION HISTORY (real on-chain reads) ------------------------
+// Real gap found by forensic audit (M-33): services/balance-worker has synced real on-chain
+// USDC/SOL balances into WalletAssetBalance every cycle since commit 8eae454, but nothing ever
+// read it back out -- WalletDetailSheet.tsx's own comment documents deliberately showing NO
+// balance at all client-side because the only data it had access to was USD-denominated
+// TradingCashAllocation, not real on-chain SOL/USDC amounts, and displaying that would have looked
+// fabricated. This route closes that gap with what was already being computed correctly.
+app.get("/v1/me/wallets/:id/balances", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub}});
+  if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
+  const rows=await db.walletAssetBalance.findMany({where:{walletId:wallet.id},orderBy:{lastSyncedAt:"desc"}});
+  // Real amount as a decimal string (not Number, to avoid precision loss on large-decimals tokens)
+  // is computed server-side once here rather than asking every consumer to redo BigInt/decimals
+  // math -- same rationale as rawToDecimalString in services/balance-worker/src/deposits.ts.
+  const balances=rows.map(r=>{
+    const raw=BigInt(r.rawBalance),base=10n**BigInt(r.decimals);
+    const whole=raw/base,frac=(raw%base).toString().padStart(r.decimals,"0").replace(/0+$/,"");
+    return {assetMint:r.assetMint,symbol:r.symbol,decimals:r.decimals,amount:frac?`${whole}.${frac}`:whole.toString(),supported:r.supported,lastSyncedAt:r.lastSyncedAt};
+  });
+  // Freshness signal so the UI can distinguish "synced moments ago" from "this hasn't updated in a
+  // while" (balance-worker outage) -- never silently show a stale number as if it were live.
+  const mostRecentSync=rows.length?rows.reduce((a,r)=>r.lastSyncedAt>a?r.lastSyncedAt:a,rows[0].lastSyncedAt):null;
+  res.json({balances,dataFreshnessSec:mostRecentSync?Math.round((Date.now()-mostRecentSync.getTime())/1000):null});
+}));
 app.get("/v1/me/wallets/:id/history", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub,chain:"SOLANA"}});
   if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
