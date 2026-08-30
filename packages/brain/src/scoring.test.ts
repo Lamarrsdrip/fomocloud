@@ -104,7 +104,7 @@ test("quality smart-money convergence changes the real decision score", () => {
 });
 
 test("young token with proven-wallet convergence, real money and acceleration can become Money Rush", () => {
-  const d=evaluateOpportunity({...baseEvidence,ageMinutes:18,liquidityUsd:120_000,marketCapUsd:650_000,inflow10sUsd:28_000,inflow60sUsd:130_000,buyers10s:18,buyers60s:55,uniqueBuyers1m:48,uniqueBuyers5m:110,whaleBuyers60s:2,trackedSmartWallets:5,provenSmartWallets:4,smartWalletWeightedScore:11,smartMoneyNetFlow5mUsd:190_000,volumeAcceleration1m:4.2,volumeAcceleration5m:3.1,buyVolume5mUsd:420_000,sellVolume5mUsd:140_000,liquidityChange5mPct:18,holderGrowth5mPct:9,socialVelocity:2.4,narrativeScore:78,top10EffectivePct:36,creatorNetSell5mPct:0});
+  const d=evaluateOpportunity({...baseEvidence,ageMinutes:18,liquidityUsd:120_000,marketCapUsd:650_000,inflow10sUsd:28_000,inflow60sUsd:130_000,buyers10s:18,buyers60s:55,uniqueBuyers1m:48,uniqueBuyers5m:110,whaleBuyers60s:2,trackedSmartWallets:5,provenSmartWallets:4,smartWalletWeightedScore:11,smartMoneyNetFlow5mUsd:190_000,volumeAcceleration1m:4.2,volumeAcceleration5m:3.1,buyVolume5mUsd:420_000,sellVolume5mUsd:140_000,liquidityChange5mPct:18,holderGrowth5mPct:9,socialVelocity:2.4,narrativeScore:78,top10EffectivePct:36,bundledSupplyPct:4,creatorNetSell5mPct:0});
   assert.ok(["BREAKOUT_FLOW","MONEY_RUSH"].includes(d.state),`got ${d.state} score ${d.score}`);
   assert.equal(d.action,"BUY_NOW");
   assert.ok(d.evidenceChannels>=4);
