@@ -19,6 +19,7 @@ import TraderDetail from "../../components/TraderDetail";
 import CommunityView from "../../components/CommunityView";
 import CustomTrader from "../../components/CustomTrader";
 import {Empty} from "../../components/Empty";
+import {TokenAvatar} from "../../components/TokenAvatar";
 // Privy's SDK is large (full multi-chain support) even though only its Solana slice is used here
 // -- next/dynamic keeps it out of this route's main bundle entirely, fetched only once someone
 // actually opens the wallet panel. See the comment at the top of EmbeddedWalletPanel.tsx.
@@ -224,10 +225,7 @@ function HomeView({d,activity,brain,brainDegraded,setView,openToken}:{d:any;acti
   </section>
  </>;
 }
-function StatusLine({label,value,ok}:{label:string;value:string;ok:boolean}){return <div className="list-row" style={{gridTemplateColumns:"1fr auto"}}><div><b>{label}</b></div><span className={`status-badge ${ok?"":"watch"}`}>{value}</span></div>}
-
 const discoverFilters=[["trending","Trending now",TrendingUp],["whales","Whales buying",Users],["new","New",Sparkles],["momentum","Momentum",Flame]] as const;
-function TokenAvatar({symbol,size=38}:{symbol?:string;size?:number}){return <div className="token-avatar" style={{width:size,height:size,fontSize:size*0.4}}>{(symbol||"?").slice(0,2).toUpperCase()}</div>}
 function DiscoverView({brain,newTokenRadar,brainDegraded,setView,openToken}:{brain:any[];newTokenRadar:any[];brainDegraded:boolean;setView:(v:View)=>void;openToken:(s:{chain:string;mint:string})=>void}){
  const[filter,setFilter]=useState<typeof discoverFilters[number][0]>("trending");
  const rows=useMemo(()=>{
