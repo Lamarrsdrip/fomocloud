@@ -15,6 +15,7 @@ import {
 import {connectWallet,signWithWallet,type DetectedWallet} from "../../lib/wallet";
 import {BrandGlyph} from "../../components/BrandGlyph";
 import WalletChooser from "../../components/WalletChooser";
+import TraderDetail from "../../components/TraderDetail";
 // Privy's SDK is large (full multi-chain support) even though only its Solana slice is used here
 // -- next/dynamic keeps it out of this route's main bundle entirely, fetched only once someone
 // actually opens the wallet panel. See the comment at the top of EmbeddedWalletPanel.tsx.
@@ -450,14 +451,6 @@ function TradersView({platform,follows,followMap,setMode,customOpen,setCustomOpe
   <div className="card-title" style={{marginTop:28}}><div><span>MY LIST</span><h2>Your independent copy settings</h2></div></div>
   {follows.length?<div className="trader-settings-list">{follows.map((f:any)=><TraderSettingsRow key={f.id} f={f} reload={reload}/>)}</div>:<Empty icon={Users} title="No traders selected" body="Use Follow, Watch or Auto Copy above. Each user can keep a completely different list."/>}
  </>;
-}
-
-
-function TraderDetail({traderId,close}:{traderId:string;close:()=>void}){
- const[data,setData]=useState<any>(null),[err,setErr]=useState("");
- useEffect(()=>{let live=true;apiFetch<any>(`/v1/traders/${traderId}`).then(x=>{if(live)setData(x)}).catch(e=>{if(live)setErr(plainError(e))});return()=>{live=false}},[traderId]);
- const t=data?.trader;
- return <section className="app-card trader-detail"><div className="card-title"><div><span>TRACKED TRADER PROFILE</span><h2>{t?.displayName||"Loading trader…"}</h2></div><button className="soft-action" onClick={close}>Close</button></div>{err&&<div className="auth-error">{err}</div>}{t&&<><div className="trader-detail-head"><div className="avatar">{initials(t.displayName)}</div><div><b>{t.displayName}</b><small>{t.xHandle?`@${t.xHandle}`:`@${t.handle}`} · {t.verification.replaceAll("_"," ")}</small></div><span className="status-badge">{t.trackingStatus}</span></div><div className="trader-detail-metrics"><div><span>Source wallets</span><b>{t.wallets?.length||0}</b></div><div><span>Tracked signals</span><b>{t._count?.signals||t.signals?.length||0}</b></div><div><span>Your relationship</span><b>{data.follow?.mode?.replaceAll("_"," ")||"Not following"}</b></div><div><span>Performance</span><b>Tracking</b><small>No fabricated return %</small></div></div><div className="wallet-public-list">{(t.wallets||[]).map((w:any)=><div key={w.id}><b>{w.chain}</b><span>{w.address}</span><small>{w.verified?"Verified public source":"Unverified source"}</small></div>)}</div><div className="card-title compact"><div><span>RECENT REAL SOURCE SIGNALS</span><h3>Wallet activity</h3></div></div>{t.signals?.length?<div className="list">{t.signals.map((sig:any)=><div className="list-row" key={sig.id}><div><b>{sig.action} · {(sig.action==="BUY"?sig.outputMint:sig.inputMint).slice(0,8)}…</b><small>{sig.chain} · source tx {sig.sourceTx.slice(0,9)}…</small></div><span>{sig.sourcePriceUsd?money(sig.sourcePriceUsd):"Price enrichment pending"}</span><span>{timeAgo(sig.observedAt)}</span><strong>›</strong></div>)}</div>:<div className="pnl-empty">No source signals have been recorded yet. Performance stays marked as Tracking until genuine history exists.</div>}</>}</section>
 }
 
 
