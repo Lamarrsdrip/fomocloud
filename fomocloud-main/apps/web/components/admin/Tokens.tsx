@@ -1,0 +1,6 @@
+import {money} from "../../lib/api";
+
+export function Tokens({d}:{d:any}){return <>
+ {d.pipelineDegraded&&<div className="notice" style={{marginBottom:12,borderColor:"rgba(247,185,95,.3)"}}>Discovery hasn't seen a new token in {d.dataFreshnessSec!=null?`${Math.round(d.dataFreshnessSec/60)} min`:"a while"} -- check discovery-worker's heartbeat under Health. Existing rows below are real, just aging.</div>}
+ <section className="app-card admin-table-wrap"><div className="card-title"><div><span>DISCOVERY</span><h2>Tokens MemeCloud has seen</h2></div></div><table className="admin-table"><thead><tr><th>Chain</th><th>Mint</th><th>Market cap</th><th>Liquidity</th><th>Holders</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>{(d.tokens||[]).map((t:any)=><tr key={t.id}><td>{t.chain}</td><td><small>{t.mint.slice(0,10)}…</small></td><td>{t.marketCapUsd?money(t.marketCapUsd):"—"}</td><td>{t.liquidityUsd?money(t.liquidityUsd):"—"}</td><td>{t.holders??"—"}</td><td>{t.discoveredAt?new Date(t.discoveredAt).toLocaleDateString():"—"}</td><td>{t.lastSeenAt?new Date(t.lastSeenAt).toLocaleString():"—"}</td></tr>)}{!(d.tokens||[]).length&&<tr><td colSpan={7}>No tokens discovered yet — needs a configured Solana RPC.</td></tr>}</tbody></table></section>
+</>}

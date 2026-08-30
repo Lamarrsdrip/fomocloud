@@ -1,0 +1,334 @@
+TAP version 13
+# Subtest: a worker that stopped evaluating a token is STALE regardless of score
+ok 1 - a worker that stopped evaluating a token is STALE regardless of score
+  ---
+  duration_ms: 3.600458
+  type: 'test'
+  ...
+# Subtest: persisted Brain state, not a naked score, maps to user-facing lifecycle
+ok 2 - persisted Brain state, not a naked score, maps to user-facing lifecycle
+  ---
+  duration_ms: 0.33012
+  type: 'test'
+  ...
+# Subtest: below the trading threshold, real non-zero evidence is still WATCHING, not hidden
+ok 3 - below the trading threshold, real non-zero evidence is still WATCHING, not hidden
+  ---
+  duration_ms: 0.177008
+  type: 'test'
+  ...
+# Subtest: zero evidence but genuinely just discovered is FOUND, not fabricated activity
+ok 4 - zero evidence but genuinely just discovered is FOUND, not fabricated activity
+  ---
+  duration_ms: 0.155596
+  type: 'test'
+  ...
+# Subtest: zero evidence and not recently discovered is COOLING, never permanently live
+ok 5 - zero evidence and not recently discovered is COOLING, never permanently live
+  ---
+  duration_ms: 0.246504
+  type: 'test'
+  ...
+# Subtest: STALE takes priority over every other classification
+ok 6 - STALE takes priority over every other classification
+  ---
+  duration_ms: 0.190028
+  type: 'test'
+  ...
+# Subtest: no prior notification and a real state fires an upgrade
+ok 7 - no prior notification and a real state fires an upgrade
+  ---
+  duration_ms: 0.973136
+  type: 'test'
+  ...
+# Subtest: SCANNING is never an upgrade -- there is nothing to notify about
+ok 8 - SCANNING is never an upgrade -- there is nothing to notify about
+  ---
+  duration_ms: 0.228536
+  type: 'test'
+  ...
+# Subtest: a genuine tier increase fires exactly once
+ok 9 - a genuine tier increase fires exactly once
+  ---
+  duration_ms: 0.25719
+  type: 'test'
+  ...
+# Subtest: staying in the same tier on a later tick never re-fires -- this is the actual bug this replaced
+ok 10 - staying in the same tier on a later tick never re-fires -- this is the actual bug this replaced
+  ---
+  duration_ms: 0.139882
+  type: 'test'
+  ...
+# Subtest: dropping back down a tier is not an upgrade and must not notify
+ok 11 - dropping back down a tier is not an upgrade and must not notify
+  ---
+  duration_ms: 0.145911
+  type: 'test'
+  ...
+# Subtest: a single wallet buying is not convergence
+ok 12 - a single wallet buying is not convergence
+  ---
+  duration_ms: 0.089435
+  type: 'test'
+  ...
+# Subtest: two or more tracked wallets is genuine convergence, fired once
+ok 13 - two or more tracked wallets is genuine convergence, fired once
+  ---
+  duration_ms: 0.206042
+  type: 'test'
+  ...
+# Subtest: the same convergence count on a later tick never re-fires
+ok 14 - the same convergence count on a later tick never re-fires
+  ---
+  duration_ms: 0.143278
+  type: 'test'
+  ...
+# Subtest: a further real increase (2 -> 3 wallets) fires again
+ok 15 - a further real increase (2 -> 3 wallets) fires again
+  ---
+  duration_ms: 0.371614
+  type: 'test'
+  ...
+# Subtest: convergence count dropping (a wallet's activity aged out of the window) never notifies
+ok 16 - convergence count dropping (a wallet's activity aged out of the window) never notifies
+  ---
+  duration_ms: 0.329549
+  type: 'test'
+  ...
+# Subtest: a PROVEN wallet carries more convergence weight than a PAPER_TRACKING one
+ok 17 - a PROVEN wallet carries more convergence weight than a PAPER_TRACKING one
+  ---
+  duration_ms: 0.296559
+  type: 'test'
+  ...
+# Subtest: weighted convergence can reach the notification threshold with fewer, higher-quality wallets
+ok 18 - weighted convergence can reach the notification threshold with fewer, higher-quality wallets
+  ---
+  duration_ms: 0.139221
+  type: 'test'
+  ...
+# Subtest: repeat-early discovered wallets contribute only weak pre-proof convergence evidence
+ok 19 - repeat-early discovered wallets contribute only weak pre-proof convergence evidence
+  ---
+  duration_ms: 0.189507
+  type: 'test'
+  ...
+# Subtest: the same whale buying repeatedly counts as one whale, not one per buy
+ok 20 - the same whale buying repeatedly counts as one whale, not one per buy
+  ---
+  duration_ms: 0.801184
+  type: 'test'
+  ...
+# Subtest: distinct whales each count once, regardless of buy count
+ok 21 - distinct whales each count once, regardless of buy count
+  ---
+  duration_ms: 0.161244
+  type: 'test'
+  ...
+# Subtest: a non-whale-tier wallet never counts as a whale
+ok 22 - a non-whale-tier wallet never counts as a whale
+  ---
+  duration_ms: 0.09899
+  type: 'test'
+  ...
+# Subtest: known-wallet count dedupes the same known wallet buying repeatedly
+ok 23 - known-wallet count dedupes the same known wallet buying repeatedly
+  ---
+  duration_ms: 0.114714
+  type: 'test'
+  ...
+# Subtest: a neutral 50/100 narrative score contributes ~zero, not positive evidence
+ok 24 - a neutral 50/100 narrative score contributes ~zero, not positive evidence
+  ---
+  duration_ms: 0.788715
+  type: 'test'
+  ...
+# Subtest: a weak/negative narrative score (below the 50 midpoint) subtracts from the score, not adds
+ok 25 - a weak/negative narrative score (below the 50 midpoint) subtracts from the score, not adds
+  ---
+  duration_ms: 13.646798
+  type: 'test'
+  ...
+# Subtest: a strong narrative score (above the 50 midpoint) adds to the score
+ok 26 - a strong narrative score (above the 50 midpoint) adds to the score
+  ---
+  duration_ms: 0.278061
+  type: 'test'
+  ...
+# Subtest: quality-capital evidence changes both Smart Money breakdown and the real trading score
+ok 27 - quality-capital evidence changes both Smart Money breakdown and the real trading score
+  ---
+  duration_ms: 0.199012
+  type: 'test'
+  ...
+# Subtest: evidenceCompleteness in the breakdown reflects how many optional fields are actually present
+ok 28 - evidenceCompleteness in the breakdown reflects how many optional fields are actually present
+  ---
+  duration_ms: 0.490303
+  type: 'test'
+  ...
+# Subtest: random old token with tiny flow never becomes a qualified opportunity
+ok 29 - random old token with tiny flow never becomes a qualified opportunity
+  ---
+  duration_ms: 0.472136
+  type: 'test'
+  ...
+# Subtest: quality smart-money convergence changes the real decision score
+ok 30 - quality smart-money convergence changes the real decision score
+  ---
+  duration_ms: 0.333586
+  type: 'test'
+  ...
+# Subtest: young token with proven-wallet convergence, real money and acceleration can become Money Rush
+ok 31 - young token with proven-wallet convergence, real money and acceleration can become Money Rush
+  ---
+  duration_ms: 0.175856
+  type: 'test'
+  ...
+# Subtest: good wallet passes paper threshold
+ok 32 - good wallet passes paper threshold
+  ---
+  duration_ms: 2.268379
+  type: 'test'
+  ...
+# Subtest: insider risk prevents proof
+ok 33 - insider risk prevents proof
+  ---
+  duration_ms: 0.307316
+  type: 'test'
+  ...
+# Subtest: unknown risk evidence is not treated as safe -- scoreWallet marks incompleteness explicitly
+ok 34 - unknown risk evidence is not treated as safe -- scoreWallet marks incompleteness explicitly
+  ---
+  duration_ms: 0.246253
+  type: 'test'
+  ...
+# Subtest: evidence-completeness gate blocks PROVEN independently of the risk-score penalty
+ok 35 - evidence-completeness gate blocks PROVEN independently of the risk-score penalty
+  ---
+  duration_ms: 0.177509
+  type: 'test'
+  ...
+# Subtest: realized repeat skill outranks a mostly-unrealized moonbag
+ok 36 - realized repeat skill outranks a mostly-unrealized moonbag
+  ---
+  duration_ms: 0.320486
+  type: 'test'
+  ...
+# Subtest: current activity and form are explicit evidence, not hidden inside wealth
+ok 37 - current activity and form are explicit evidence, not hidden inside wealth
+  ---
+  duration_ms: 0.293635
+  type: 'test'
+  ...
+# Subtest: MemeCloud uses one master notification switch
+ok 38 - MemeCloud uses one master notification switch
+  ---
+  duration_ms: 1.692025
+  type: 'test'
+  ...
+# Subtest: legacy granular preferences cannot silently suppress alerts while master is on
+ok 39 - legacy granular preferences cannot silently suppress alerts while master is on
+  ---
+  duration_ms: 0.20429
+  type: 'test'
+  ...
+# Subtest: no preference row defaults to enabled until the user explicitly turns alerts off
+ok 40 - no preference row defaults to enabled until the user explicitly turns alerts off
+  ---
+  duration_ms: 1.092176
+  type: 'test'
+  ...
+# Subtest: emailWorthSending only includes important account/trade email types
+ok 41 - emailWorthSending only includes important account/trade email types
+  ---
+  duration_ms: 0.16463
+  type: 'test'
+  ...
+# Subtest: normalizeToken reads whichever field name variant a given Birdeye endpoint actually used
+ok 42 - normalizeToken reads whichever field name variant a given Birdeye endpoint actually used
+  ---
+  duration_ms: 1.091525
+  type: 'test'
+  ...
+# Subtest: normalizeToken returns undefined (not 0 or a crash) for genuinely missing fields
+ok 43 - normalizeToken returns undefined (not 0 or a crash) for genuinely missing fields
+  ---
+  duration_ms: 0.246193
+  type: 'test'
+  ...
+# Subtest: normalizeTrader extracts Birdeye's own wallet risk tags (dev/bundler/sniper)
+ok 44 - normalizeTrader extracts Birdeye's own wallet risk tags (dev/bundler/sniper)
+  ---
+  duration_ms: 0.999856
+  type: 'test'
+  ...
+# Subtest: normalizeTrader never throws on a malformed/missing tags field
+ok 45 - normalizeTrader never throws on a malformed/missing tags field
+  ---
+  duration_ms: 0.167313
+  type: 'test'
+  ...
+# Subtest: normalizeWalletPnl defaults numeric fields to 0, not undefined -- this feeds scoreWallet directly
+ok 46 - normalizeWalletPnl defaults numeric fields to 0, not undefined -- this feeds scoreWallet directly
+  ---
+  duration_ms: 0.221616
+  type: 'test'
+  ...
+# Subtest: normalizeWalletPnl reads real values across the documented field-name variants
+ok 47 - normalizeWalletPnl reads real values across the documented field-name variants
+  ---
+  duration_ms: 0.116847
+  type: 'test'
+  ...
+# Subtest: normalizeMarket never fabricates a 24h token age or zero creator holding when evidence is missing
+ok 48 - normalizeMarket never fabricates a 24h token age or zero creator holding when evidence is missing
+  ---
+  duration_ms: 0.480789
+  type: 'test'
+  ...
+# Subtest: fresh hyper meme allows roughly 40-55% chase
+ok 49 - fresh hyper meme allows roughly 40-55% chase
+  ---
+  duration_ms: 1.013566
+  type: 'test'
+  ...
+# Subtest: hard blocker still stops no-sell-route token
+ok 50 - hard blocker still stops no-sell-route token
+  ---
+  duration_ms: 0.118249
+  type: 'test'
+  ...
+# Subtest: late but good token can wait for pullback instead of permanent rejection
+ok 51 - late but good token can wait for pullback instead of permanent rejection
+  ---
+  duration_ms: 0.363922
+  type: 'test'
+  ...
+# Subtest: 5000 percent hyper runner can keep breathing
+ok 52 - 5000 percent hyper runner can keep breathing
+  ---
+  duration_ms: 0.280115
+  type: 'test'
+  ...
+# Subtest: drawdown is always calculated from peak price, not profit percentage
+ok 53 - drawdown is always calculated from peak price, not profit percentage
+  ---
+  duration_ms: 0.126152
+  type: 'test'
+  ...
+# Subtest: unknown token age is never treated as just-launched alpha
+ok 54 - unknown token age is never treated as just-launched alpha
+  ---
+  duration_ms: 0.106391
+  type: 'test'
+  ...
+1..54
+# tests 54
+# suites 0
+# pass 54
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 237.364774

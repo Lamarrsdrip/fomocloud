@@ -1,0 +1,6 @@
+{
+  "name":"@memecloud/analytics-worker","version":"0.5.0","type":"module",
+  "scripts":{"dev":"tsx watch src/index.ts","build":"tsc -p tsconfig.json","start":"node dist/index.js","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo analytics-worker lint","test":"node --test dist/snapshot.test.js"},
+  "dependencies":{"@memecloud/db":"workspace:*","@memecloud/ops":"workspace:*","@memecloud/shared":"workspace:*"},
+  "devDependencies":{"tsx":"^4.20.4","typescript":"^5.9.2","@types/node":"^22.18.0"}
+}

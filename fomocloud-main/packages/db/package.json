@@ -1,0 +1,32 @@
+{
+  "name": "@memecloud/db",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo db lint",
+    "test": "echo db tests",
+    "prisma": "prisma",
+    "ensure-indexes": "node scripts/ensure-indexes.mjs",
+    "seed": "tsx prisma/seed.ts",
+    "migrate:v05": "tsx prisma/migrate-v05.ts",
+    "owner:promote": "tsx prisma/promote-owner.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.14.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.14.0",
+    "typescript": "^5.9.2",
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.4"
+  }
+}
