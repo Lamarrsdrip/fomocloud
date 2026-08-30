@@ -241,6 +241,8 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 36 | M-49 (increment 2): extracted the provider-health test suite (all testX/classify/withFingerprints/runProviderTests, ~210 lines) from server.ts into apps/api/src/providerHealth.ts | e6e5cc7 | M-49 (partial) |
 | 37 | M-49 (increment 3): extracted manual-trade + Privy delegation helpers (manualTradeTrader, reconcileConfirmedManualSwap, recoverManualPrivyHash, verifyPrivyDelegation) into apps/api/src/trading.ts. server.ts now 2050 lines (was 2443) | 3f38420 | M-49 (partial) |
 | 38 | services/notification-worker: extracted pushAllowed/emailWorthSending (real push/email gating decisions) into decisions.ts + 6 real tests, replacing no-op script; includes a regression test for the SECURITY_ALERT bug fixed earlier this session | 8a05399 | M-51 (partial) |
+| 39 | services/analytics-worker: extracted computeAccountSnapshot (proportional cost-basis on partial closes, div-by-zero guard, malformed-raw fallback) into snapshot.ts + 6 real tests | cee1dff | M-51 (partial) |
+| 40 | services/social-worker: extracted computePulseMetrics (sentiment/velocity/spamRatio feature extraction feeding Brain's social scoring) into metrics.ts + 10 real tests | 22863dc | M-51 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
@@ -254,8 +256,8 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 - **`social`**: was in this "acceptable" bucket incorrectly -- `classifyPulse` is real and load-bearing (feeds Brain's narrativeScore/socialVelocity/socialSpamRatio). Fixed this session (fix #30).
 - **Acceptable — real logic lives and is tested elsewhere**: `executor`, `exits` (financial math is `calculateExitAccounting` in packages/shared, real-tested in `accounting.test.ts`), `brain-worker` (logic in packages/brain, 23 tests), `scoring-worker`/`discovery-worker` (logic in packages/discovery, 6 tests incl. this session's 2 new), `paper-worker` (explicitly shares strategy package's tests per its own script comment).
 - **Fixed this session**: `providers` (6 new tests, see fix #15) — real, pure, previously-uncovered parsing logic that has already caused production bugs.
-- **Fixed this session**: `notification-worker` (6 new tests, see fix #38) — pushAllowed/emailWorthSending gating logic, previously untested and the exact class of bug (wired-to-nothing preference) already found 3 times.
-- **Not yet audited in depth**: `evm-flow-worker`, `forward-worker`, `analytics-worker`, `social-worker`, `apps/web` — likely mostly I/O orchestration but not individually verified line-by-line.
+- **Fixed this session**: `notification-worker` (6 new tests, fix #38), `analytics-worker` (6 new tests, fix #39), `social-worker` (10 new tests, fix #40).
+- **Not yet audited in depth**: `evm-flow-worker`, `forward-worker`, `apps/web` — likely mostly I/O orchestration but not individually verified line-by-line.
 
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
@@ -264,7 +266,7 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 | M-11/PC-C | Full Admin Smart Money Desk (dedicated page/layout, card-based wallet profiles, VIEW ACTIVITY/TRADES drill-in) | LARGE | Found Today/Active Now/Watchlist views + win rate/risk columns now real (fix #19); the fuller dedicated redesign remains open |
 | M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); status-language (C-21) done (fix #22); rest not started |
 | M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | In progress: server.ts (2443->2050 lines) now has middleware.ts + providerHealth.ts + auth.ts + trading.ts split out (fixes #35-37); route-domain splitting (mounting actual Express Routers for auth/wallets/admin/trading) deliberately not attempted without a live DB to verify route-mount wiring against -- pure-logic extraction is being prioritized as the safe technique; frontend not started |
-| M-51 | Remaining fake-test-script audit | MEDIUM | 7 of 22 no-op scripts replaced with real tests (fixes #15, #16, #23, #29, #30, #32, #38); remaining unaudited: evm-flow-worker, forward-worker, analytics-worker, social-worker, apps/web -- see full breakdown above |
+| M-51 | Remaining fake-test-script audit | MEDIUM | 9 of 22 no-op scripts replaced with real tests (fixes #15, #16, #23, #29, #30, #32, #38, #39, #40); remaining unaudited: evm-flow-worker, forward-worker, apps/web -- see full breakdown above |
 | M-52/M-53/C-25 | Chaos testing, process-crash testing | LARGE | Not started (no live environment available here to induce real failures against) |
 | M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
 | M-59 | Real-money live execution verification | BLOCKED | Requires owner-approved funded test |
