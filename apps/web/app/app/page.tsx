@@ -214,13 +214,14 @@ function HomeView({d,activity,brain,brainDegraded,setView,openToken}:{d:any;acti
    <button onClick={()=>setView("discover")}><TrendingUp size={18}/><span>Discover</span></button>
    <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Portfolio</span></button>
   </div>
-  <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div></div>
+  <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div>{brainDegraded&&<span className="status-badge watch">Degraded</span>}</div>
+   {brainDegraded?<p style={{fontSize:11,color:"#8a8fa0",margin:0}}>The market data provider is rate-limited right now, so these counts aren't updating. Not a sign the market is quiet -- existing counts just aren't live.</p>:
    <div className="review-grid">
     <div><span>Heating up</span><b>{pulse.heatingUp}</b></div>
     <div><span>Strong setups</span><b>{pulse.strong}</b></div>
     <div><span>Money Rush</span><b>{pulse.moneyRush}</b></div>
     <div><span>Whale activity</span><b>{pulse.whaleActive}</b></div>
-   </div>
+   </div>}
   </section>
   <section className="app-card"><div className="card-title"><div><span>AUTO TRADE</span><h2>{autoTradeOn?"On":"Off"}</h2></div><span className="status-badge">{s.copiedTraders||0} traders copied</span></div>
    <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 10px"}}>{autoTradeOn?"Eligible opportunities are executed automatically within your own limits.":"MemeCloud still scans markets and alerts you. Turn Auto Trade on only if you want eligible opportunities executed automatically."}</p>
@@ -337,7 +338,7 @@ function SmartWalletsView(){
     <div className="token-row-main"><b>{w.address.slice(0,6)}…{w.address.slice(-5)}</b><small>{w.chain} · {STAGE_LABELS[w.stage]||w.stage} · {w.sampleTrades} trade(s) observed{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")}`:""}</small></div>
     <div className="token-row-side"><span className="status-badge">{w.winRatePct!==null?`${w.winRatePct}% win`:"Not enough data"}</span><small>{w.realizedPnl7dUsd!=null?`7D ${money(w.realizedPnl7dUsd)}`:`Score ${Math.round(w.copyabilityScore)}`}</small></div>
    </div>
-  )}</div>:<Empty icon={Users} title="No smart wallets discovered yet" body="MemeCloud saves a candidate once it observes genuine meme-trading activity from a wallet. This list fills in as real chain data arrives." />}
+  )}</div>:<Empty icon={Users} title={degraded?"Scoring is temporarily degraded":"No smart wallets discovered yet"} body={degraded?"The market data provider is rate-limited right now, so wallet scoring isn't updating. This will resume automatically once the provider recovers.":"MemeCloud saves a candidate once it observes genuine meme-trading activity from a wallet. This list fills in as real chain data arrives."} />}
   {(detail||detailBusy)&&<div className="wallet-chooser-wrap" onClick={()=>setDetail(null)}>
    <div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
     <div className="wallet-chooser-handle"/>
