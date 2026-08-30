@@ -620,4 +620,18 @@ function RpcUsage({services}:{services:any[]}){
   <p style={{fontSize:10,color:"#7b8190",margin:"10px 2px 0"}}>No historical requests/min/hour/day graph exists yet -- this table is live current state only, refreshed on demand. "Shared account budget" is a cross-process Redis-backed token bucket (P0=highest priority, P5=lowest) protecting the account-wide Helius/Solana RPC limit -- background/bulk consumers back off first when it gets scarce.</p>
  </section>;
 }
-function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small></div>)}</div></section><RpcUsage services={d.services||[]}/></>}
+// Real gap found by forensic audit (M-47/48): every worker's real work metrics (scans,
+// candidates, errors, backlog, reconnects, watchlist alerts, etc.) have always been stored in
+// WorkerHeartbeat.detail and returned by this same API response -- "a heartbeat alone does not
+// mean a system is healthy" was already true here, just never rendered. A worker reporting
+// healthy=true while its own detail shows e.g. 0 candidates for hours looked identical to one
+// doing real work. Surfacing the raw detail fields (compact, since each worker's shape differs)
+// is what actually lets an operator catch "alive but useless."
+function healthDetailLine(detail:any){
+ if(!detail||typeof detail!=="object")return null;
+ const skip=new Set(["running"]);
+ const entries=Object.entries(detail).filter(([k])=>!skip.has(k)).slice(0,6);
+ if(!entries.length)return null;
+ return entries.map(([k,v])=>`${k}: ${typeof v==="object"?JSON.stringify(v):String(v)}`).join(" · ");
+}
+function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small>{healthDetailLine(h.detail)&&<small style={{display:"block",marginTop:2,color:"#8a8fa0",fontSize:10}}>{healthDetailLine(h.detail)}</small>}</div>)}</div></section><RpcUsage services={d.services||[]}/></>}
