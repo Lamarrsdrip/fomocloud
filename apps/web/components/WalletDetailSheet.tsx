@@ -171,10 +171,25 @@ function ReceiveTab({ address }: { address: string }) {
   );
 }
 
+// Reserved so a "Max" SOL send never leaves the wallet with nothing to pay its own network fee --
+// SPL token transfers (USDC) are paid for in SOL, not the token being sent, so this reserve only
+// applies to sending SOL itself. A real, small, fixed buffer, not a guess at the exact fee.
+const SOL_FEE_RESERVE = 0.002;
 function SendTab({ walletId, onSent }: { walletId: string; onSent?: () => void }) {
   const [asset, setAsset] = useState<"SOL" | "USDC">("USDC");
   const [toAddress, setToAddress] = useState("");
   const [amount, setAmount] = useState("");
+  // Real gap found by forensic audit (M-33): with no real balance ever shown (see BalanceHeader's
+  // own history above), a "Max" button was impossible to build honestly -- there was nothing real
+  // to max out to. Now that GET /v1/me/wallets/:id/balances exists, this closes that gap.
+  const balanceData = useWalletBalances(walletId);
+  const assetBalance = balanceData?.balances.find((b) => b.symbol === asset);
+  function fillMax() {
+    if (!assetBalance) return;
+    const raw = Number(assetBalance.amount);
+    const max = asset === "SOL" ? Math.max(0, raw - SOL_FEE_RESERVE) : raw;
+    setAmount(String(max));
+  }
   const [step, setStep] = useState<"form" | "confirm" | "sending" | "done">("form");
   const [err, setErr] = useState("");
   const [txHash, setTxHash] = useState("");
@@ -247,7 +262,10 @@ function SendTab({ walletId, onSent }: { walletId: string; onSent?: () => void }
       <button type="button" className={asset === "SOL" ? "active" : ""} onClick={() => setAsset("SOL")}>SOL</button>
     </div>
     <label className="field"><span>Destination address</span><input value={toAddress} onChange={(e) => setToAddress(e.target.value)} placeholder="Solana address" required /></label>
-    <label className="field"><span>Amount ({asset})</span><input type="number" min="0" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" required /></label>
+    <label className="field">
+      <span>Amount ({asset}){assetBalance && <> · <button type="button" onClick={fillMax} style={{ background: "none", border: "none", color: "#9a97ff", cursor: "pointer", padding: 0, font: "inherit" }}>Max: {Number(assetBalance.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}</button></>}</span>
+      <input type="number" min="0" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" required />
+    </label>
     {err && <div className="auth-error" style={{ margin: "6px 0" }}>{err}</div>}
     <button className="action-primary" style={{ width: "100%", marginTop: 6 }}>Review send</button>
   </form>;
