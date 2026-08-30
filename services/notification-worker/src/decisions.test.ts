@@ -2,40 +2,28 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { pushAllowed, emailWorthSending } from "./decisions.js";
 
-test("pushAllowed defaults to true for a known type with no preference row at all", () => {
-  assert.equal(pushAllowed("TRADE_COPIED", undefined), true);
-  assert.equal(pushAllowed("TRADE_COPIED", null), true);
+test("MemeCloud uses one master notification switch", () => {
+  for(const type of ["TRADER_SIGNAL","TRADE_COPIED","TRADE_SKIPPED","WAIT_PULLBACK","PROFIT_TAKEN","POSITION_CLOSED","SECURITY_ALERT","GLOBAL_BRAIN","WATCHED_WALLET_TRADE"]){
+    assert.equal(pushAllowed(type,{pushEnabled:true}),true,type);
+    assert.equal(pushAllowed(type,{pushEnabled:false}),false,type);
+  }
 });
 
-test("pushAllowed defaults to true for an unrecognized type", () => {
-  assert.equal(pushAllowed("SOME_FUTURE_TYPE", {}), true);
+test("legacy granular preferences cannot silently suppress alerts while master is on",()=>{
+  assert.equal(pushAllowed("TRADER_SIGNAL",{pushEnabled:true,traderBought:false}),true);
+  assert.equal(pushAllowed("PROFIT_TAKEN",{pushEnabled:true,profitTaken:false}),true);
+  assert.equal(pushAllowed("SECURITY_ALERT",{pushEnabled:true,securityAlerts:false}),true);
 });
 
-test("pushAllowed respects each per-type preference field", () => {
-  assert.equal(pushAllowed("TRADER_SIGNAL", { traderBought: false }), false);
-  assert.equal(pushAllowed("TRADE_COPIED", { tradeCopied: false }), false);
-  assert.equal(pushAllowed("TRADE_SKIPPED", { skippedTrade: false }), false);
-  assert.equal(pushAllowed("WAIT_PULLBACK", { skippedTrade: false }), false);
-  assert.equal(pushAllowed("PROFIT_TAKEN", { profitTaken: false }), false);
-  assert.equal(pushAllowed("POSITION_CLOSED", { positionClosed: false }), false);
+test("no preference row defaults to enabled until the user explicitly turns alerts off",()=>{
+  assert.equal(pushAllowed("WATCHED_WALLET_TRADE",undefined),true);
+  assert.equal(pushAllowed("SOME_FUTURE_TYPE",null),true);
 });
 
-test("pushAllowed: SECURITY_ALERT respects securityAlerts -- regression test for the 'wired to nothing' bug fixed this session", () => {
-  assert.equal(pushAllowed("SECURITY_ALERT", { securityAlerts: false }), false);
-  assert.equal(pushAllowed("SECURITY_ALERT", { securityAlerts: true }), true);
-  assert.equal(pushAllowed("SECURITY_ALERT", {}), true);
-});
-
-test("pushAllowed: a global pushEnabled:false overrides every per-type preference, even one explicitly set to true", () => {
-  assert.equal(pushAllowed("SECURITY_ALERT", { pushEnabled: false, securityAlerts: true }), false);
-  assert.equal(pushAllowed("TRADE_COPIED", { pushEnabled: false, tradeCopied: true }), false);
-});
-
-test("emailWorthSending only includes the 4 types worth the cost of an email", () => {
+test("emailWorthSending only includes important account/trade email types", () => {
   assert.equal(emailWorthSending("TRADE_COPIED"), true);
   assert.equal(emailWorthSending("PROFIT_TAKEN"), true);
   assert.equal(emailWorthSending("POSITION_CLOSED"), true);
   assert.equal(emailWorthSending("SECURITY_ALERT"), true);
   assert.equal(emailWorthSending("TRADER_SIGNAL"), false);
-  assert.equal(emailWorthSending("TRADE_SKIPPED"), false);
 });

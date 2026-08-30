@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db,type Chain} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
-import {evaluateOpportunity,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets,weightedConvergenceScore} from "@memecloud/brain";
+import {evaluateOpportunity,qualifiesNewTokenAlert,didStateUpgrade,isNewConvergence,STATE_RANK,countUniqueWhaleWallets,countUniqueKnownWallets,weightedConvergenceScore} from "@memecloud/brain";
 import {chainSupports} from "@memecloud/shared";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
@@ -29,7 +29,7 @@ async function context(chain:Chain,mint:string,s:any){
   const [f10,f60,f10m,known,token,catalyst,peak]=await Promise.all([
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since60}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
-    db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10m}},select:{walletAddress:true}}),
+    db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10m}},select:{walletAddress:true,amountUsd:true,observedAt:true}}),
     db.signal.count({where:{chain,action:"BUY",outputMint:mint,observedAt:{gte:since60}}}),
     db.discoveryToken.findUnique({where:{chain_mint:{chain,mint}}}).catch(()=>null),
     db.catalystEvent.findFirst({where:{chain,mint,announcedAt:{gte:new Date(now-72*60*60_000)}},orderBy:{announcedAt:"desc"}}),
@@ -44,13 +44,28 @@ async function context(chain:Chain,mint:string,s:any){
   // reason string, not folded into the scoring formula, so it can't silently change trading
   // decisions -- it's explanatory evidence per the "why was this found" requirement.
   const recentAddresses=[...new Set(f10m.map(v=>v.walletAddress))];
-  const convergentWallets=recentAddresses.length?await db.smartWalletCandidate.findMany({where:{chain,address:{in:recentAddresses},stage:{in:["PAPER_TRACKING","PROVEN"]}},select:{address:true,stage:true}}):[];
+  const convergenceCandidates=recentAddresses.length?await db.smartWalletCandidate.findMany({
+    where:{chain,address:{in:recentAddresses},stage:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}},
+    select:{address:true,stage:true,copyabilityScore:true,sampleTrades:true,metadata:true}
+  }):[];
+  // Repeat-early wallets are allowed to contribute a SMALL insider-cluster hint before they become
+  // PAPER/PROVEN, but one random DISCOVERED address has zero authority. This is how MemeCloud can
+  // notice alpha-style wallets converging before a token moves without pretending unproven wallets
+  // are already smart money.
+  const convergentWallets=convergenceCandidates.filter((w:any)=>{
+    if(w.stage==="PROVEN"||w.stage==="PAPER_TRACKING")return true;
+    const hits=Number((w.metadata as any)?.walletFirstEarlyHitTokens??0);
+    return hits>=3&&Number(w.sampleTrades??0)>=0;
+  });
+  const convergenceForScore=convergentWallets.map((w:any)=>({stage:w.stage,copyabilityScore:Number(w.copyabilityScore??0),currentFormScore:Number((w.metadata as any)?.currentFormScore??50),earlyRepeatHits:Number((w.metadata as any)?.walletFirstEarlyHitTokens??0)}));
+  const smartWalletWeightedScore=weightedConvergenceScore(convergenceForScore);
+  const provenSmartWallets=convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
   // Real bug found by audit: knownWhaleBuyers60s used to add a raw Signal count (`known`, a
   // platform-tracked-trader BUY signal count from an entirely different source table) directly
   // onto a wallet count -- "A Signal is not a wallet." platformSignals60s now reports that as its
   // own honest field instead of silently inflating a wallet-count metric with event counts from an
   // unrelated pipeline.
-  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes??undefined,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWallets(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd??undefined,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0};
+  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWallets(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd??undefined,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,bundledSupplyPct:s.bundledSupplyPct??undefined,creatorHoldingPct:s.creatorHoldingPct??undefined,mintAuthorityActive:s.mintAuthorityActive??undefined,freezeAuthorityActive:s.freezeAuthorityActive??undefined,token2022DangerousExtension:s.token2022DangerousExtension??undefined,lpRiskScore:s.lpRiskScore??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0,trackedSmartWallets:convergentWallets.length,provenSmartWallets,smartWalletWeightedScore};
   return {evidence,token,catalyst,convergentWallets};
 }
 async function notifyUsers(opp:any,users:any[]){
@@ -179,8 +194,8 @@ async function notifyWhaleActivity(row:any,whaleCount:number){
 }
 async function notifyNewToken(row:any){
   const subs=await discoverySubscribers();
-  const title=`New token radar: ${row.symbol||"a token"}`;
-  const body=`First seen on-chain · ${row.chain} · ${row.mint} · early/raw intelligence, not yet qualified`;
+  const title=`New alpha found: ${row.symbol||"a token"}`;
+  const body=`Quality wallets / whales and real buyer flow are converging early · ${row.reasons?.[0]||`score ${Math.round(row.score)}`} · ${row.chain}`;
   for(const u of subs){
     if(!(u.notificationPrefs as any)?.discoveryNewToken)continue;
     const key=`newtoken:${row.id}:${u.id}`;
@@ -200,11 +215,11 @@ async function tick(){
       const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
       const upgraded=didStateUpgrade(existing?.lastNotifiedState,d.state);
       const convergentCount=c.convergentWallets.length;
-      const provenConvergentCount=c.convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
-      // Weighted, not raw count, is what actually gates the convergence signal below -- a PROVEN
-      // wallet (cleared packages/discovery's objective shouldProve bar) carries more evidentiary
-      // weight than one still PAPER_TRACKING. See weightedConvergenceScore's own comment.
-      const convergentWeightedScore=weightedConvergenceScore(c.convergentWallets);
+      const provenConvergentCount=c.evidence.provenSmartWallets??c.convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
+      // Convergence is now a first-class Brain input, not merely an explanation string. The context
+      // computed a quality/form-weighted score before evaluateOpportunity() ran, so proven/current
+      // wallets can materially outrank a swarm of unverified addresses.
+      const convergentWeightedScore=c.evidence.smartWalletWeightedScore??weightedConvergenceScore(c.convergentWallets);
       // Real bug found by a full-platform audit: lastNotifiedState and the convergence dedup
       // baseline used to be written into the SAME upsert that ran before the notify call below --
       // so if notifyDiscoveryUpgrade/notifyConvergence ever failed for any reason (an ordinary
@@ -222,11 +237,10 @@ async function tick(){
       const whaleCount=c.evidence.whaleBuyers60s+c.evidence.knownWhaleBuyers60s;
       const priorNotifiedWhaleCount=Number((existing?.evidence as any)?.lastNotifiedWhaleCount??0);
       const newWhaleActivity=whaleCount>=1&&whaleCount>priorNotifiedWhaleCount;
-      const isBrandNewToken=!existing;
-      // Real, explanatory evidence -- deliberately never folded into the scoring formula, so it
-      // can't silently change a trading decision. "Why was this found" per the audit's requirement.
+      // Human explanation mirrors the same quality-weighted convergence that now feeds scoring --
+      // no split-brain where UI says "smart money" but the trading decision silently ignores it.
       const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes${provenConvergentCount?` (${provenConvergentCount} PROVEN)`:""}`,...d.reasons]:d.reasons;
-      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,provenConvergentCount,convergentWeightedScore,lastNotifiedConvergentWeightedScore:priorNotifiedConvergentWeightedScore,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
+      const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,provenConvergentCount,convergentWeightedScore,lastNotifiedConvergentWeightedScore:priorNotifiedConvergentWeightedScore,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown,evidenceChannels:d.evidenceChannels,ageMinutes:c.evidence.ageMinutes,smartWalletWeightedScore:convergentWeightedScore,qualifiedNewTokenAlertSent:Boolean((existing?.evidence as any)?.qualifiedNewTokenAlertSent)} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
       scans++;if(d.action!=="IGNORE")opportunities++;
       if(!lastBest||row.score>lastBest.score)lastBest={chain:row.chain,mint:row.mint,symbol:row.symbol,score:row.score,action:row.action};
@@ -255,42 +269,67 @@ async function tick(){
           .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),lastNotifiedWhaleCount:whaleCount}}}))
           .catch(e=>console.error("[brain-worker] whale notify failed, will retry next tick",row.mint,e));
       }
-      if(isBrandNewToken){
-        // Fires exactly once per token, naturally deduped by `existing` being null only on the
-        // very first tick a mint is ever seen -- independent of whether it ever qualifies for the
-        // main Discover feed. This is the "New Token Radar" path: early/raw intelligence for users
-        // who explicitly opted into it, not a recommendation.
-        await notifyNewToken(row).catch(e=>console.error("[brain-worker] new-token notify failed",row.mint,e));
+      const priorQualifiedNewTokenAlert=Boolean((existing?.evidence as any)?.qualifiedNewTokenAlertSent);
+      if(!priorQualifiedNewTokenAlert&&qualifiesNewTokenAlert(c.evidence,d)){
+        // "New token found" is an alpha notification, not a mint firehose. A young token must have
+        // organic buyers PLUS quality capital (proven/paper smart wallets or a whale) and meaningful
+        // money flow before everybody's phone is interrupted. Raw fresh mints remain visible only in
+        // New Token Radar until they earn this threshold.
+        await notifyNewToken(row)
+          .then(()=>db.globalBrainOpportunity.update({where:{id:row.id},data:{evidence:{...(row.evidence as any),qualifiedNewTokenAlertSent:true}}}))
+          .catch(e=>console.error("[brain-worker] qualified new-token notify failed, will retry",row.mint,e));
       }
       await maybeSignal(row,trader,users);
     }
     await sampleOutcomes();
   }catch(e){errors++;console.error("[brain-worker]",e)}finally{running=false}
 }
-// Real gap found by forensic audit (M-12/PC-D): admin had no way to WATCH a wallet at all, let alone
-// have that watch continuously monitored. Rides the same chainFlowObservation stream
-// flow-worker/evm-flow-worker already write to unconditionally, so detection continues as long as
-// those ingestion workers are running -- independent of any admin session or open browser tab.
-let lastWatchlistCheckAt=new Date(Date.now()-5*60_000),watchlistAlerts=0,watchlistErrors=0;
+// Platform-watch notifications are product intelligence, not a trading permission. When the owner
+// adds a wallet to the platform watchlist, every active user who has the single master notification
+// switch enabled should hear about that wallet's actual BUY/SELL activity -- even with no wallet,
+// no Auto Trade, and no open browser. Stable delivery keys make the 5-minute restart replay safe.
+let lastWatchlistCheckAt=new Date(Date.now()-5*60_000),watchlistAlerts=0,watchlistErrors=0,watchlistPushes=0;
+let watchedSubscribers:any[]|null=null,watchedSubscribersAt=0;
+async function watchedWalletSubscribers(){
+  if(watchedSubscribers&&Date.now()-watchedSubscribersAt<60_000)return watchedSubscribers;
+  watchedSubscribers=await db.user.findMany({where:{status:"ACTIVE"},select:{id:true,notificationPrefs:true}});
+  watchedSubscribersAt=Date.now();
+  return watchedSubscribers;
+}
+async function notifyWatchedWalletTrade(flow:any,label:string|undefined,tokenSymbol:string|undefined){
+  const side=String(flow.side).toUpperCase()==="SELL"?"sold":"bought";
+  const walletName=label||`${flow.walletAddress.slice(0,4)}…${flow.walletAddress.slice(-4)}`;
+  const token=tokenSymbol||`${flow.mint.slice(0,5)}…${flow.mint.slice(-4)}`;
+  const amount=Number(flow.amountUsd??0)>0?` · ~$${Math.round(Number(flow.amountUsd)).toLocaleString()}`:"";
+  const title=`Watched wallet ${side} ${token}`;
+  const body=`${walletName} ${side} ${token}${amount}`;
+  for(const u of await watchedWalletSubscribers()){
+    if(u.notificationPrefs?.pushEnabled===false)continue;
+    const key=`watched:${flow.chain}:${flow.txHash}:${flow.walletAddress}:${flow.mint}:${u.id}`;
+    await notificationQueue.add("notify",{userId:u.id,type:"WATCHED_WALLET_TRADE",title,body,data:{url:"/app/?view=smart-wallets",chain:flow.chain,mint:flow.mint,walletAddress:flow.walletAddress,txHash:flow.txHash},deliveryKey:key},{jobId:key,removeOnComplete:2000,attempts:3,backoff:{type:"exponential",delay:500}}).then(()=>{watchlistPushes++}).catch(()=>{});
+  }
+}
 async function checkWatchlist(){
   const since=lastWatchlistCheckAt,now=new Date();
-  // Advance the cursor before querying so a slow query can't leave a re-checked gap on the next
-  // call; a crash between advancing and finishing this pass can miss/duplicate at most one interval
-  // (10s) of alerts -- acceptable for an informational admin notice, unlike the real-money paths
-  // elsewhere in this codebase which use actual idempotency keys.
   lastWatchlistCheckAt=now;
   try{
-    const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},select:{address:true}});
+    const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},select:{address:true,label:true,stage:true}});
     if(!watched.length)return;
-    const addresses=watched.map(w=>w.address);
-    const buys=await db.chainFlowObservation.findMany({where:{walletAddress:{in:addresses},side:"BUY",observedAt:{gt:since,lte:now}},orderBy:{observedAt:"asc"},take:500});
-    for(const b of buys){
-      await db.adminAlert.create({data:{type:"WATCHED_WALLET_BUY",chain:b.chain,mint:b.mint,walletAddress:b.walletAddress,message:`Watched wallet ${b.walletAddress.slice(0,4)}…${b.walletAddress.slice(-4)} entered ${b.mint}${b.amountUsd?` (~$${Math.round(b.amountUsd).toLocaleString()})`:""}`,metadata:{amountUsd:b.amountUsd,txHash:b.txHash}}}).catch(()=>{});
+    const byAddress=new Map<string,any>(watched.map((w:any)=>[w.address,w]));
+    const flows=await db.chainFlowObservation.findMany({where:{walletAddress:{in:[...byAddress.keys()]},observedAt:{gt:since,lte:now}},orderBy:{observedAt:"asc"},take:1000});
+    const mints=[...new Set(flows.map(f=>f.mint))];
+    const tokens=mints.length?await db.discoveryToken.findMany({where:{mint:{in:mints}},select:{mint:true,symbol:true}}):[];
+    const symbols=new Map<string,string|undefined>(tokens.map((t:any)=>[t.mint,t.symbol??undefined]));
+    for(const f of flows){
+      const watchedWallet=byAddress.get(f.walletAddress);
+      const side=String(f.side).toUpperCase();
+      await db.adminAlert.create({data:{type:`WATCHED_WALLET_${side}`,chain:f.chain,mint:f.mint,walletAddress:f.walletAddress,message:`Watched wallet ${f.walletAddress.slice(0,4)}…${f.walletAddress.slice(-4)} ${side==="SELL"?"sold":"entered"} ${symbols.get(f.mint)||f.mint}${f.amountUsd?` (~$${Math.round(f.amountUsd).toLocaleString()})`:""}`,metadata:{amountUsd:f.amountUsd,txHash:f.txHash,side}}}).catch(()=>{});
+      await notifyWatchedWalletTrade(f,watchedWallet?.label??undefined,symbols.get(f.mint)).catch(e=>console.error("[brain-worker] watched-wallet notify",e));
       watchlistAlerts++;
     }
   }catch(e){watchlistErrors++;console.error("[brain-worker] watchlist check failed",e)}
 }
-startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:750,watchlistAlerts,watchlistErrors}));
+startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:750,watchlistAlerts,watchlistPushes,watchlistErrors}));
 setInterval(()=>void tick(),750);void tick();
 setInterval(()=>void checkWatchlist(),10_000);void checkWatchlist();
 console.log("[brain-worker] Global Brain online");

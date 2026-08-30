@@ -104,25 +104,7 @@ async function recoverPrivyHash(referenceId:string){
   }catch(e){console.warn("[executor] Privy reference recovery unavailable",referenceId,e);return null}
 }
 
-function automatedEntryThesis(signal:any, intelligence:any, rich:any, sourceQuality:number, executablePriceUsd:number, actualChase:number, priceImpactPct:number){
-  return {
-    source:"AUTOMATED_SMART_WALLET",
-    opportunityQuality:intelligence.opportunityQuality.score,
-    entryQuality:intelligence.entryQuality.score,
-    sourceWallet:signal.sourceWallet,
-    sourceWalletQuality:sourceQuality,
-    walletCohort:{sourceWallet:signal.sourceWallet,traderId:signal.traderId,sourceAction:signal.action,sourceObservedAt:signal.observedAt},
-    // Cluster evidence is not fabricated: absent cluster analysis stays explicitly unavailable.
-    walletClusters:{status:"UNKNOWN",reason:"No cluster relationship was attached to this source signal at entry"},
-    marketEvidence:{marketCapUsd:rich.marketCapUsd??null,liquidityUsd:rich.liquidityUsd,smartMoneyNetFlow5mUsd:rich.smartMoneyNetFlow5mUsd??null,volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,holderGrowth5mPct:rich.holderGrowth5mPct??null,liquidityChange5mPct:rich.liquidityChange5mPct??null},
-    riskEvidence:{warnings:intelligence.warnings,mintAuthorityActive:rich.mintAuthorityActive??null,freezeAuthorityActive:rich.freezeAuthorityActive??null,bundledSupplyPct:rich.bundledSupplyPct??null,creatorNetSell5mPct:rich.creatorNetSell5mPct??null,lpRiskScore:rich.lpRiskScore??null},
-    narrativeEvidence:{narrativeScore:rich.narrativeScore??null,socialVelocity:rich.socialVelocity??null,socialSentiment:rich.socialSentiment??null,socialSpamRatio:rich.socialSpamRatio??null},
-    executionEvidence:{sourcePriceUsd:signal.sourcePriceUsd??null,executablePriceUsd,walletChasePct:actualChase,priceImpactPct,sellRouteVerified:true},
-    provenance:{signalId:signal.id,marketSnapshotObservedAt:rich.observedAt,entryDecision:"evaluateEntry",schema:"ENTRY_THESIS_V1"}
-  };
-}
-
-async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitted:any,signal:any,follow:any,decimals:number,thesis:any){
+async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitted:any,signal:any,follow:any,decimals:number){
   if(!solanaRpc)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
   await jupiter.waitConfirmed(solanaRpc,txHash,60_000);
   const fill=await reconcileConfirmedSwap(txHash,permitted.address,usdcSol,signal.outputMint);
@@ -133,7 +115,7 @@ async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitt
   const already=await db.position.findFirst({where:{userId:follow.userId,mode:"LIVE",entryTxHash:txHash}});
   await db.$transaction([
     db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:thesis}}})]),
+    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date()}})]),
     db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}}),
     // Real-money accounting audit trail (LedgerEntry) written atomically alongside the state change
     // it documents -- never a separate, un-atomic write that could drift from what actually happened.
@@ -547,7 +529,7 @@ const worker=new Worker("signals",async job=>{
       const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:signal.sourceWallet}}}).catch(()=>null);
       const sourceQuality=Number(candidate?.sourceQualityScore??65);
       const intelligence=evaluateEntry({
-        ageMinutes:rich.ageMinutes??undefined,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
+        ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
         priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
         volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
         volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
@@ -563,7 +545,6 @@ const worker=new Worker("signals",async job=>{
         socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,influencerQualityScore:rich.influencerQualityScore??undefined,narrativeScore:rich.narrativeScore??undefined,
         sourceTraderStillHolding:true,sourceTraderSoldPct:0
       },sourceQuality);
-      const entryThesis=automatedEntryThesis(signal,intelligence,rich,sourceQuality,executablePriceUsd,actualChase,Math.max(priceImpactPct,reverseImpactPct??0));
       const effectiveChase=maxChase; // 0 means no user/platform chase ceiling; strategy chase is evidence, not authority
       if(intelligence.action==="SKIP"){
         await saveDecision({allowed:false,action:"SKIP",reason:"MEME_INTELLIGENCE_REJECTED",sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:[...intelligence.reasons,...intelligence.warnings].join(" · ")||"The current market evidence is not strong enough."});
@@ -610,7 +591,7 @@ const worker=new Worker("signals",async job=>{
       const decision=await saveDecision({
         allowed:true,action:"BUY",amountUsd,reason:null,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,
         confidence:intelligence.confidence,
-        explanation:`Opportunity ${intelligence.opportunityQuality.score}/100 · entry ${intelligence.entryQuality.score}/100. Eligible copy from ${signal.trader.displayName}; actual-size wallet chase ${actualChase.toFixed(1)}%; executable price impact ${priceImpactPct.toFixed(2)}%. ${intelligence.reasons.join(" · ")}`
+        explanation:`Eligible copy from ${signal.trader.displayName}. Intelligence ${intelligence.confidence}/100; actual-size wallet chase ${actualChase.toFixed(1)}%; executable price impact ${priceImpactPct.toFixed(2)}%. ${intelligence.reasons.join(" · ")}`
       });
 
       // Resolve immediately before the first transaction-construction call. The exact same state
@@ -644,7 +625,7 @@ const worker=new Worker("signals",async job=>{
           if(hash){
             await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:order.submittedAt??new Date()}});
             await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"SUBMITTED",txHash:hash}});
-            await finalizeLiveBuy(order,attempt.idempotencyKey,hash,permitted,signal,follow,decimals,entryThesis);
+            await finalizeLiveBuy(order,attempt.idempotencyKey,hash,permitted,signal,follow,decimals);
             allowedCount++;continue;
           }
           // A SIGNING request without a recoverable provider transaction is ambiguous. Never
@@ -653,14 +634,14 @@ const worker=new Worker("signals",async job=>{
           skippedCount++;continue;
         }
         const built=await jupiter.buildSwap(quote,permitted.address);
-        order=await db.order.create({data:{idempotencyKey:orderKey,decisionId:decision.id,userId:follow.userId,chain:"SOLANA",mode:"LIVE",side:"BUY",inputMint:usdcSol,outputMint:signal.outputMint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,intelligence:{confidence:intelligence.confidence,opportunityQuality:intelligence.opportunityQuality,entryQuality:intelligence.entryQuality,reasons:intelligence.reasons,warnings:intelligence.warnings}} as any}});
+        order=await db.order.create({data:{idempotencyKey:orderKey,decisionId:decision.id,userId:follow.userId,chain:"SOLANA",mode:"LIVE",side:"BUY",inputMint:usdcSol,outputMint:signal.outputMint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"SIGNING",venue:"JUPITER",quoteJson:{quote:quote.raw,intelligence:{confidence:intelligence.confidence,reasons:intelligence.reasons,warnings:intelligence.warnings}} as any}});
         const attemptKey=crypto.createHash("sha256").update(`BUY:${order.id}`).digest("hex");
         await db.liveExecutionAttempt.create({data:{idempotencyKey:attemptKey,userId:follow.userId,orderId:order.id,purpose:"BUY",chain:"SOLANA",walletAddress:permitted.address,provider:"PRIVY",providerRef:permitted.permissionRef!,status:"SIGNING",requestHash:crypto.createHash("sha256").update(built).digest("hex")}});
         try{
           const sent=await privy.signAndSend(permitted.permissionRef!,built,attemptKey.slice(0,64));
           await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:sent.hash,submittedAt:new Date()}});
           await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:sent.hash}});
-          await finalizeLiveBuy(order,attemptKey,sent.hash,permitted,signal,follow,decimals,entryThesis);
+          await finalizeLiveBuy(order,attemptKey,sent.hash,permitted,signal,follow,decimals);
           allowedCount++;continue;
         }catch(e:any){
           // Recover a transaction that Privy accepted even if the HTTP response/process died before
@@ -669,7 +650,7 @@ const worker=new Worker("signals",async job=>{
           if(recovered){
             await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:new Date()}}).catch(()=>{});
             await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:recovered}}).catch(()=>{});
-            await finalizeLiveBuy(order,attemptKey,recovered,permitted,signal,follow,decimals,entryThesis);
+            await finalizeLiveBuy(order,attemptKey,recovered,permitted,signal,follow,decimals);
             allowedCount++;continue;
           }
           await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT")}}).catch(()=>{});
@@ -686,7 +667,7 @@ const worker=new Worker("signals",async job=>{
             idempotencyKey:orderKey,decisionId:decision.id,userId:follow.userId,chain:signal.chain,mode:"SIMULATION",side:"BUY",
             inputMint:usdcSol,outputMint:signal.outputMint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,
             minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:new Date(),venue:"JUPITER_QUOTE",
-            quoteJson:{simulation:true,realQuote:true,priceImpactPct:quote.priceImpactPct,quote:quote.raw,intelligence:{confidence:intelligence.confidence,opportunityQuality:intelligence.opportunityQuality,entryQuality:intelligence.entryQuality,reasons:intelligence.reasons,warnings:intelligence.warnings}} as any
+            quoteJson:{simulation:true,realQuote:true,priceImpactPct:quote.priceImpactPct,quote:quote.raw} as any
           }
         }),
         db.position.create({
@@ -694,7 +675,7 @@ const worker=new Worker("signals",async job=>{
             userId:follow.userId,sourceTraderId:signal.traderId,chain:signal.chain,mode:"SIMULATION",mint:signal.outputMint,quoteMint:usdcSol,
             entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),
             avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
-            status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:entryThesis}
+            status:"OPEN",lastMarkedAt:new Date()
           }
         })
       ]);

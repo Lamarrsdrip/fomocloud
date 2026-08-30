@@ -40,14 +40,14 @@ export default function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:stri
       this is what stops a stale score from silently looking live. */}
   {o?.evidenceObservedAt&&<p style={{fontSize:10,color:"#7b8190",margin:"-8px 0 12px"}}>Evidence captured {timeAgo(o.evidenceObservedAt)}{o.lastEvaluatedAt?` · scored ${timeAgo(o.lastEvaluatedAt)}`:""}</p>}
   <div className="review-grid">
-   <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Unknown"}</b></div>
-   <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Unknown"}</b></div>
+   <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Collecting data"}</b></div>
+   <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Collecting data"}</b></div>
    <div><span>Money in last 60s</span><b>{money(o?.inflow60sUsd||0)}</b></div>
    <div><span>Unique buyers (60s)</span><b>{o?.buyers60s??0}</b></div>
    <div><span>Whales buying</span><b>{o?whaleCount(o):0}</b></div>
    <div><span>Smart wallets entered</span><b>{o?.evidence?.convergentCount??0}</b></div>
-   <div><span>Volume acceleration</span><b>{o?.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"Unknown"}</b></div>
-   <div><span>Opportunity quality</span><b>{o?.score!=null?`${Math.round(o.score)}/100`:"Unknown"}</b></div>
+   <div><span>Volume acceleration</span><b>{o?.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"Collecting data"}</b></div>
+   <div><span>Opportunity quality</span><b>{o?.score!=null?`${Math.round(o.score)}/100`:"Collecting data"}</b></div>
    <div><span>Current decision</span><b>{o?.action?.replaceAll("_"," ")||"WATCH"}</b></div>
   </div>
   {/* MemeCloud Verdict: the same evidence as "MemeCloud confidence" above, broken into named
@@ -63,6 +63,7 @@ export default function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:stri
    </div>
   </section>}
   {!!(o?.reasons?.length)&&<section className="app-card"><div className="card-title"><div><span>BRAIN INSIGHT</span><h2>Why MemeCloud found this</h2></div></div><ul className="reason-list">{o.reasons.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
+  {!!(o?.evidence?.warnings?.length)&&<section className="app-card"><div className="card-title"><div><span>WHAT COULD GO WRONG</span><h2>Risk evidence</h2></div></div><ul className="reason-list">{o.evidence.warnings.map((r:string,i:number)=><li key={i}>{r}</li>)}</ul></section>}
   <section className="app-card"><div className="card-title"><div><span>BUY</span><h2>Manual trade{canTradeLive?"":" — simulation"}</h2></div></div>
    <div className="pct-row">{[10,25,50,75,100].map(p=><button key={p} className={amount===p?"active":""} onClick={()=>setAmount(p)}>{p===100?"Max $100":`$${p}`}</button>)}</div>
    <button className="action-primary" style={{width:"100%",marginTop:10}} disabled={busy} onClick={()=>buy(!canTradeLive)}>{busy?"Buying…":canTradeLive?`Buy ${money(amount)} (live)`:`Buy ${money(amount)} (simulation)`}</button>

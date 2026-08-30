@@ -8,7 +8,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo api lint",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
     "@memecloud/db": "workspace:*",

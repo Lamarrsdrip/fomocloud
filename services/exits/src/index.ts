@@ -5,7 +5,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
 import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
-import { evaluateExit, evaluatePositionThesis, priceDrawdownFromPeakPct, type MarketSnapshot } from "@memecloud/strategy";
+import { evaluateExit, priceDrawdownFromPeakPct, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { getConfig } from "@memecloud/config";
@@ -85,7 +85,7 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
   const recentSourceSell=await db.signal.findFirst({where:{traderId:p.sourceTraderId,chain:p.chain,action:"SELL",inputMint:p.mint,observedAt:{gt:new Date(Date.now()-15*60_000)}},orderBy:{observedAt:"desc"},select:{sourceSoldPct:true}});
   const sourceSold=recentSourceSell?.sourceSoldPct==null?undefined:Number(recentSourceSell.sourceSoldPct);
   return {
-    ageMinutes:rich.ageMinutes??undefined,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
+    ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
     priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:priceDrawdownFromPeakPct(peak,current),
     volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
     volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
@@ -265,7 +265,7 @@ async function tick(){
   // unavailable on Prisma+MongoDB). positionUsdFields() converts them to plain numbers under their
   // original names right here, once, so every line below -- already correct, already tested --
   // reads exactly the same shape it always has.
-  const positionRows=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},include:{entryThesis:true},take:1000});scanned+=positionRows.length;
+  const positionRows=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});scanned+=positionRows.length;
   const positions=positionRows.map(p=>({...p,...positionUsdFields(p)}));
   for(const p of positions){
     try{
@@ -283,18 +283,12 @@ async function tick(){
         await db.position.update({where:{id:p.id},data:{unrealizedPnlUsdMicros:usdToMicros(value-remainingCost)}});stale++;continue;
       }
       const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
-      const thesis=evaluatePositionThesis(market,p.entryThesis);
-      await db.position.update({where:{id:p.id},data:{thesisState:thesis.state,thesisReasons:thesis.reasons as any,thesisEvaluatedAt:new Date()}});
       const userSettings=await db.globalTradingSettings.findUnique({where:{userId:p.userId}});
       const recoveryEnabled=userSettings?.capitalRecoveryEnabled??true;
       const recoveryMultiple=Math.max(1.01,Number(userSettings?.capitalRecoveryMultiple??3));
       const currentMultiple=current/entry;
       let instruction:any;
-      if(thesis.state==="BROKEN"){
-        instruction={action:"EXIT",sellPct:100,reason:`Entry thesis broken: ${thesis.reasons.join(" · ")}`};
-      }else if(thesis.state==="DISTRIBUTION"){
-        instruction={action:"REDUCE",sellPct:35,reason:`Entry thesis is distributing: ${thesis.reasons.join(" · ")}`};
-      }else if(recoveryEnabled && state.principalRecoveredPct<100 && currentMultiple>=recoveryMultiple){
+      if(recoveryEnabled && state.principalRecoveredPct<100 && currentMultiple>=recoveryMultiple){
         const alreadyRecovered=p.costUsd*(state.principalRecoveredPct/100);
         const principalStillNeeded=Math.max(0,p.costUsd-alreadyRecovered);
         const remainingCost=p.costUsd*frac(remaining,original);

@@ -78,15 +78,10 @@ export class BirdeyeClient{
     const price=n(m,"price","price_usd","priceUsd")??0;
     const marketCap=n(m,"market_cap","marketcap","market_cap_usd","marketCap");
     const created=n(m,"created_at","listing_time","createdAt","listed_at");
-    const createdAtMs=created==null?undefined:(created<2e10?created*1000:created);
-    // A missing/invalid provider timestamp is unknown, never an invented "one day old" token.
-    // Future timestamps are equally unusable evidence and must not become a fake age of zero.
-    const ageMinutes=createdAtMs!=null&&createdAtMs>0&&createdAtMs<=Date.now()
-      ? Math.max(0,(Date.now()-createdAtMs)/60000)
-      : undefined;
+    const ageMinutes=created?Math.max(0,(Date.now()-(created<2e10?created*1000:created))/60000):-1;
     const exitLiq=n(l,"exit_liquidity","exitLiquidity","liquidity","liquidity_usd");
     const a1=v(f5)>0?v(f1)/(v(f5)/5):1,a5=v(f15)>0?v(f5)/(v(f15)/3):1;
-    return {priceUsd:price,marketCapUsd:marketCap,liquidityUsd:liquidity,exitLiquidityUsd:exitLiq,ageMinutes,ageEvidenceState:ageMinutes==null?"UNKNOWN":"VERIFIED",volume1mUsd:v(f1),volume5mUsd:v(f5),volume15mUsd:v(f15),volumeAcceleration1m:Number.isFinite(a1)?a1:1,volumeAcceleration5m:Number.isFinite(a5)?a5:1,buys1m:buys(f1),sells1m:sells(f1),buys5m:buys(f5),sells5m:sells(f5),buyVolume5mUsd:bv(f5),sellVolume5mUsd:sv(f5),uniqueBuyers1m:ubw(f1),uniqueBuyers5m:ubw(f5),uniqueSellers5m:usw(f5),holderCount:holders,top10EffectivePct:top10,bundledSupplyPct:bundler,creatorHoldingPct:Math.max(insider??0,dev??0),holderGrowth5mPct:n(f5,"holder_change_percent","holder_growth_pct"),liquidityChange5mPct:n(f5,"liquidity_change_percent","liquidityChangePct")}
+    return {priceUsd:price,marketCapUsd:marketCap,liquidityUsd:liquidity,exitLiquidityUsd:exitLiq,ageMinutes,volume1mUsd:v(f1),volume5mUsd:v(f5),volume15mUsd:v(f15),volumeAcceleration1m:Number.isFinite(a1)?a1:1,volumeAcceleration5m:Number.isFinite(a5)?a5:1,buys1m:buys(f1),sells1m:sells(f1),buys5m:buys(f5),sells5m:sells(f5),buyVolume5mUsd:bv(f5),sellVolume5mUsd:sv(f5),uniqueBuyers1m:ubw(f1),uniqueBuyers5m:ubw(f5),uniqueSellers5m:usw(f5),holderCount:holders,top10EffectivePct:top10,bundledSupplyPct:bundler,creatorHoldingPct:insider!=null||dev!=null?Math.max(insider??0,dev??0):undefined,holderGrowth5mPct:n(f5,"holder_change_percent","holder_growth_pct"),liquidityChange5mPct:n(f5,"liquidity_change_percent","liquidityChangePct")}
   }
 }
 

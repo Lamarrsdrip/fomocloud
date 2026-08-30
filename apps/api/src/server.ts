@@ -30,21 +30,6 @@ const configuredOrigins = (
   "http://localhost:3000"
 ).split(",").map(x => x.trim()).filter(Boolean);
 
-// Manual trades do not have a smart-wallet thesis. Record that fact explicitly instead of making
-// the position look as if wallet, narrative or cluster intelligence had been verified.
-function manualEntryThesis(mode:"SIMULATION"|"LIVE", mint:string, executablePriceUsd:number, priceImpactPct:unknown, observedAt:Date){
-  return {
-    source:"MANUAL_USER_TRADE",
-    walletCohort:{status:"NOT_APPLICABLE",reason:"User-initiated trade"},
-    walletClusters:{status:"NOT_APPLICABLE",reason:"User-initiated trade"},
-    marketEvidence:{status:"UNKNOWN",reason:"Manual route does not claim a rich intelligence snapshot"},
-    riskEvidence:{status:"PARTIAL",reason:"Executable sell route was verified; wider token evidence was not claimed"},
-    narrativeEvidence:{status:"UNKNOWN",reason:"Manual route does not claim narrative evidence"},
-    executionEvidence:{mode,mint,executablePriceUsd,priceImpactPct:priceImpactPct??null,sellRouteVerified:true},
-    provenance:{observedAt,entryDecision:"MANUAL_USER_REQUEST",schema:"ENTRY_THESIS_V1"}
-  };
-}
-
 app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
@@ -229,7 +214,15 @@ app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,r
 app.patch("/v1/me/settings/notifications", auth, asyncRoute(async (req:AuthedRequest,res) => {
   await ensureUserDefaults(req.user.sub);
   const keys=["pushEnabled","emailEnabled","traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoveryNewToken","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
+  const alertKeys=["traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoveryNewToken","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
   const data:any={};
+  // Normal users get ONE notification switch. Turning it on means "send me MemeCloud alerts",
+  // not "now configure 13 more toggles." Granular fields stay in the schema for delivery routing
+  // and backwards compatibility/admin tooling, but the master setting synchronizes all of them.
+  if(typeof req.body?.masterEnabled==="boolean"){
+    data.pushEnabled=req.body.masterEnabled;
+    for(const k of alertKeys)data[k]=req.body.masterEnabled;
+  }
   for(const k of keys) if(typeof req.body?.[k]==="boolean") data[k]=req.body[k];
   const row=await db.notificationPreference.update({where:{userId:req.user.sub},data});
   res.json({notifications:row});
@@ -286,7 +279,7 @@ app.get("/v1/me/dashboard", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const todayStart=new Date(); todayStart.setHours(0,0,0,0);
   const [allocationRows,positionRows,follows,snapshots,settings,dayBaseline]=await Promise.all([
     db.tradingCashAllocation.findMany({where:{userId:req.user.sub},orderBy:{chain:"asc"}}),
-    db.position.findMany({where:{userId:req.user.sub},include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},entryThesis:true,exits:{where:{createdAt:{gte:todayStart}},select:{proceedsUsdMicros:true,pnlUsdMicros:true}}},orderBy:{openedAt:"desc"}}),
+    db.position.findMany({where:{userId:req.user.sub},include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},exits:{where:{createdAt:{gte:todayStart}},select:{proceedsUsdMicros:true,pnlUsdMicros:true}}},orderBy:{openedAt:"desc"}}),
     db.userFollow.findMany({where:{userId:req.user.sub}}),
     db.pnLSnapshot.findMany({where:{userId:req.user.sub},orderBy:{createdAt:"desc"},take:120}),
     db.globalTradingSettings.findUnique({where:{userId:req.user.sub}}),
@@ -351,7 +344,7 @@ app.get("/v1/me/positions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const status=String(req.query.status??"");
   const positionRows=await db.position.findMany({
     where:{userId:req.user.sub,...(status?{status:status as any}:{})},
-    include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},entryThesis:true,exits:{orderBy:{createdAt:"desc"}}},
+    include:{sourceTrader:{select:{id:true,displayName:true,handle:true,avatarUrl:true}},exits:{orderBy:{createdAt:"desc"}}},
     orderBy:{openedAt:"desc"},take:250
   });
   // M-30: BigInt micro-USD storage -- convert every position AND every included exit row before
@@ -438,7 +431,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
       const decision=await db.copyDecision.create({data:{signalId:signal.id,userId:req.user.sub,allowed:true,action:"BUY",amountUsd,sourcePriceUsd:executablePriceUsd,executablePriceUsd,walletChasePct:0,explanation:"User-initiated manual simulation buy from Discover."}});
       const [order,position]=await db.$transaction([
         db.order.create({data:{idempotencyKey:key,decisionId:decision.id,userId:req.user.sub,chain:"SOLANA",mode:"SIMULATION",side:"BUY",inputMint:USDC_SOL,outputMint:mint,requestedInputRaw:amountRaw,expectedOutputRaw:quote.outAmount,minOutputRaw:quote.otherAmountThreshold,status:"CONFIRMED",confirmedAt:now,venue:"JUPITER_QUOTE",quoteJson:{simulation:true,realQuote:true,manual:true,priceImpactPct:quote.priceImpactPct} as any}}),
-        db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:200,status:"OPEN",lastMarkedAt:now,entryThesis:{create:manualEntryThesis("SIMULATION",mint,executablePriceUsd,quote.priceImpactPct,now)}}})
+        db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"SIMULATION",mint,quoteMint:USDC_SOL,entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:200,status:"OPEN",lastMarkedAt:now}})
       ]);
       await db.userActivityEvent.create({data:{userId:req.user.sub,type:"TRADE_COPIED",title:"Manual simulation buy placed",body:`$${amountUsd.toFixed(2)} simulation buy from a real executable quote. No live funds moved.`,data:{orderId:order.id,positionId:position.id,mint} as any}});
       await audit(req.user.sub,"USER","MANUAL_TRADE",position.id,{mint,amountUsd,mode:"SIMULATION"});
@@ -471,7 +464,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
       if(!position){
         [,position]=await db.$transaction([
           db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:manualEntryThesis("LIVE",mint,actualEntry,quote.priceImpactPct,new Date())}}})
+          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
         ]);
       }
       await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"CONFIRMED",txHash:hash}});
@@ -508,7 +501,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
     const actualEntry=actualUsd/actualTokens;
     const [,position]=await db.$transaction([
       db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date(),entryThesis:{create:manualEntryThesis("LIVE",mint,actualEntry,quote.priceImpactPct,new Date())}}})
+      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
     ]);
     await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash:hash}});
     order=await db.order.findUnique({where:{id:order.id}});
@@ -824,7 +817,7 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   // principled bar already used elsewhere to mean "genuine, evidence-backed evidence," not an
   // arbitrary new number invented for this route. A token with truly no real buyer/inflow/whale
   // evidence cannot reach this score (the formula's base is ~24-30 with zero evidence).
-  const QUALIFIED_MIN_SCORE=56;
+  const QUALIFIED_MIN_SCORE=58;
   const [opportunities,newTokenRadar,mostRecentlyEvaluated]=await Promise.all([
     db.globalBrainOpportunity.findMany({
       where:{
@@ -837,7 +830,8 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
         // of a bare empty list. Widened so genuine outages don't erase the feed entirely;
         // pipelineDegraded below is what actually tells the client this isn't live right now.
         lastEvaluatedAt:{gte:new Date(now-48*60*60_000)},
-        score:{gte:QUALIFIED_MIN_SCORE}
+        score:{gte:QUALIFIED_MIN_SCORE},
+        state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}
       },
       orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
     }),
@@ -847,7 +841,9 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
     db.globalBrainOpportunity.findMany({
       where:{
         firstSeenAt:{gte:new Date(now-30*60_000)},
-        score:{lt:QUALIFIED_MIN_SCORE}
+        state:"SCANNING",
+        score:{lt:QUALIFIED_MIN_SCORE},
+        OR:[{buyers60s:{gte:2}},{inflow60sUsd:{gte:1000}},{whaleBuyers60s:{gte:1}},{knownWhaleBuyers60s:{gte:1}}]
       },
       orderBy:{firstSeenAt:"desc"},take:50
     }),
@@ -865,9 +861,20 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   // long means its upstream data (MemeMarketSnapshot, itself dependent on the Solana RPC) has
   // stalled, not that the loop is just between ticks.
   const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
+  // Main Hunt is intentionally NOT a generic trending-token list. A row must have earned either
+  // quality smart-wallet convergence, whale participation, or material tracked smart-money flow.
+  // High raw volume alone belongs in New Token Radar until capital quality is understood.
+  const qualifiedOpportunities=opportunities.filter((o:any)=>{
+    const ev=(o.evidence??{}) as any;
+    const weighted=Number(ev.convergentWeightedScore??ev.smartWalletWeightedScore??0);
+    const whales=Number(o.whaleBuyers60s??0)+Number(o.knownWhaleBuyers60s??0);
+    const smartNet=Number(o.smartMoneyNetFlow5mUsd??0);
+    const materialSmartNet=smartNet>=Math.max(2500,Number(o.liquidityUsd??0)*.03);
+    return weighted>=1||whales>=1||materialSmartNet;
+  });
   res.json({
     watching:true,
-    opportunities:opportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
+    opportunities:qualifiedOpportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
     // Additive field: existing clients reading only `opportunities` are unaffected. A future
     // Discover UI pass can render this as the explicitly-separate "New Token Radar" the product
     // spec calls for, rather than mixing unqualified rows into the main feed.
@@ -893,19 +900,24 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
 // and is surfaced as its own field, not conflated with copyabilityScore.
 function smartWalletSummary(c:any){
   const winRatePct=c.sampleTrades>0?Math.round((c.profitableTrades/c.sampleTrades)*1000)/10:null;
-  const isWhale=String(c.label??"").startsWith("WHALE_");
+  const meta=(c.metadata??{}) as any;
+  const whaleTier=meta.whaleTier??(String(c.label??"").startsWith("WHALE_")?c.label:null);
+  const isWhale=Boolean(whaleTier);
+  const lastObservedTradeAt=meta.lastObservedTradeAt??null;
   return {
-    id:c.id,chain:c.chain,address:c.address,stage:c.stage,
-    isWhale,whaleTier:isWhale?c.label:null,
+    id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
+    copyEligible:c.stage==="PROVEN"&&Boolean(c.traderId),
+    isWhale,whaleTier:isWhale?whaleTier:null,walletBalanceUsd:meta.walletBalanceUsd??null,
     copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
+    skillScore:meta.skillScore??null,currentFormScore:meta.currentFormScore??null,activityScore:meta.activityScore??null,forwardHitRatePct:meta.forwardHitRatePct??null,forwardMeanPct:meta.forwardMeanPct??null,distinctTokens30d:meta.distinctTokens30d??null,
     sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
-    winRatePct, // null = not enough resolved trades yet to compute -- never shown as 0%
+    winRatePct,
     realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
     realizedPnl7dUsd:c.realizedPnl7dUsd??null,winRate7dPct:c.winRate7dPct??null,
-    averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,
-    rugExposurePct:c.rugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,
-    source:c.source,sourceToken:c.sourceToken,
-    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:c.updatedAt,
+    averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
+    rugExposurePct:c.rugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,
+    source:c.source,sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
+    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt??c.updatedAt,
     paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
   };
 }
@@ -934,11 +946,13 @@ app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
 app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
   const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});
   if(!candidate)return res.status(404).json({error:"SMART_WALLET_NOT_FOUND"});
-  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:40});
-  // Real, currently-tracked tokens for this wallet -- derived from its own recent observed activity,
-  // not a separate unverified list.
-  const currentTokens=[...new Map(recentFlow.map(f=>[f.mint,f])).values()].slice(0,10).map(f=>({mint:f.mint,chain:f.chain,side:f.side,lastSeenAt:f.observedAt}));
-  res.json({wallet:smartWalletSummary(candidate),recentActivity:recentFlow,currentTokens});
+  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:60});
+  const uniqueMints=[...new Set(recentFlow.map(f=>f.mint))].slice(0,20);
+  const tokenRows=uniqueMints.length?await db.discoveryToken.findMany({where:{chain:candidate.chain,mint:{in:uniqueMints}},select:{mint:true,symbol:true,name:true,marketCapUsd:true,liquidityUsd:true}}):[];
+  const tokenMap=new Map<string,any>(tokenRows.map((t:any)=>[t.mint,t]));
+  const currentTokens=[...new Map<string,any>(recentFlow.map((f:any)=>[f.mint,f])).values()].slice(0,10).map(f=>({mint:f.mint,chain:f.chain,side:f.side,amountUsd:f.amountUsd,lastSeenAt:f.observedAt,...(tokenMap.get(f.mint)||{})}));
+  const recentActivity=recentFlow.map(f=>({...f,token:tokenMap.get(f.mint)||null}));
+  res.json({wallet:smartWalletSummary(candidate),recentActivity,currentTokens});
 }));
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   if(err?.message==="CORS_ORIGIN_DENIED") return res.status(403).json({error:"CORS_ORIGIN_DENIED"});

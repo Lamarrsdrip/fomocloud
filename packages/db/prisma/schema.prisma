@@ -606,44 +606,16 @@ model Position {
   takeProfitPct     Float
   stopLossPct       Float?
   status            PositionStatus @default(OPEN)
-  thesisState       String?
-  thesisReasons     Json?
-  thesisEvaluatedAt DateTime?
   openedAt          DateTime       @default(now())
   lastMarkedAt      DateTime?
   closedAt          DateTime?
   user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   sourceTrader      Trader         @relation(fields: [sourceTraderId], references: [id], onDelete: Restrict)
   exits             PositionExit[]
-  entryThesis       EntryThesis?
 
   @@index([userId, status])
   @@index([mint, status])
   @@index([sourceTraderId, openedAt])
-}
-
-// Immutable explanation of why a position was opened. This is deliberately separate from live
-// market data: exit intelligence must compare the current market to the evidence that justified
-// entry, rather than overwrite history as the market changes.
-model EntryThesis {
-  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
-  positionId          String   @unique @db.ObjectId
-  source              String
-  opportunityQuality  Int?
-  entryQuality        Int?
-  sourceWallet        String?
-  sourceWalletQuality Float?
-  walletCohort        Json?
-  walletClusters      Json?
-  marketEvidence      Json?
-  riskEvidence        Json?
-  narrativeEvidence   Json?
-  executionEvidence   Json?
-  provenance          Json?
-  createdAt           DateTime @default(now())
-  position            Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
-
-  @@index([createdAt])
 }
 
 model PositionExit {
@@ -1041,8 +1013,7 @@ model MemeMarketSnapshot {
   marketCapUsd           Float?
   liquidityUsd           Float
   exitLiquidityUsd       Float?
-  ageMinutes             Float?
-  ageEvidenceState       String  @default("UNKNOWN")
+  ageMinutes             Float
   volume1mUsd            Float
   volume5mUsd            Float
   volume15mUsd           Float

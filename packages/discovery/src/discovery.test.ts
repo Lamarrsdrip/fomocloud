@@ -24,3 +24,19 @@ test("evidence-completeness gate blocks PROVEN independently of the risk-score p
   // stored candidates that predate this field, so this fix doesn't retroactively strip PROVEN.
   assert.equal(shouldProve(excellent,30,10),true);
 });
+
+test("realized repeat skill outranks a mostly-unrealized moonbag",()=>{
+  const realized=scoreWallet({totalPnlUsd:180000,realizedPnlUsd:165000,realizedPnl7dUsd:24000,volumeUsd:650000,tradeCount:90,profitableTrades:61,winRatePct:67,winRate7dPct:70,distinctTokens30d:22,lastActivityHours:3,recentSignalReturnsPct:[14,22,9,31,-5,18,27,11],averageObservedChasePct:14,insiderRiskPct:4,rugExposurePct:5,earlyEntryEdgePct:18});
+  const moonbag=scoreWallet({totalPnlUsd:600000,realizedPnlUsd:20000,realizedPnl7dUsd:-1000,volumeUsd:650000,tradeCount:25,profitableTrades:12,winRatePct:48,winRate7dPct:40,distinctTokens30d:4,lastActivityHours:96,recentSignalReturnsPct:[3,-12,4,-8,5],averageObservedChasePct:45,insiderRiskPct:4,rugExposurePct:5});
+  assert.ok(realized.skillScore>moonbag.skillScore);
+  assert.ok(realized.copyabilityScore>moonbag.copyabilityScore);
+  assert.ok(moonbag.unrealizedReliancePct>realized.unrealizedReliancePct);
+});
+
+test("current activity and form are explicit evidence, not hidden inside wealth",()=>{
+  const hot=scoreWallet({totalPnlUsd:100000,realizedPnlUsd:90000,realizedPnl7dUsd:18000,volumeUsd:500000,tradeCount:70,profitableTrades:45,winRatePct:64,winRate7dPct:72,distinctTokens30d:18,lastActivityHours:2,recentSignalReturnsPct:[12,16,22,8,-4,19],insiderRiskPct:3,rugExposurePct:4});
+  const cold=scoreWallet({totalPnlUsd:100000,realizedPnlUsd:90000,realizedPnl7dUsd:-5000,volumeUsd:500000,tradeCount:70,profitableTrades:45,winRatePct:64,winRate7dPct:38,distinctTokens30d:18,lastActivityHours:240,recentSignalReturnsPct:[12,16,22,8,-4,19],insiderRiskPct:3,rugExposurePct:4});
+  assert.ok(hot.currentFormScore>cold.currentFormScore);
+  assert.ok(hot.activityScore>cold.activityScore);
+  assert.ok(hot.copyabilityScore>cold.copyabilityScore);
+});

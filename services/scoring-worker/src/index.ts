@@ -64,7 +64,10 @@ async function tick(){
         // as LATE, but cannot promote a wallet to PROVEN as if it were timely evidence.
         const obs=await db.sourceSignalObservation.findMany({where:{sourceWallet:c.address,horizonSeconds:3600,status:"OK",returnPct:{not:null}},orderBy:{observedAt:"desc"},take:100});
         const paper=await db.paperCopyTrade.findMany({where:{sourceWallet:c.address,status:{in:["OPEN","PARTIAL","CLOSED"]}},orderBy:{createdAt:"desc"},take:100});
-        const userChases=await db.copyDecision.findMany({where:{signal:{sourceWallet:c.address},walletChasePct:{not:null}},select:{walletChasePct:true},take:100,orderBy:{createdAt:"desc"}});
+        const [userChases,recentFlow]=await Promise.all([
+          db.copyDecision.findMany({where:{signal:{sourceWallet:c.address},walletChasePct:{not:null}},select:{walletChasePct:true},take:100,orderBy:{createdAt:"desc"}}),
+          db.chainFlowObservation.findMany({where:{chain:c.chain,walletAddress:c.address,observedAt:{gte:new Date(Date.now()-30*24*60*60_000)}},select:{mint:true,observedAt:true,side:true,amountUsd:true,walletTier:true,walletBalanceUsd:true},orderBy:{observedAt:"desc"},take:500})
+        ]);
         const paperChases=paper.filter(x=>x.walletChasePct!=null).map(x=>Number(x.walletChasePct));
         const chaseValues=[...paperChases,...userChases.map(x=>Number(x.walletChasePct??0))];
         const avgChase=chaseValues.length?chaseValues.reduce((a,x)=>a+x,0)/chaseValues.length:undefined;
@@ -89,9 +92,17 @@ async function tick(){
         const rugRaw=priorMeta?.rugExposurePct??c.rugExposurePct;
         const insider=insiderRaw==null?undefined:Number(insiderRaw);
         const rug=rugRaw==null?undefined:Number(rugRaw);
+        const distinctTokens30d=new Set(recentFlow.map(x=>x.mint)).size;
+        const lastActivityAt=recentFlow[0]?.observedAt;
+        const lastActivityHours=lastActivityAt?Math.max(0,(Date.now()-lastActivityAt.getTime())/3600_000):undefined;
+        const whaleObs=recentFlow.find((x:any)=>String(x.walletTier??"").startsWith("WHALE_"));
+        const whaleTier=whaleObs?.walletTier??priorMeta?.whaleTier;
+        const walletBalanceUsd=whaleObs?.walletBalanceUsd??priorMeta?.walletBalanceUsd;
+        const earlyEntryEdgePct=priorMeta?.earlyEntryEdgePct==null?undefined:Number(priorMeta.earlyEntryEdgePct);
         const s=scoreWallet({
           totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,tradeCount:Math.round(p.tradeCount),
-          profitableTrades:Math.round(p.profitableTrades),winRatePct:p.winRate,recentSignalReturnsPct:forwardReturns,averageObservedChasePct:avgChase,insiderRiskPct:insider,rugExposurePct:rug
+          profitableTrades:Math.round(p.profitableTrades),winRatePct:p.winRate,recentSignalReturnsPct:forwardReturns,averageObservedChasePct:avgChase,insiderRiskPct:insider,rugExposurePct:rug,
+          realizedPnl7dUsd:p7d?.realizedPnlUsd,winRate7dPct:p7d?.winRate,distinctTokens30d,lastActivityHours,earlyEntryEdgePct
         });
         const forwardMean=forwardReturns.length?forwardReturns.reduce((a,x)=>a+x,0)/forwardReturns.length:0;
         let stage=c.stage;
@@ -109,7 +120,7 @@ async function tick(){
         // read) and clearly, not marginally, fails to qualify, so a wallet oscillating near the
         // paper-tracking bar isn't permanently locked out by one noisy sample.
         else if((stage==="DISCOVERED"||stage==="ANALYZING")&&c.lastScoredAt&&p.tradeCount>=15&&s.copyabilityScore<paperMin-15){stage="REJECTED";autoRejected=true;rejected++}
-        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,realizedPnl7dUsd:p7d?p7d.realizedPnlUsd:undefined,winRate7dPct:p7d?.winRate,sampleTrades7d:p7d?Math.round(p7d.tradeCount):undefined,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
+        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,realizedPnl7dUsd:p7d?p7d.realizedPnlUsd:undefined,winRate7dPct:p7d?.winRate,sampleTrades7d:p7d?Math.round(p7d.tradeCount):undefined,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,skillScore:s.skillScore,currentFormScore:s.currentFormScore,activityScore:s.activityScore,forwardHitRatePct:s.forwardHitRatePct,unrealizedReliancePct:s.unrealizedReliancePct,distinctTokens30d,lastObservedTradeAt:lastActivityAt?.toISOString()??priorMeta?.lastObservedTradeAt,whaleTier,walletBalanceUsd,...(demoted?{autoPausedAt:new Date().toISOString(),autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} fell below live-trading floor`}:{})}}});
         if(demoted){
           const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
           if(traderId){
@@ -117,7 +128,7 @@ async function tick(){
             await db.traderWallet.updateMany({where:{traderId},data:{monitoringStatus:"PAUSED"}}).catch(()=>{});
           }
         }
-        await db.walletScoreSnapshot.create({data:{chain:"SOLANA",address:c.address,candidateId:c.id,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,riskScore:s.riskScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,metadata:{forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean}}});
+        await db.walletScoreSnapshot.create({data:{chain:"SOLANA",address:c.address,candidateId:c.id,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,riskScore:s.riskScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,metadata:{forwardSignals:forwardReturns.length,paperTrades:paper.length,forwardMeanPct:forwardMean,skillScore:s.skillScore,currentFormScore:s.currentFormScore,activityScore:s.activityScore,forwardHitRatePct:s.forwardHitRatePct,distinctTokens30d}}});
         if(!demoted&&(c.traderId||stage==="PROVEN")){
           // Skipped when demoted -- the block above already set the correct PAUSED status; this
           // one only understands PROVEN vs PAPER_TRACKING and would otherwise silently overwrite

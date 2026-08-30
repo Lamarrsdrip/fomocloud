@@ -4,10 +4,12 @@ $Root = "C:\memecloud"
 $Node = (Get-Command node).Source
 $Nssm = (Get-Command nssm).Source
 
-# A completed MemeCloud migration must never leave legacy FomoCloud application
-# services enabled. Two API generations previously raced for :4000 after a reboot.
-# This deliberately excludes fomocloud-mongo and fomocloud-redis: they may still
-# provide shared infrastructure and are outside the application-service migration.
+
+# A completed MemeCloud migration must never leave legacy FomoCloud application workers enabled.
+# Two API generations binding the same port caused a real post-reboot outage: Windows reported the
+# new service Running while the old auto-start API still owned :4000 and loaded the stale FomoCloud
+# environment. Disable only the old APPLICATION services; keep legacy Mongo/Redis untouched because
+# this VPS may still use those data services and it also hosts unrelated products.
 $LegacyAppServices = @(
   "fomocloud-api","fomocloud-listener","fomocloud-executor","fomocloud-exits",
   "fomocloud-market-worker","fomocloud-balance-worker","fomocloud-analytics-worker",
@@ -20,7 +22,7 @@ foreach ($legacy in $LegacyAppServices) {
   if ($svc) {
     Stop-Service -Name $legacy -Force -ErrorAction SilentlyContinue
     Set-Service -Name $legacy -StartupType Disabled
-    Write-Host "Disabled legacy MemeCloud application service: $legacy"
+    Write-Host "Disabled legacy MemeCloud app service: $legacy"
   }
 }
 
@@ -61,8 +63,8 @@ foreach ($s in $services) {
 }
 Get-Service memecloud-* | Sort-Object Name | Format-Table Name,Status,StartType
 
-# A service reporting Running is not sufficient: verify that the API process which
-# owns its public port came from this release, rather than a stale FomoCloud service.
+
+# Fail visibly if the current API is not the process that actually owns its configured port.
 Start-Sleep -Seconds 3
 $apiPort = 4000
 $listener = Get-NetTCPConnection -State Listen -LocalPort $apiPort -ErrorAction SilentlyContinue | Select-Object -First 1

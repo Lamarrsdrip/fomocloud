@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classifyLifecycle } from "./index.js";
 
 const NOW = Date.now();
-const fresh = (overrides: Partial<{ score: number; lastEvaluatedAt: Date; firstSeenAt: Date; inflow60sUsd: number; buyers60s: number; whaleBuyers60s: number; knownWhaleBuyers60s: number }> = {}) => ({
+const fresh = (overrides: Partial<{ score: number; lastEvaluatedAt: Date; firstSeenAt: Date; inflow60sUsd: number; buyers60s: number; whaleBuyers60s: number; knownWhaleBuyers60s: number; state:"SCANNING"|"BUILDING"|"BREAKOUT_FLOW"|"MONEY_RUSH" }> = {}) => ({
   score: 0,
   lastEvaluatedAt: new Date(NOW),
   firstSeenAt: new Date(NOW - 60 * 60_000),
@@ -19,11 +19,11 @@ test("a worker that stopped evaluating a token is STALE regardless of score", ()
   assert.equal(classifyLifecycle(row, NOW), "STALE");
 });
 
-test("score thresholds map to the real trading-decision tiers", () => {
-  assert.equal(classifyLifecycle(fresh({ score: 86 }), NOW), "HIGH_CONVICTION");
-  assert.equal(classifyLifecycle(fresh({ score: 76 }), NOW), "STRONG");
-  assert.equal(classifyLifecycle(fresh({ score: 64 }), NOW), "HEATING_UP");
-  assert.equal(classifyLifecycle(fresh({ score: 56 }), NOW), "INTERESTING");
+test("persisted Brain state, not a naked score, maps to user-facing lifecycle", () => {
+  assert.equal(classifyLifecycle(fresh({ score: 86, state:"MONEY_RUSH" }), NOW), "HIGH_CONVICTION");
+  assert.equal(classifyLifecycle(fresh({ score: 76, state:"BREAKOUT_FLOW" }), NOW), "STRONG");
+  assert.equal(classifyLifecycle(fresh({ score: 64, state:"BUILDING" }), NOW), "HEATING_UP");
+  assert.equal(classifyLifecycle(fresh({ score: 86, state:"SCANNING" }), NOW), "COOLING");
 });
 
 test("below the trading threshold, real non-zero evidence is still WATCHING, not hidden", () => {

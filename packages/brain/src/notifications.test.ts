@@ -63,3 +63,11 @@ test("weighted convergence can reach the notification threshold with fewer, high
   assert.ok(oneProvenOnly >= twoUnproven, "one PROVEN wallet should carry at least as much weight as two PAPER_TRACKING wallets");
   assert.ok(isNewConvergence(oneProvenOnly, 0), "a single PROVEN wallet's weighted score should clear the convergence notification bar");
 });
+
+test("repeat-early discovered wallets contribute only weak pre-proof convergence evidence", () => {
+  const early=weightedConvergenceScore([{stage:"DISCOVERED",earlyRepeatHits:3,copyabilityScore:50,currentFormScore:50}]);
+  const proven=weightedConvergenceScore([{stage:"PROVEN",copyabilityScore:80,currentFormScore:65}]);
+  assert.ok(early>0);
+  assert.ok(early<proven/5,"unproven early-wallet hint must stay far weaker than PROVEN skill");
+  assert.ok(weightedConvergenceScore([{stage:"DISCOVERED",earlyRepeatHits:1,copyabilityScore:90,currentFormScore:90}])<0.15);
+});

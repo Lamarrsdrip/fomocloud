@@ -23,7 +23,18 @@ async function tick(){
   try{
     const cfg=await getConfig<any>("social"),bearer=cfg?.xBearerToken||process.env.X_BEARER_TOKEN;
     if(!bearer)return;
-    const tokens=await db.discoveryToken.findMany({where:{lastSeenAt:{gte:new Date(Date.now()-6*60*60_000)}},orderBy:{lastSeenAt:"desc"},take:40});
+    // X quota is scarce alpha bandwidth. Do not spend it on every random mint Birdeye happened to
+    // list. Deep social/hype enrichment is reserved for tokens already showing real capital/flow,
+    // plus a small fresh-radar lane with meaningful early buyers/whales so social ignition can help
+    // qualify them before the crowd arrives.
+    const cutoff=new Date(Date.now()-6*60*60_000);
+    const [qualified,freshRadar]=await Promise.all([
+      db.globalBrainOpportunity.findMany({where:{lastEvaluatedAt:{gte:cutoff},score:{gte:52},state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}},orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:18}),
+      db.globalBrainOpportunity.findMany({where:{firstSeenAt:{gte:new Date(Date.now()-90*60_000)},state:"SCANNING",OR:[{inflow60sUsd:{gte:5000}},{buyers60s:{gte:5}},{whaleBuyers60s:{gte:1}},{knownWhaleBuyers60s:{gte:1}}]},orderBy:[{inflow60sUsd:"desc"},{buyers60s:"desc"}],take:10})
+    ]);
+    const merged=new Map<string,any>();
+    for(const o of [...qualified,...freshRadar])merged.set(`${o.chain}:${o.mint}`,{chain:o.chain,mint:o.mint,symbol:o.symbol,name:o.name});
+    const tokens=[...merged.values()].slice(0,24);
     for(const t of tokens){
       try{
         const p=await pulse(t,bearer);

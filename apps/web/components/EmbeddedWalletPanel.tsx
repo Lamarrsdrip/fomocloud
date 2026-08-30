@@ -166,9 +166,9 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: 
   if (embeddedWallet) {
     return <>
       <div className="wallet-line">
-        <div><b>MemeCloud wallet · {embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
-          <small>Your wallet · MemeCloud has a revocable trading permission{embeddedWallet.permissionExpiry ? ` until ${new Date(embeddedWallet.permissionExpiry).toLocaleDateString()}` : ""} · exportable anytime (Send / Receive / History → Security)</small></div>
-        <button className="soft-action" onClick={() => setDetailOpen(true)}><WalletIcon size={12} /> Send / Receive / History</button>
+        <div><b>{embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
+          <small>Your single MemeCloud wallet for deposits, trades and withdrawals.</small></div>
+        <button className="action-primary" onClick={() => setDetailOpen(true)}><WalletIcon size={12} /> Open wallet</button>
       </div>
       {detailOpen && <WalletDetailSheet wallet={embeddedWallet} onClose={() => setDetailOpen(false)} onSent={reload} />}
     </>;
@@ -176,7 +176,7 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: 
 
   return <div className="switch-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <div><b>MemeCloud wallet</b><small>No Phantom needed -- MemeCloud creates and secures a real Solana wallet for you.</small></div>
+      <div><b>Create your MemeCloud wallet</b><small>One Solana wallet for funding, trading and withdrawals. No separate wallet app required.</small></div>
       {step === "idle" && <button className="soft-action" disabled={!ready} onClick={start}><WalletIcon size={12} /> Create my wallet</button>}
     </div>
     {step === "email" && <form onSubmit={submitEmail} style={{ display: "flex", gap: 8 }}>

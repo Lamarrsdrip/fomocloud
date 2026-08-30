@@ -16,15 +16,6 @@ const indexes = [
     name: "PositionExit_txHash_sparse_unique",
     keys: { txHash: 1 },
     options: { unique: true, sparse: true }
-  },
-  // Entry theses are immutable and one-to-one with positions. Prisma's MongoDB schema
-  // declaration alone does not create this index on an already-running deployment.
-  // Keeping it here makes the production rollout additive and idempotent.
-  {
-    collection: "EntryThesis",
-    name: "EntryThesis_positionId_unique",
-    keys: { positionId: 1 },
-    options: { unique: true }
   }
 ];
 

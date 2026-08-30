@@ -33,7 +33,6 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
   <div className="review-grid" style={{marginBottom:14}}>
    <div><span>Available</span><b>{money(s.availableUsd)}</b></div>
    <div><span>In Trades</span><b>{money(s.inTradesUsd)}</b></div>
-   <div><span>Total P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{(s.netPnlUsd||0)>=0?"+":""}{money(s.netPnlUsd)}</b></div>
   </div>
   <div className="quick-actions-row">
    <button onClick={onFund}><ArrowDownToLine size={18}/><span>Fund</span></button>

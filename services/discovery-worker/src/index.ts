@@ -160,7 +160,7 @@ async function scan(){
         try{
           const hp=await client.holderProfile(mint);
           const hm=client.normalizeMarket({}, {}, hp, {});
-          tokenRisk={bundledSupplyPct:hm.bundledSupplyPct??0,creatorHoldingPct:hm.creatorHoldingPct??0,top10EffectivePct:hm.top10EffectivePct??0};
+          tokenRisk={...(hm.bundledSupplyPct!=null?{bundledSupplyPct:hm.bundledSupplyPct}:{}),...(hm.creatorHoldingPct!=null?{creatorHoldingPct:hm.creatorHoldingPct}:{}),...(hm.top10EffectivePct!=null?{top10EffectivePct:hm.top10EffectivePct}:{})};
         }catch(e){console.warn("[discovery] holder profile unavailable",mint,String((e as any)?.message??e))}
         const top=arr(await client.topTraders(mint,"30d",traderLimit));
         for(const row of top){
@@ -172,9 +172,10 @@ async function scan(){
           // Floored at 85 (not 100) since this is Birdeye's own classification, not on-chain proof
           // MemeCloud verified directly -- still a hard, dominant signal, just not asserted as
           // absolute certainty.
-          const walletTagRisk=w.tags.some(t=>["dev","bundler","sniper"].includes(t.toLowerCase()))?85:0;
-          const insiderRiskPct=Math.min(100,Math.max(walletTagRisk,Number(tokenRisk.creatorHoldingPct??0)*1.5));
-          const rugExposurePct=Math.min(100,Number(tokenRisk.bundledSupplyPct??0)+Math.max(0,Number(tokenRisk.top10EffectivePct??0)-70));
+          const taggedRisk=w.tags.some(t=>["dev","bundler","sniper"].includes(t.toLowerCase()))?85:null;
+          const creatorRisk=tokenRisk.creatorHoldingPct!=null?Math.min(100,Number(tokenRisk.creatorHoldingPct)*1.5):null;
+          const insiderRiskPct=taggedRisk!=null||creatorRisk!=null?Math.max(taggedRisk??0,creatorRisk??0):undefined;
+          const rugExposurePct=tokenRisk.bundledSupplyPct!=null||tokenRisk.top10EffectivePct!=null?Math.min(100,Number(tokenRisk.bundledSupplyPct??0)+Math.max(0,Number(tokenRisk.top10EffectivePct??0)-70)):undefined;
           await db.smartWalletCandidate.upsert({
             where:{chain_address:{chain:"SOLANA",address:w.address}},
             update:{sourceToken:mint,totalPnlUsd:w.totalPnlUsd??undefined,realizedPnlUsd:w.realizedPnlUsd??undefined,volumeUsd:w.volumeUsd??undefined,sampleTrades:w.tradeCount?Math.round(w.tradeCount):undefined,metadata:{lastDiscoveryToken:mint,lastTopTrader:row,tokenRisk,walletTags:w.tags,insiderRiskPct,rugExposurePct}},

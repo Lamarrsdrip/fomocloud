@@ -62,11 +62,8 @@ test("normalizeWalletPnl reads real values across the documented field-name vari
   assert.equal(parsed.tradeCount, 80);
 });
 
-test("normalizeMarket keeps missing or future token age explicitly unknown", () => {
-  const missing = client.normalizeMarket({}, {}, {}, {});
-  assert.equal(missing.ageMinutes, undefined);
-  assert.equal(missing.ageEvidenceState, "UNKNOWN");
-  const future = client.normalizeMarket({ created_at: Math.floor(Date.now() / 1000) + 3600 }, {}, {}, {});
-  assert.equal(future.ageMinutes, undefined);
-  assert.equal(future.ageEvidenceState, "UNKNOWN");
+test("normalizeMarket never fabricates a 24h token age or zero creator holding when evidence is missing", () => {
+  const parsed=client.normalizeMarket({price:1,liquidity:10000},{},{},{});
+  assert.equal(parsed.ageMinutes,-1);
+  assert.equal(parsed.creatorHoldingPct,undefined);
 });
