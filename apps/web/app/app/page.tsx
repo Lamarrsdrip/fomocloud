@@ -141,7 +141,7 @@ export default function AppPage(){
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="discover"&&<DiscoverView brain={brain} newTokenRadar={newTokenRadar} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="smart-wallets"&&<SmartWalletsView/>}
-        {view==="trade"&&<TradeView settings={settings} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
+        {view==="trade"&&<TradeView settings={settings} trades={trades} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
@@ -439,10 +439,25 @@ function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:string;mint:string}
  </div>
 }
 
-function TradeView({settings,patchTrading,setView}:{settings:any;patchTrading:(b:any)=>Promise<void>;setView:(v:View)=>void}){
+function TradeView({settings,trades,patchTrading,setView}:{settings:any;trades:any[];patchTrading:(b:any)=>Promise<void>;setView:(v:View)=>void}){
  const trading=settings?.trading||{};
+ const autoTradeOn=trading.globalBrainEnabled!==false&&Boolean(trading.autoCopyEnabled);
+ // Real gap found by forensic audit (M-45): this switch had a title but no explanatory copy in
+ // either state, and no visibility into what Auto Trade actually did today -- both explicitly
+ // required by the spec, with the OFF-state copy given almost verbatim. Trades today / last action
+ // are computed from `trades` (already fetched at the top level for the Trade History view), not a
+ // new backend call.
+ const todayStart=useMemo(()=>{const d=new Date();d.setHours(0,0,0,0);return d},[]);
+ const tradesToday=useMemo(()=>trades.filter(t=>new Date(t.createdAt)>=todayStart),[trades,todayStart]);
+ const lastTrade=trades[0];
  return <>
-  <section className="app-card"><div className="card-title"><div><span>AUTO TRADE</span><h2>Let MemeCloud trade for you</h2></div><button className={`switch ${trading.globalBrainEnabled!==false&&trading.autoCopyEnabled?"on":""}`} onClick={()=>patchTrading({autoCopyEnabled:!trading.autoCopyEnabled,globalBrainEnabled:true})}><i/></button></div>
+  <section className="app-card"><div className="card-title"><div><span>AUTO TRADE</span><h2>Let MemeCloud trade for you</h2></div><button className={`switch ${autoTradeOn?"on":""}`} onClick={()=>patchTrading({autoCopyEnabled:!trading.autoCopyEnabled,globalBrainEnabled:true})}><i/></button></div>
+   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 12px"}}>{autoTradeOn?"Eligible opportunities are executed automatically within the limits below.":"MemeCloud continues scanning and alerting you. Turn Auto Trade on only if you want eligible opportunities executed automatically."}</p>
+   {autoTradeOn&&<div className="review-grid" style={{marginBottom:12}}>
+    <div><span>Allocation</span><b>{trading.percentBalance??2}% / entry</b></div>
+    <div><span>Trades today</span><b>{tradesToday.length}</b></div>
+    <div><span>Last action</span><b style={{fontSize:11}}>{lastTrade?`${lastTrade.side} · ${timeAgo(lastTrade.createdAt)}`:"None yet"}</b></div>
+   </div>}
    <label className="field"><span>Use this % of my available trading cash per entry</span><input type="number" min="0.01" max="100" step="0.1" value={trading.percentBalance??2} onChange={e=>patchTrading({sizingMode:"PERCENT",percentBalance:Number(e.target.value)})}/></label>
    <div className="switch-row"><div><b>Recover original capital</b><small>Sell only enough to recover your original money, then let the rest ride.</small></div><button className={`switch ${trading.capitalRecoveryEnabled!==false?"on":""}`} onClick={()=>patchTrading({capitalRecoveryEnabled:trading.capitalRecoveryEnabled===false})}><i/></button></div>
    {trading.capitalRecoveryEnabled!==false&&<label className="field"><span>Recover capital at</span><input type="number" min="1.01" step="0.1" value={trading.capitalRecoveryMultiple??3} onChange={e=>patchTrading({capitalRecoveryMultiple:Number(e.target.value)})}/></label>}
