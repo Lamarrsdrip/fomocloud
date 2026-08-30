@@ -2,13 +2,12 @@ import {db} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {classifyPulse} from "@memecloud/social";
+import {computePulseMetrics} from "./metrics.js";
 let scanned=0,updated=0,errors=0,running=false,rateLimited=false,lastRateLimitAt:string|null=null,lastTickAt:string|null=null;
-const positive=/\b(bull|bullish|send|sending|moon|ape|aped|gem|based|cook|cooking|breakout|runner|100x|10x|cto)\b/i;
-const negative=/\b(rug|scam|dead|dump|dumping|sell|exit|honeypot|rekt)\b/i;
-async function pulse(token:any,bearer:string){const now=new Date(),start=new Date(Date.now()-15*60_000);const q=[token.symbol?`$${token.symbol}`:null,token.mint,token.name?`\"${token.name}\"`:null].filter(Boolean).join(" OR ");const url=new URL("https://api.x.com/2/tweets/search/recent");url.searchParams.set("query",`(${q}) -is:retweet`);url.searchParams.set("start_time",start.toISOString());url.searchParams.set("max_results","100");url.searchParams.set("tweet.fields","created_at,author_id,public_metrics");const r=await fetch(url,{headers:{authorization:`Bearer ${bearer}`},signal:AbortSignal.timeout(7000)});
+async function pulse(token:any,bearer:string){const start=new Date(Date.now()-15*60_000);const q=[token.symbol?`$${token.symbol}`:null,token.mint,token.name?`\"${token.name}\"`:null].filter(Boolean).join(" OR ");const url=new URL("https://api.x.com/2/tweets/search/recent");url.searchParams.set("query",`(${q}) -is:retweet`);url.searchParams.set("start_time",start.toISOString());url.searchParams.set("max_results","100");url.searchParams.set("tweet.fields","created_at,author_id,public_metrics");const r=await fetch(url,{headers:{authorization:`Bearer ${bearer}`},signal:AbortSignal.timeout(7000)});
   if(r.status===429){const retryAfter=Number(r.headers.get("retry-after")||r.headers.get("x-rate-limit-reset")||0);const err:any=new Error("X_RATE_LIMITED");err.rateLimited=true;err.retryAfterSec=Number.isFinite(retryAfter)&&retryAfter>0?retryAfter:undefined;throw err}
   if(!r.ok)throw new Error(`X_HTTP_${r.status}`);
-  const b:any=await r.json(),rows:any[]=b.data??[];const t5=Date.now()-5*60_000,r5=rows.filter(x=>new Date(x.created_at).getTime()>=t5),authors=new Set(r5.map(x=>x.author_id)),p=rows.filter(x=>positive.test(x.text)).length,n=rows.filter(x=>negative.test(x.text)).length,sent=(p-n)/Math.max(1,p+n),velocity=r5.length/Math.max(1,(rows.length-r5.length)/2),spam=1-authors.size/Math.max(1,r5.length);const base={symbol:token.symbol||"",mint:token.mint,mentions5m:r5.length,mentions15m:rows.length,uniqueAuthors5m:authors.size,sentiment:sent,influencerMentions:0,spamRatio:Math.max(0,Math.min(1,spam)),velocity};return {...base,trend:classifyPulse(base)}}
+  const b:any=await r.json(),rows:any[]=b.data??[];const base=computePulseMetrics(token,rows,Date.now());return {...base,trend:classifyPulse(base)}}
 // X's free/Basic search tier has a very tight rate-limit window. This worker previously ticked
 // every 15s and fired up to 40 SEQUENTIAL requests per tick with zero pacing or backoff -- up to
 // ~160 req/min against a tier that can't sustain anywhere close to that, which is what was
