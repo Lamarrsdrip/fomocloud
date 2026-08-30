@@ -2,7 +2,7 @@
 import {useEffect,useMemo,useState} from "react";
 import dynamic from "next/dynamic";
 import {
-  Home,Users,WalletCards,Bell,Power,Plus,Settings2,
+  Home,Users,UserRound,WalletCards,Bell,Power,Plus,Settings2,
   LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
   TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine,X
 } from "lucide-react";
@@ -28,7 +28,7 @@ import ActivityView from "../../components/ActivityView";
 // actually opens the wallet panel. See the comment at the top of EmbeddedWalletPanel.tsx.
 const EmbeddedWalletPanel=dynamic(()=>import("../../components/EmbeddedWalletPanel"),{ssr:false,loading:()=><div className="switch-row"><div><b>MemeCloud wallet</b><small>Loading…</small></div></div>});
 
-type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"activity"|"smart-wallets";
+type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"social"|"activity"|"smart-wallets";
 const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
 const mobileNav=nav;
 
@@ -131,7 +131,7 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Wallets":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Wallets":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -144,6 +144,7 @@ export default function AppPage(){
         {view==="trade"&&<TradeView settings={settings} trades={trades} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
+        {view==="social"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
         {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard} me={me} reload={load}/>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView}/>}
@@ -424,7 +425,7 @@ function CopyView({follows,setMode,setView}:{follows:any[];setMode:(id:string,m:
  const auto=follows.filter((f:any)=>f.mode==="AUTO_COPY");
  const watching=follows.filter((f:any)=>f.mode!=="AUTO_COPY");
  return <>
-  <section className="copy-hero"><div><span>AUTO COPY</span><h2>Choose who MemeCloud can follow for you.</h2><p>Pick a trader, set them to Auto Copy, and your own account rules still decide whether each trade is safe to take.</p></div><button className="action-primary" onClick={()=>setView("traders")}><Users size={15}/> Find traders</button></section>
+  <section className="copy-hero"><div><span>AUTO COPY</span><h2>Choose who MemeCloud can follow for you.</h2><p>Pick a trader, set them to Auto Copy, and your own account rules still decide whether each trade is safe to take.</p></div><div style={{display:"flex",gap:8}}><button className="action-primary" onClick={()=>setView("traders")}><Users size={15}/> Find traders</button><button className="soft-action" onClick={()=>setView("social")}><UserRound size={15}/> Community</button></div></section>
   <div className="app-two">
    <section className="app-card"><div className="card-title"><div><span>ACTIVE</span><h2>Auto Copy</h2></div><span className="status-badge">{auto.length} active</span></div>{auto.length?<div className="list">{auto.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>@{f.trader?.handle||"tracked"}</small></div><span className="status-badge">Auto Copy</span><button className="soft-action" onClick={()=>setMode(f.traderId,"WATCH_ONLY")}>Pause</button></div>)}</div>:<Empty icon={Copy} title="No Auto Copy traders yet" body="Discover a trader you trust and tap Auto Copy. MemeCloud still applies your personal limits before acting." action="Discover traders" onClick={()=>setView("traders")}/>}</section>
    <section className="app-card"><div className="card-title"><div><span>WATCHLIST</span><h2>Following & watching</h2></div></div>{watching.length?<div className="list">{watching.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>{String(f.mode||"FOLLOW_ONLY").replaceAll("_"," ")}</small></div><button className="soft-action" onClick={()=>setMode(f.traderId,"AUTO_COPY")}>Auto Copy</button></div>)}</div>:<Empty icon={Eye} title="Nothing on your watchlist" body="Follow traders first, then decide who should be watched or copied." action="Discover" onClick={()=>setView("traders")}/>}</section>
