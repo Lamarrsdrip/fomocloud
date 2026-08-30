@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo shared lint",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
     "zod": "^4.0.17"
