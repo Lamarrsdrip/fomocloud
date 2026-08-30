@@ -223,6 +223,9 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 18 | M-30 (retry): LedgerEntry migrated to integer micro-USD (BigInt) after discovering Prisma+MongoDB does not support Decimal at all (verified: hard error). usdToMicros/microsToUsd added to packages/shared with tests proving exactness at the float64 failure boundary | cafc1e7 | M-30 (partial -- LedgerEntry only) |
 | 19 | Admin Smart Money desk: Found Today / Active Now / Watchlist views + Win Rate/Risk columns added to existing candidates table | 2c8cff6 | M-11, PC-C (partial) |
 | 20 | M-30 COMPLETE: Position/PositionExit/TradingCashAllocation migrated to BigInt micro-USD (renamed fields force compile-time detection of every site); 3 new shared helpers with a caught-before-shipping JSON.stringify-on-BigInt bug fixed | e3faeff | M-30 |
+| 21 | Architecture map document (chain->ingestion->discovery->brain->execution->portfolio graph, wallet->deposit->balance->cash->execution-authority graph, capability registry table) | caec32f | M-1 |
+| 22 | Status-language translation: CopyDecision.action codes (WAIT_PULLBACK etc.) + additional trading-specific error codes translated to plain language | 064c452 | C-21 |
+| 23 | packages/flow-worker: extracted ownerDeltas (pure balance-delta parsing) to a side-effect-free module + 6 real tests, replacing no-op script | ec3a96d | M-51 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
