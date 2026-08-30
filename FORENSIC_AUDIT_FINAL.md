@@ -103,7 +103,7 @@ Repo: Lamarrsdrip/fomocloud. HEAD at last update: `baf114a`.
 | M-27 | Source sell / exit forensics — no double-execution | PENDING AUDIT | Fork B running | |
 | M-28 | Exit engine real product behavior (test +100%..+500%, runners, partial exits) | PENDING AUDIT | Fork B running | |
 | M-29 | Stale data must never cause real exit | PENDING AUDIT | Fork B running | |
-| M-30 | Financial precision audit (no float drift in canonical money) | PENDING AUDIT | Fork A running | |
+| M-30 | Financial precision audit (no float drift in canonical money) | IMPLEMENTED | Position/PositionExit/TradingCashAllocation/LedgerEntry all now BigInt micro-USD (fixes #18, #20); Decimal confirmed unavailable on Prisma+MongoDB. Full monorepo build (32/32) is the compile-time completeness check; not LIVE VERIFIED (no DATABASE_URL in this environment) | |
 | M-31 | Immutable financial ledger (deposit/withdrawal/buy/sell/fee/adjustment/reversal) | PENDING AUDIT | Fork A running | |
 | M-32 | Portfolio truth consistent across all surfaces | PENDING AUDIT | Fork A running; commit 1758886 claims partial fix | |
 | M-33 | Wallet full product review (preserve Privy features, finish UX) | PENDING AUDIT | | |
@@ -222,6 +222,7 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 17 | Separate 7D P&L tracking for smart wallets (was: only ever a single 30d window fetched anywhere) | 5fb7dac | Section 8/11 of master spec |
 | 18 | M-30 (retry): LedgerEntry migrated to integer micro-USD (BigInt) after discovering Prisma+MongoDB does not support Decimal at all (verified: hard error). usdToMicros/microsToUsd added to packages/shared with tests proving exactness at the float64 failure boundary | cafc1e7 | M-30 (partial -- LedgerEntry only) |
 | 19 | Admin Smart Money desk: Found Today / Active Now / Watchlist views + Win Rate/Risk columns added to existing candidates table | 2c8cff6 | M-11, PC-C (partial) |
+| 20 | M-30 COMPLETE: Position/PositionExit/TradingCashAllocation migrated to BigInt micro-USD (renamed fields force compile-time detection of every site); 3 new shared helpers with a caught-before-shipping JSON.stringify-on-BigInt bug fixed | e3faeff | M-30 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
@@ -238,7 +239,6 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
 |---|---|---|---|
-| M-30 | Float->BigInt-micro-USD migration for Position/PositionExit/TradingCashAllocation | LARGE, RISKY | Decimal confirmed UNAVAILABLE (Prisma+MongoDB limitation, verified). Pattern proven safe on LedgerEntry (fix #18); this remaining piece touches ~14 files of live real-money code (executor, exits, server.ts portfolio aggregation, apps/web rendering) with no live DB/frontend available here to verify against -- genuinely deserves dedicated, carefully-tested follow-up work, not a blind pass |
 | M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
 | M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
 | M-11/PC-C | Full Admin Smart Money Desk (dedicated page/layout, card-based wallet profiles, VIEW ACTIVITY/TRADES drill-in) | LARGE | Found Today/Active Now/Watchlist views + win rate/risk columns now real (fix #19); the fuller dedicated redesign remains open |
