@@ -820,6 +820,17 @@ model MarketPrice {
   @@index([chain, mint, observedAt])
 }
 
+// The persisted discovery-stage funnel for GlobalBrainOpportunity (M-4/M-6/PC-F): a real enum,
+// written by brain-worker on every tick from packages/brain's evaluateOpportunity, not a free-text
+// string a caller could set to an arbitrary value. Ranked low to high; see STATE_RANK in
+// packages/brain for the upgrade-only notification logic this backs.
+enum BrainState {
+  SCANNING
+  BUILDING
+  BREAKOUT_FLOW
+  MONEY_RUSH
+}
+
 enum CandidateStage {
   DISCOVERED
   ANALYZING
@@ -1125,7 +1136,7 @@ model GlobalBrainOpportunity {
   mint                      String
   symbol                    String?
   name                      String?
-  state                     String    @default("WATCHING")
+  state                     BrainState @default(SCANNING)
   score                     Float     @default(0)
   action                    String    @default("WATCH")
   marketCapUsd              Float?
@@ -1147,7 +1158,7 @@ model GlobalBrainOpportunity {
   // The highest state a discovery notification has already been sent for. Lets brain-worker fire
   // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
   // 750ms tick a token happens to still be in that state.
-  lastNotifiedState         String?
+  lastNotifiedState         BrainState?
   // Real bug found by audit: maybeSignal()'s only dedup was a rolling 30s idempotency bucket, so a
   // token that stayed BUY_NOW for 5 minutes fired a genuinely new BUY Signal every 30s -- and since
   // UserFollow.copyAdditionalBuys defaults to true, the executor would not skip these, meaning a
@@ -1155,7 +1166,7 @@ model GlobalBrainOpportunity {
   // stayed hot. Tracks the highest state an entry signal has already fired for, same ratchet-up /
   // reset-only-on-SCANNING discipline as lastNotifiedState, so one initial entry fires per genuine
   // qualification and a real re-entry requires an actual cool-down and re-heat, not clock rollover.
-  lastSignaledState         String?
+  lastSignaledState         BrainState?
   // The observedAt of the actual MemeMarketSnapshot this score was computed from -- distinct from
   // lastEvaluatedAt, which only proves the Brain loop ran, not that it had fresh chain data to
   // work with. Lets the UI show real evidence age instead of implying every score is live.

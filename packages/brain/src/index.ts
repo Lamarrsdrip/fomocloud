@@ -16,7 +16,13 @@ export type BrainEvidence={
 // computed from the exact same BrainEvidence inputs as the score above, never fed back into it, so
 // this cannot change any real trading decision -- it only explains one that's already made.
 export type BrainBreakdown={momentum:number;smartMoney:number;executionQuality:number;risk:number;evidenceCompleteness:number};
-export type BrainDecision={score:number;action:"BUY_NOW"|"WATCH"|"IGNORE";state:string;reasons:string[];warnings:string[];survivorScore:number;breakdown:BrainBreakdown};
+// The persisted discovery-stage funnel (M-4/M-6/PC-F): every GlobalBrainOpportunity row's `state`
+// column is one of these 4 values, written by brain-worker on every tick -- never client-computed,
+// never a free-text string. This is deliberately separate from the read-time, staleness-aware
+// `lifecycleStatus` (see classifyLifecycle below): that one can legitimately downgrade to STALE
+// purely from data going quiet, which a persisted funnel stage must never do on its own.
+export type BrainState="SCANNING"|"BUILDING"|"BREAKOUT_FLOW"|"MONEY_RUSH";
+export type BrainDecision={score:number;action:"BUY_NOW"|"WATCH"|"IGNORE";state:BrainState;reasons:string[];warnings:string[];survivorScore:number;breakdown:BrainBreakdown};
 const clamp=(n:number,a=0,b=100)=>Math.min(b,Math.max(a,n));
 const ratio=(a:number,b:number)=>a/Math.max(1,b);
 
@@ -64,7 +70,7 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   if((e.socialSpamRatio??0)>.75)warnings.push("Social activity looks heavily automated");
   if(e.liquidityUsd<5_000)warnings.push("Very thin liquidity: execution quality must be checked at actual size");
   score=clamp(Math.round(score));
-  const state=score>=86?"MONEY_RUSH":score>=76?"BREAKOUT_FLOW":score>=64?"BUILDING":"SCANNING";
+  const state:BrainState=score>=86?"MONEY_RUSH":score>=76?"BREAKOUT_FLOW":score>=64?"BUILDING":"SCANNING";
   const action=score>=76?"BUY_NOW":score>=56?"WATCH":"IGNORE";
   const breakdown=scoreBreakdown(e,flowRatio,whaleDensity);
   return {score,action,state,reasons,warnings,survivorScore,breakdown};
@@ -132,8 +138,8 @@ export function classifyLifecycle(row:LifecycleRow,now:number):string{
 // Real state ranking behind brain-worker's "notify exactly once per genuine upgrade" rule.
 // Extracted as a pure function (was inline in the worker's tick()) so the dedup logic itself is
 // directly testable without a database.
-export const STATE_RANK:Record<string,number>={SCANNING:0,BUILDING:1,BREAKOUT_FLOW:2,MONEY_RUSH:3};
-export function didStateUpgrade(priorNotifiedState:string|null|undefined,newState:string):boolean{
+export const STATE_RANK:Record<BrainState,number>={SCANNING:0,BUILDING:1,BREAKOUT_FLOW:2,MONEY_RUSH:3};
+export function didStateUpgrade(priorNotifiedState:BrainState|null|undefined,newState:BrainState):boolean{
   const priorRank=STATE_RANK[priorNotifiedState??"SCANNING"]??0;
   const newRank=STATE_RANK[newState]??0;
   return newRank>priorRank&&newRank>0;
