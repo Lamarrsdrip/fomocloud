@@ -1,4 +1,4 @@
-import {Connection,type ParsedTransactionWithMeta,PublicKey} from "@solana/web3.js";
+import {Connection,PublicKey} from "@solana/web3.js";
 import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {getConfig} from "@memecloud/config";
@@ -6,6 +6,7 @@ import {startHeartbeat} from "@memecloud/ops";
 import {JupiterExecution} from "@memecloud/execution";
 import {walletTier} from "@memecloud/brain";
 import {RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
+import {ownerDeltas} from "./parsing.js";
 
 // Shared, cross-process RPC budget: this worker's own token bucket below only bounds ITS OWN
 // outbound rate, so five independently-rate-limited processes (this one, market-worker,
@@ -53,7 +54,8 @@ function tryTakeToken():boolean{
 }
 let solUsd=0,solAt=0;
 async function solPrice(jupiter:JupiterExecution){if(solUsd&&Date.now()-solAt<15_000)return solUsd;const q=await jupiter.quote({inputMint:WSOL,outputMint:USDC,amountRaw:"1000000000",slippageBps:100});solUsd=Number(q.outAmount)/1e6;solAt=Date.now();return solUsd}
-function ownerDeltas(tx:ParsedTransactionWithMeta){const m=new Map<string,Map<string,{raw:bigint,dec:number}>>();const apply=(rows:any[],sgn:bigint)=>{for(const r of rows){if(!r.owner)continue;let w=m.get(r.owner);if(!w)m.set(r.owner,w=new Map());const c=w.get(r.mint)??{raw:0n,dec:r.uiTokenAmount.decimals};c.raw+=sgn*BigInt(r.uiTokenAmount.amount||"0");c.dec=r.uiTokenAmount.decimals;w.set(r.mint,c)}};apply(tx.meta?.postTokenBalances??[],1n);apply(tx.meta?.preTokenBalances??[],-1n);return m}
+// ownerDeltas moved to ./parsing.ts so it's testable without triggering this file's top-level
+// side effects (Redis connection, WS subscription start) on import.
 async function stableAndNativeBalance(conn:Connection,jupiter:JupiterExecution,owner:string){let usd=0;try{usd+=(await conn.getBalance(new PublicKey(owner),"confirmed"))/1e9*await solPrice(jupiter)}catch{};for(const mint of [USDC,USDT])try{const rows=await conn.getParsedTokenAccountsByOwner(new PublicKey(owner),{mint:new PublicKey(mint)},"confirmed");for(const r of rows.value)usd+=Number((r.account.data as any).parsed?.info?.tokenAmount?.uiAmount??0)}catch{};return usd}
 
 async function processSig(conn:Connection,jupiter:JupiterExecution,brainCfg:any,dedupe:Set<string>,MAX:number,sig:string){
