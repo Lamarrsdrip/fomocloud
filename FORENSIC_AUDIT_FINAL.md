@@ -237,6 +237,8 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 32 | services/market-worker: extracted aggregateChainFlow (volumeAcceleration1m -- a direct Brain scoring input) to a side-effect-free module + 6 real tests | e67f382 | M-51 (partial) |
 | 33 | Wallet export audit trail + SECURITY_ALERT notification (user-flagged gap); fixed another wired-to-nothing preference (securityAlerts); added frontend surface for admin AdminAlert backend (built earlier, never had a UI) | 6da8476 | M-33, M-39, M-12 |
 | 34 | Send: real Max button using actual on-chain balance, with a SOL fee-reserve so Max never leaves the wallet unable to pay its own next network fee | 221cf46 | M-33 |
+| 35 | M-49 (increment 1): extracted auth/RBAC middleware (auth/requireAdmin/adminOnly, authLimiter/tradeLimiter, TokenPayload/AuthedRequest) from server.ts into apps/api/src/middleware.ts | 3c2eee6 | M-49 (partial) |
+| 36 | M-49 (increment 2): extracted the provider-health test suite (all testX/classify/withFingerprints/runProviderTests, ~210 lines) from server.ts into apps/api/src/providerHealth.ts | e6e5cc7 | M-49 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
@@ -258,7 +260,7 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 | M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real, tested, equivalent progression on read; judged substantially equivalent in intent (see Fork D notes), not a named-enum rewrite |
 | M-11/PC-C | Full Admin Smart Money Desk (dedicated page/layout, card-based wallet profiles, VIEW ACTIVITY/TRADES drill-in) | LARGE | Found Today/Active Now/Watchlist views + win rate/risk columns now real (fix #19); the fuller dedicated redesign remains open |
 | M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); status-language (C-21) done (fix #22); rest not started |
-| M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
+| M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | In progress: server.ts (2443->~2180 lines) now has middleware.ts + providerHealth.ts split out (fixes #35, #36); route-domain splitting (auth/wallets/admin/trading) not yet started; frontend not started |
 | M-51 | Remaining fake-test-script audit | MEDIUM | 3 of 22 no-op scripts replaced (fixes #15, #16, #23); see full breakdown above |
 | M-52/M-53/C-25 | Chaos testing, process-crash testing | LARGE | Not started (no live environment available here to induce real failures against) |
 | M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
