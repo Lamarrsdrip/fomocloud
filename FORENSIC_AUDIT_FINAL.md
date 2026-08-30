@@ -329,8 +329,9 @@ Only questions answerable from code/tests actually examined this session are mar
 22. **Does the UX make the intelligence understandable without exposing developer internals?** PARTIALLY. MemeCloud Verdict breakdown + status-language translation (fixes #11, #22) cover Token Detail and decision history; most of the UX (Home, Wallet, Admin desk) hasn't had this pass yet.
 
 ## Next steps
-1. Full UX/product redesign (Home Pulse, Wallet, Smart Money nav, Admin desk, mobile QA) -- VERY LARGE, not started.
-2. API + frontend monolith refactor -- LARGE, not started.
-3. Remaining fake-test-script audit (19 of 22 packages left) and chaos/process-crash testing (needs a live environment this working directory doesn't have).
-4. Live verification of everything marked NOT PROVEN (live) above -- needs the VPS back up and, for M-59, explicit owner approval for a real funded trade.
-5. Update this file after every batch of fixes with commit hashes, as done throughout this session.
+1. Full UX/product redesign (Discover/Smart Money/Wallet/Admin desk full layouts, mobile QA) -- VERY LARGE, in progress: Home (M-41), Token Detail (M-44), Auto Trade (M-45) done; Discover/Smart Money/Wallet/Admin Health each partially done (see M table); mobile QA BLOCKED (no device here).
+2. API + frontend monolith refactor -- LARGE, in progress (M-49: server.ts 2443->2050 lines; M-50: app/page.tsx 800->689 lines); next increment needs a shared-state design decision for the frontend (Context vs. prop-drilling) before splitting the remaining large view components.
+3. M-51 fake-test-script audit is now DONE (every package/service checked, 11 of 22 no-op scripts replaced with real tests). Chaos/process-crash testing (M-52/53) remains BLOCKED (needs a live environment this working directory doesn't have).
+4. Live verification of everything marked NOT PROVEN (live) / BLOCKED above -- needs the VPS back up and, for M-59, explicit owner approval for a real funded trade.
+5. A few master-prompt items were never individually re-verified this session and are honestly left as PENDING AUDIT rather than guessed: M-3 (intelligence independence from wallet), M-24 (market-worker P0-P5 priority enforcement), M-56 (no-wallet acceptance test). Worth a dedicated pass.
+6. Continue updating this file after every batch of fixes with commit hashes, as done throughout this session -- including re-checking the M/C/PC status tables themselves for staleness, not just adding new fix rows (this session found and corrected ~110 stale placeholder rows that had drifted out of sync with real progress).
