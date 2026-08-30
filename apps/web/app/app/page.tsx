@@ -296,17 +296,29 @@ const DECISION_ACTION_LABELS:Record<string,string>={
  SOURCE_SELL_MIRROR:"Mirrored Trader's Sell",
 };
 function decisionActionLabel(action:string){return DECISION_ACTION_LABELS[action]||action.replaceAll("_"," ")}
+// Real gap found by forensic audit (M-43/PC-C): the spec calls for Smart Money as first-class
+// navigation with HOT NOW/PROVEN/NEWLY FOUND/WATCHING/MY FOLLOWING sections -- this had only
+// All/Whales/Proven. Hot Now and Newly Found are added here from data already returned by
+// /v1/smart-wallets (lastActivityAt, firstDiscoveredAt); no new backend needed for those two. "My
+// Following" is deliberately NOT added -- it would need a genuine user-level wallet-follow
+// relationship that doesn't exist yet (distinct from Trader follows), a real backend feature, not
+// a client-side filter over data that isn't there. Flagged as remaining work, not faked here.
+const SMART_MONEY_FILTERS=["all","hot","proven","new","whales"] as const;
+function smartMoneyFilterLabel(f:string){return f==="hot"?"Hot Now":f==="new"?"Newly Found":f==="proven"?"Proven":f==="whales"?"Whales":"All"}
 function SmartWalletsView(){
  const[wallets,setWallets]=useState<any[]|null>(null);
  const[degraded,setDegraded]=useState(false);
- const[filter,setFilter]=useState<"all"|"whales"|"proven">("all");
+ const[filter,setFilter]=useState<typeof SMART_MONEY_FILTERS[number]>("all");
  const[detail,setDetail]=useState<any|null>(null);
  const[detailBusy,setDetailBusy]=useState(false);
  useEffect(()=>{let live=true;apiFetch<any>("/v1/smart-wallets",{},false).then(x=>{if(live){setWallets(x.wallets||[]);setDegraded(Boolean(x.pipelineDegraded))}}).catch(()=>{if(live)setWallets([])});return()=>{live=false}},[]);
  const rows=useMemo(()=>{
   const list=wallets||[];
+  const now=Date.now();
   if(filter==="whales")return list.filter(w=>w.isWhale);
   if(filter==="proven")return list.filter(w=>w.stage==="PROVEN");
+  if(filter==="new")return list.filter(w=>now-new Date(w.firstDiscoveredAt).getTime()<24*3600_000).sort((a,b)=>new Date(b.firstDiscoveredAt).getTime()-new Date(a.firstDiscoveredAt).getTime());
+  if(filter==="hot")return list.filter(w=>now-new Date(w.lastActivityAt).getTime()<3600_000&&w.copyabilityScore>=60).sort((a,b)=>b.copyabilityScore-a.copyabilityScore);
   return list;
  },[wallets,filter]);
  async function open(id:string){
@@ -317,15 +329,13 @@ function SmartWalletsView(){
   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 12px"}}>Wallets MemeCloud discovered from real on-chain meme activity — not manually entered. Ratings require a meaningful sample size, never one lucky trade.</p>
   {degraded&&<div className="notice" style={{marginBottom:12,borderColor:"rgba(247,185,95,.3)"}}>Scoring is temporarily degraded — the market data provider is rate-limited, so ratings below aren't updating right now. Existing scores stay visible but may be stale.</div>}
   <div className="config-tabs discover-tabs">
-   <button className={filter==="all"?"active":""} onClick={()=>setFilter("all")}>All</button>
-   <button className={filter==="whales"?"active":""} onClick={()=>setFilter("whales")}><Wallet size={13} style={{verticalAlign:"middle",marginRight:5}}/>Whales</button>
-   <button className={filter==="proven"?"active":""} onClick={()=>setFilter("proven")}>Proven</button>
+   {SMART_MONEY_FILTERS.map(f=><button key={f} className={filter===f?"active":""} onClick={()=>setFilter(f)}>{f==="whales"&&<Wallet size={13} style={{verticalAlign:"middle",marginRight:5}}/>}{smartMoneyFilterLabel(f)}</button>)}
   </div>
   {wallets===null?<div className="loading" style={{minHeight:180}}>Loading…</div>:rows.length?<div className="token-list">{rows.map(w=>
    <div className="token-row" key={w.id} onClick={()=>open(w.id)}>
     <TokenAvatar symbol={w.address.slice(0,2)}/>
     <div className="token-row-main"><b>{w.address.slice(0,6)}…{w.address.slice(-5)}</b><small>{w.chain} · {STAGE_LABELS[w.stage]||w.stage} · {w.sampleTrades} trade(s) observed{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")}`:""}</small></div>
-    <div className="token-row-side"><span className="status-badge">{w.winRatePct!==null?`${w.winRatePct}% win`:"Not enough data"}</span><small>Score {Math.round(w.copyabilityScore)}</small></div>
+    <div className="token-row-side"><span className="status-badge">{w.winRatePct!==null?`${w.winRatePct}% win`:"Not enough data"}</span><small>{w.realizedPnl7dUsd!=null?`7D ${money(w.realizedPnl7dUsd)}`:`Score ${Math.round(w.copyabilityScore)}`}</small></div>
    </div>
   )}</div>:<Empty icon={Users} title="No smart wallets discovered yet" body="MemeCloud saves a candidate once it observes genuine meme-trading activity from a wallet. This list fills in as real chain data arrives." />}
   {(detail||detailBusy)&&<div className="wallet-chooser-wrap" onClick={()=>setDetail(null)}>
@@ -341,7 +351,8 @@ function SmartWalletsView(){
       <div className="stat-card"><span>Risk</span><b>{Math.round(detail.wallet.riskScore)}</b></div>
      </div>
      <div className="control-list" style={{marginBottom:14}}>
-      <div><span>Realized P&amp;L observed</span><b className={detail.wallet.realizedPnlUsd>=0?"positive":"negative"}>{money(detail.wallet.realizedPnlUsd)}</b></div>
+      <div><span>7D realized P&amp;L</span><b className={detail.wallet.realizedPnl7dUsd==null?"":(detail.wallet.realizedPnl7dUsd>=0?"positive":"negative")}>{detail.wallet.realizedPnl7dUsd==null?"Unknown":money(detail.wallet.realizedPnl7dUsd)}</b></div>
+      <div><span>30D realized P&amp;L</span><b className={detail.wallet.realizedPnlUsd>=0?"positive":"negative"}>{money(detail.wallet.realizedPnlUsd)}</b></div>
       <div><span>Volume observed</span><b>{money(detail.wallet.volumeUsd)}</b></div>
       <div><span>Rug exposure</span><b>{detail.wallet.rugExposurePct!==null?`${detail.wallet.rugExposurePct.toFixed(0)}%`:"Unknown"}</b></div>
       <div><span>Insider risk</span><b>{detail.wallet.insiderRiskPct!==null?`${detail.wallet.insiderRiskPct.toFixed(0)}%`:"Unknown"}</b></div>

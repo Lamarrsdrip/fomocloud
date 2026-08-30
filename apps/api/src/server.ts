@@ -1796,6 +1796,7 @@ function smartWalletSummary(c:any){
     sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
     winRatePct, // null = not enough resolved trades yet to compute -- never shown as 0%
     realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
+    realizedPnl7dUsd:c.realizedPnl7dUsd??null,winRate7dPct:c.winRate7dPct??null,
     averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,
     rugExposurePct:c.rugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,
     source:c.source,sourceToken:c.sourceToken,
