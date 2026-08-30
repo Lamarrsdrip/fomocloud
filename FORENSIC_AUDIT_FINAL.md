@@ -242,12 +242,11 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
 |---|---|---|---|
-| M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
-| M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
+| M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real, tested, equivalent progression on read; judged substantially equivalent in intent (see Fork D notes), not a named-enum rewrite |
 | M-11/PC-C | Full Admin Smart Money Desk (dedicated page/layout, card-based wallet profiles, VIEW ACTIVITY/TRADES drill-in) | LARGE | Found Today/Active Now/Watchlist views + win rate/risk columns now real (fix #19); the fuller dedicated redesign remains open |
-| M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); rest not started |
+| M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); status-language (C-21) done (fix #22); rest not started |
 | M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
-| M-51 | Remaining fake-test-script audit | MEDIUM | 2 of 22 no-op scripts replaced (fixes #15, #16); see full breakdown above |
+| M-51 | Remaining fake-test-script audit | MEDIUM | 3 of 22 no-op scripts replaced (fixes #15, #16, #23); see full breakdown above |
 | M-52/M-53/C-25 | Chaos testing, process-crash testing | LARGE | Not started (no live environment available here to induce real failures against) |
 | M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
 | M-59 | Real-money live execution verification | BLOCKED | Requires owner-approved funded test |
@@ -260,8 +259,35 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 | M-59 | Real-money live execution verification | Requires owner-approved funded test — will not run without explicit fresh approval |
 | M-54/55/57/PC-L | Live observation-window funnel tests | Requires the production VPS (173.212.249.202), which is currently unreachable (resource exhaustion incident, restart pending owner action) |
 
+## Final Product Questions (M-67) -- answered with evidence, not vibes
+Only questions answerable from code/tests actually examined this session are marked PROVEN or NO. Anything requiring a live environment is marked NOT PROVEN (live) with the reason.
+
+1. **Does MemeCloud genuinely hunt profitable wallets automatically?** PROVEN (code). Token-first (`scan()`) + wallet-first (`scanWalletFirst()`, fix #8) + flow-first channels all write SmartWalletCandidate; scoring-worker scores every 30d+7d window automatically. NOT PROVEN (live) -- no live observation window run (VPS down).
+2. **Does it preserve discovered wallets and continuously evaluate them?** PROVEN (code). scoring-worker's query includes DISCOVERED/ANALYZING/PAPER_TRACKING/PROVEN every cycle (auto-demotion on decline, verified pre-existing).
+3. **Can admin maintain a watchlist separate from PROVEN?** PROVEN (code, fix #14). `adminWatched` is a separate boolean, never touches `stage`; WATCH/UNWATCH actions don't gate on or grant PROVEN.
+4. **Can a small but skilled wallet become valuable to the system?** PROVEN (code). `scoreWallet()` has no wealth/balance term (Fork D verified); `scanWalletFirst()` discovers by behavior alone regardless of balance.
+5. **Does Brain know when proven wallets are buying?** PROVEN (code, fix #12). `weightedConvergenceScore()` weights PROVEN 2x a PAPER_TRACKING wallet in the exact convergence signal that gates notifications.
+6. **Does user Discover primarily show meaningful intelligence rather than generic token listings?** PROVEN (code, fix #13). Main feed requires score>=56 (evaluateOpportunity's own WATCH threshold); raw/unqualified tokens go to a separate newTokenRadar array.
+7. **Can the entire intelligence system work with ZERO user wallet?** PROVEN (code). Discovery/scoring/Brain/notifications have no wallet dependency anywhere in the read path; only execution (maybeSignal -> executor) requires a funded, permissioned wallet.
+8. **Can Auto Trade remain OFF while intelligence continues?** PROVEN (code). notifyDiscoveryUpgrade/notifyConvergence/notifyWhaleActivity/notifyNewToken (fix #3) are independent of `autoCopyEnabled`/live-trading toggles.
+9. **Can one chain/provider outage silently kill the whole product?** PARTIALLY MITIGATED. RPC failover + priority tiers exist and are real (Fork E); balance/price never fabricate to $0/UNKNOWN-safe defaults (verified). EVM ingestion still has no live traffic to test reconnect against (dormant).
+10. **Can RPC failure fabricate zero balance?** NO (verified, pre-existing + re-confirmed). `balance-worker` sets `null` and skips the write on any unresolved address; never zeroes a real balance.
+11. **Can duplicate queues double-spend?** NO (verified this session). Every BullMQ `.add()` across every worker uses an explicit `jobId`; downstream DB idempotency keys (decisionKey, exitKey, LiveExecutionAttempt) are the second layer.
+12. **Can ambiguous transaction submission duplicate a buy/sell?** NO (verified, Fork B + this session's exits.ts P2002 fix #4). Every live buy/sell path recovers via Privy `reference_id` before ever resubmitting.
+13. **Can stale prices trigger a destructive exit?** NO (verified, Fork B). `exits/index.ts` explicitly skips adaptive-exit evaluation on stale/missing rich market data; only marks-to-market continues.
+14. **Can missing risk evidence be mistaken for safe evidence?** FIXED THIS SESSION (fix #7). `evidenceCompleteness` now independently gates PROVEN; unmeasured risk uses a conservative non-zero default, not 0.
+15. **Can open unrealized moonbags falsely make a wallet PROVEN?** FIXED THIS SESSION (fix #1). forwardMean now uses only CLOSED paper trades.
+16. **Can a user with only Smart Wallet alerts enabled receive Smart Wallet alerts?** FIXED THIS SESSION (fix #3). All 6 discovery preferences now independently qualify.
+17. **Does every user-visible P&L reconcile to real evidence?** STRENGTHENED THIS SESSION (fixes #10, #18, #20). Immutable LedgerEntry now records every real-money event atomically alongside the state change; not LIVE VERIFIED against a real trade.
+18. **Can private keys ever reach MemeCloud infrastructure?** NO (verified, pre-existing, re-read this session). Export flows through Privy's own iframe-isolated modal; commit baf114a's own message documents this was verified against the installed SDK, not assumed.
+19. **Can one user access another user's financial resources?** NO (verified, Fork C + this session's spot-checks). Every checked `/v1/me/*` route scopes by `req.user.sub`.
+20. **Can the platform recover safely after a process crash?** PROVEN (code, Fork B + fix #4). Idempotency keys + Privy reference-ID recovery cover buy and sell paths on both executor.ts and exits.ts. NOT PROVEN (live) -- no induced-crash test run.
+21. **Does Admin Health detect a worker that is alive but useless?** PARTIALLY. Heartbeats now carry real work metrics (walletFirstScans, watchlistAlerts, reconnects, silentForSec -- all added this session), but no single "useful work stalled" alert view exists yet (M-47/48 dashboard not built).
+22. **Does the UX make the intelligence understandable without exposing developer internals?** PARTIALLY. MemeCloud Verdict breakdown + status-language translation (fixes #11, #22) cover Token Detail and decision history; most of the UX (Home, Wallet, Admin desk) hasn't had this pass yet.
+
 ## Next steps
-1. Collect reports from forks A-E, update every PENDING AUDIT row above with real status + evidence.
-2. Begin fixing confirmed real-money-safety gaps first (financial precision, execution duplication, IDOR).
-3. Proceed in order: safety → architecture → intelligence/discovery → wallet → notifications → UX → refactors → chaos testing → final QA passes.
-4. Update this file after every batch of fixes with commit hashes.
+1. Full UX/product redesign (Home Pulse, Wallet, Smart Money nav, Admin desk, mobile QA) -- VERY LARGE, not started.
+2. API + frontend monolith refactor -- LARGE, not started.
+3. Remaining fake-test-script audit (19 of 22 packages left) and chaos/process-crash testing (needs a live environment this working directory doesn't have).
+4. Live verification of everything marked NOT PROVEN (live) above -- needs the VPS back up and, for M-59, explicit owner approval for a real funded trade.
+5. Update this file after every batch of fixes with commit hashes, as done throughout this session.
