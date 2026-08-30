@@ -234,6 +234,7 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 29 | services/listener: extracted classifySwap (BUY/SELL classification + sourcePriceUsd/sourceSoldPct -- directly sizes real copy-trade mirror sells) to a side-effect-free module + 6 real tests | 389b0cd | M-51 (partial) |
 | 30 | packages/social: replaced no-op test script with 7 real tests for classifyPulse (feeds Brain's narrative/social scoring, incl. MANIPULATED-narrative detection) | 0acbe6d | M-51 (partial) |
 | 31 | Admin Health: surfaced real per-worker metrics (WorkerHeartbeat.detail, already in the API response) instead of heartbeat-freshness-only Healthy/Stale | e9a4637 | M-47, M-48 |
+| 32 | services/market-worker: extracted aggregateChainFlow (volumeAcceleration1m -- a direct Brain scoring input) to a side-effect-free module + 6 real tests | e67f382 | M-51 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
