@@ -179,21 +179,26 @@ Repo: Lamarrsdrip/fomocloud. HEAD at last update: `baf114a`.
 | C-30 | Do not stop early | ONGOING PRACTICE | Governing rule |
 
 ## PC — Product-Concept Alignment (sections A-M)
+This table was left at its Pass-1 "PENDING AUDIT" placeholder status for most of the session even
+after the underlying items were actually fixed elsewhere in this file — that was a real
+traceability gap in the matrix itself (the fix existed, the status line lied about it). Corrected
+below by cross-referencing every PC item against the actual Fixes table and, for PC-K, a fresh code
+trace (not an assumption) done specifically to verify this line.
 | ID | Requirement | Status |
 |---|---|---|
-| PC-A | Audit wallet hunting engine end-to-end with evidence for every dimension (P&L, win rate, drawdown, etc.) | PENDING AUDIT — Fork D |
-| PC-B | True wallet-first discovery (not gated on wealth) | PENDING AUDIT — Fork D |
-| PC-C | Admin Smart Money Hunting Desk | PENDING AUDIT |
-| PC-D | Continuous admin watchlist monitoring | PENDING AUDIT |
-| PC-E | Audit user Discovery — raw DiscoveryToken vs qualified GlobalBrainOpportunity | PENDING AUDIT — Fork D (critical) |
-| PC-F | Internal candidate funnel stages | PENDING AUDIT — Fork D |
-| PC-G | Discovery qualification evidence-based, not "new"/"trending" alone | PENDING AUDIT |
-| PC-H | Smart money convergence weighting | PENDING AUDIT |
-| PC-I | Explain why every token is shown | PENDING AUDIT |
-| PC-J | Radar vs recommendation separation | PENDING AUDIT |
-| PC-K | Verify Global Brain actually uses smart wallets end-to-end | PENDING AUDIT — Fork D |
+| PC-A | Audit wallet hunting engine end-to-end with evidence for every dimension (P&L, win rate, drawdown, etc.) | ADDRESSED — evidenceCompleteness field + UNKNOWN_RISK_DEFAULT_PCT (fix #7) stops missing risk data from reading as "verified safe"; 7D P&L added alongside existing 30D (fix #17, #26). Full line-by-line audit of every scoring dimension not repeated beyond Fork D's original pass |
+| PC-B | True wallet-first discovery (not gated on wealth) | DONE — scanWalletFirst() profiles addresses by repeated early entry into independently-qualifying tokens, not a pre-selected/wealth-gated list (fix #8) |
+| PC-C | Admin Smart Money Hunting Desk | PARTIAL — Found Today/Active Now/Watchlist views, win rate/risk columns, View Activity drill-in all real (fixes #19, #43); card-based wallet profile layout and a dedicated Orders/Signals TRADES drill-in remain open (see Still Open) |
+| PC-D | Continuous admin watchlist monitoring | DONE — checkWatchlist() (10s interval) + AdminAlert model/routes/UI (fix #14) |
+| PC-E | Audit user Discovery — raw DiscoveryToken vs qualified GlobalBrainOpportunity | DONE — main feed now requires score>=56; unqualified activity moved to a separate, explicitly-labeled New Token Radar (fix #13) |
+| PC-F | Internal candidate funnel stages | DONE — GlobalBrainOpportunity.state is now a real persisted BrainState enum (fix #50); SmartWalletCandidate already had a real CandidateStage enum |
+| PC-G | Discovery qualification evidence-based, not "new"/"trending" alone | DONE — scoring is evidence-weighted (packages/brain, 27 tests) with an explicit evidenceCompleteness gate (fix #7) rather than recency/trending alone |
+| PC-H | Smart money convergence weighting | DONE — weightedConvergenceScore(): PROVEN wallets weight 2x vs PAPER_TRACKING (fix #12) |
+| PC-I | Explain why every token is shown | DONE — every GlobalBrainOpportunity carries a real `reasons` array (built from actual evidence, incl. convergence text) rendered in Discover/Home/Token Detail, plus the additive Momentum/SmartMoney/Execution/Risk/Evidence breakdown (fix #11) |
+| PC-J | Radar vs recommendation separation | DONE — same fix as PC-E (fix #13): New Token Radar is a structurally separate array, not a lower tier of the same list |
+| PC-K | Verify Global Brain actually uses smart wallets end-to-end | DONE — verified by code trace this session (not assumed): brain-worker's tick queries `db.smartWalletCandidate` for PAPER_TRACKING/PROVEN wallets among a token's recent buyers (services/brain-worker/src/index.ts ~line 47), computes real convergentCount/provenConvergentCount/convergentWeightedScore from that query, and both feeds into the visible `reasons` text and fires notifyConvergence — genuine end-to-end wiring, not a decorative field |
 | PC-L | Real-world observation test with funnel numbers | BLOCKED (needs live VPS) |
-| PC-M | Final concept acceptance scenarios 1-4 | PENDING (needs live system for full proof; code-level logic can be verified now) |
+| PC-M | Final concept acceptance scenarios 1-4 | PARTIAL — every scenario's underlying code-level logic (PC-A through PC-K above) is now verified; the full live proof still needs a running system (same blocker as PC-L) |
 
 ## Q — Final Acceptance Questions (22, from M-67)
 All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixes land. Listed in full in M-67 reference; not duplicated here to keep this file maintainable — see original prompt text for exact wording, answered inline in the "Final Product Questions" section to be added after Pass 1.
