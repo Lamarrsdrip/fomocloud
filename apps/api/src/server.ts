@@ -1684,8 +1684,20 @@ app.patch("/v1/admin/discovery/candidates/:id", adminOnly, asyncRoute(async (req
   res.json({candidate:updated});
 }));
 app.get("/v1/admin/discovery/tokens", requireAdmin, asyncRoute(async (_req,res) => {
-  const tokens=await db.discoveryToken.findMany({orderBy:{lastSeenAt:"desc"},take:500});
-  res.json({tokens});
+  const [tokens,mostRecentlySeen]=await Promise.all([
+    db.discoveryToken.findMany({orderBy:{lastSeenAt:"desc"},take:500}),
+    // Real gap found by forensic audit (M-46): same pipelineDegraded/dataFreshnessSec pattern
+    // already applied to admin Brain/Whales this session -- discovery-worker writing lastSeenAt
+    // is what actually keeps this table live; a stalled worker should read as degraded, not silently
+    // look like "no new tokens right now."
+    db.discoveryToken.findFirst({orderBy:{lastSeenAt:"desc"},select:{lastSeenAt:true}})
+  ]);
+  const dataFreshnessSec=mostRecentlySeen?Math.round((Date.now()-mostRecentlySeen.lastSeenAt.getTime())/1000):null;
+  // discovery-worker's default tick is 15 minutes (DISCOVERY_SCAN_INTERVAL_MS); 30 minutes gives a
+  // full missed-tick margin before calling it degraded, same discipline as /v1/smart-wallets' 30min
+  // bar against scoring-worker's 10min tick.
+  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
+  res.json({tokens,pipelineDegraded,dataFreshnessSec});
 }));
 app.get("/v1/admin/positions", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const status=String(req.query.status??"").toUpperCase();
