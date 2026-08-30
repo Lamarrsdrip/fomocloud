@@ -1634,19 +1634,34 @@ app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
   res.json({wallet:smartWalletSummary(candidate),recentActivity:recentFlow,currentTokens});
 }));
 app.get("/v1/admin/brain", requireAdmin, asyncRoute(async (_req,res) => {
-  const [opportunities,flows,outcomes]=await Promise.all([
+  const [opportunities,flows,outcomes,mostRecentlyEvaluated]=await Promise.all([
     db.globalBrainOpportunity.findMany({orderBy:[{lastEvaluatedAt:"desc"},{score:"desc"}],take:300}),
     db.chainFlowObservation.findMany({orderBy:{observedAt:"desc"},take:500}),
-    db.brainOutcomeSample.findMany({orderBy:{observedAt:"desc"},take:500})
+    db.brainOutcomeSample.findMany({orderBy:{observedAt:"desc"},take:500}),
+    // Real gap found by forensic audit (M-46): the user-facing /v1/brain/feed already computes
+    // pipelineDegraded/dataFreshnessSec so a stalled brain-worker reads as "degraded," not
+    // falsely-live -- the admin equivalent of this exact same feed had never had it.
+    db.globalBrainOpportunity.findFirst({orderBy:{lastEvaluatedAt:"desc"},select:{lastEvaluatedAt:true}})
   ]);
-  res.json({opportunities,flows,outcomes});
+  const dataFreshnessSec=mostRecentlyEvaluated?Math.round((Date.now()-mostRecentlyEvaluated.lastEvaluatedAt.getTime())/1000):null;
+  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
+  res.json({opportunities,flows,outcomes,pipelineDegraded,dataFreshnessSec});
 }));
 
 app.get("/v1/admin/discovery/candidates", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const stage=String(req.query.stage??"").toUpperCase();
   const where:any={}; if(stage)where.stage=stage;
-  const candidates=await db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:500});
-  res.json({candidates});
+  const [candidates,mostRecentlyScored]=await Promise.all([
+    db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:500}),
+    // Real gap found by forensic audit (M-46): the user-facing /v1/smart-wallets already computes
+    // pipelineDegraded/dataFreshnessSec (30min threshold, matching scoring-worker's real cadence)
+    // so a stalled scoring-worker reads as "degraded," not falsely-live -- the admin Whales desk,
+    // reading the exact same candidate table, never had it.
+    db.smartWalletCandidate.findFirst({orderBy:{lastScoredAt:"desc"},select:{lastScoredAt:true}})
+  ]);
+  const dataFreshnessSec=mostRecentlyScored?.lastScoredAt?Math.round((Date.now()-mostRecentlyScored.lastScoredAt.getTime())/1000):null;
+  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
+  res.json({candidates,pipelineDegraded,dataFreshnessSec});
 }));
 app.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const chain=String(req.body?.chain??"").toUpperCase();
