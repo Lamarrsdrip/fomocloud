@@ -17,6 +17,7 @@ import {BrandGlyph} from "../../components/BrandGlyph";
 import WalletChooser from "../../components/WalletChooser";
 import TraderDetail from "../../components/TraderDetail";
 import CommunityView from "../../components/CommunityView";
+import CustomTrader from "../../components/CustomTrader";
 import {Empty} from "../../components/Empty";
 // Privy's SDK is large (full multi-chain support) even though only its Solana slice is used here
 // -- next/dynamic keeps it out of this route's main bundle entirely, fetched only once someone
@@ -469,20 +470,6 @@ function TraderSettingsRow({f,reload}:{f:any;reload:()=>Promise<void>}){
   {!hasWallet&&<div className="pending-wallet span2"><div><b>Add the real public trading wallet</b><small>An X username can be saved as a favorite, but Auto Copy cannot start until a public wallet is mapped.</small></div><select value={walletChain} onChange={e=>setWalletChain(e.target.value)}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select><input value={walletAddress} onChange={e=>setWalletAddress(e.target.value)} placeholder="Public wallet address"/><button className="soft-action" disabled={!walletAddress} onClick={addWallet}>Add wallet</button></div>}
   <div className="switch-row"><div><b>Copy additional buys</b><small>Allow this trader's later scale-ins to be evaluated.</small></div><button className={`switch ${additional?"on":""}`} onClick={()=>setAdditional(!additional)}><i/></button></div><div className="switch-row"><div><b>Copy re-entry</b><small>Allow a later re-entry after the trader exited.</small></div><button className={`switch ${reentry?"on":""}`} onClick={()=>setReentry(!reentry)}><i/></button></div><div className="trader-editor-actions"><button className="action-primary" onClick={save}>Save trader settings</button><button className="soft-action" onClick={remove}>Remove</button>{msg&&<span>{msg}</span>}</div></div>}</section>
 }
-
-function CustomTrader({reload,close}:{reload:()=>Promise<void>;close:()=>void}){
- const[name,setName]=useState("");const[address,setAddress]=useState("");const[chain,setChain]=useState("SOLANA");const[x,setX]=useState("");const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
- async function add(e:React.FormEvent){e.preventDefault();setBusy(true);setErr("");try{await apiFetch("/v1/me/traders/custom",{method:"POST",body:JSON.stringify({displayName:name,address,chain,xHandle:x})});await reload();close()}catch(e){setErr(plainError(e))}finally{setBusy(false)}}
- return <section className="app-card" style={{marginBottom:14}}><div className="card-title"><div><span>ADD MY OWN TRADER</span><h2>Save a favorite — then map the real wallet</h2></div><button onClick={close}>Close</button></div><form className="form-grid" onSubmit={add}>
-  <label className="field"><span>Your label for this trader</span><input value={name} onChange={e=>setName(e.target.value)} placeholder="Example: My favorite trader" required/></label>
-  <label className="field"><span>Chain</span><select value={chain} onChange={e=>setChain(e.target.value)}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select></label>
-  <label className="field span2"><span>Public trading wallet (optional now)</span><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Public wallet address — required before Watch / Auto Copy"/></label>
-  <label className="field"><span>X username (optional)</span><input value={x} onChange={e=>setX(e.target.value)} placeholder="@username"/></label>
-  <div style={{alignSelf:"end"}}><button className="action-primary" style={{width:"100%",height:42,borderRadius:12}} disabled={busy}>{busy?"Adding…":"Add to my watchlist"}</button></div>
-  {err&&<div className="auth-error span2">{err}</div>}
- </form><div className="notice" style={{marginTop:12,marginBottom:0}}>You can save an X favorite without a wallet. It stays FOLLOW ONLY / NEEDS WALLET until you add the genuine public trading wallet. The platform never invents wallet mappings.</div></section>
-}
-
 
 function CopyView({follows,setMode,setView}:{follows:any[];setMode:(id:string,m:string)=>void;setView:(v:View)=>void}){
  const auto=follows.filter((f:any)=>f.mode==="AUTO_COPY");
