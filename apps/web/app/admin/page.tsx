@@ -1,9 +1,19 @@
 "use client";
-import React,{useEffect,useState} from "react";
+import {useEffect,useState} from "react";
 import {apiFetch,plainError,money} from "../../lib/api";
 import {timeAgo} from "../../lib/format";
 import {Users,Radio,WalletCards,Settings2,Mail,Bell,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Plus,KeyRound,Gauge,SlidersHorizontal,ChevronRight,Home,Wallet,Database,PlugZap,Coins,Fish,AlertTriangle,Layers} from "lucide-react";
 import {BrandGlyph} from "../../components/BrandGlyph";
+import {Overview} from "../../components/admin/Overview";
+import {BrainAdmin} from "../../components/admin/BrainAdmin";
+import {UsersView} from "../../components/admin/UsersView";
+import {TradersAdmin} from "../../components/admin/TradersAdmin";
+import {Signals} from "../../components/admin/Signals";
+import {Trades} from "../../components/admin/Trades";
+import {AdminPositions} from "../../components/admin/AdminPositions";
+import {FailedTrades} from "../../components/admin/FailedTrades";
+import {Tokens} from "../../components/admin/Tokens";
+import {Whales} from "../../components/admin/Whales";
 
 const sections=[
  ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["tokens","Tokens",Coins],["whales","Whales",Fish],["users","Users",Users],["traders","Wallets",Radio],["signals","Decisions",Activity],
@@ -78,143 +88,6 @@ export default function Admin(){
  </main>
 }
 
-function Metric({label,value,note,moneyValue=false}:{label:string;value:any;note:string;moneyValue?:boolean}){const shown=value===null||value===undefined?"—":moneyValue?money(value):value;return <div className="stat-card"><span>{label}</span><b>{shown}</b><small>{note}</small></div>}
-function Overview({d}:{d:any}){const m=d.metrics||{},u=m.users||{},t=m.trading||{},s=m.smartTraders||{},x=m.discovery||{},e=m.engine||{},lr=d.liveReadiness||{requestedMode:"SIMULATION",actualRuntimeMode:"SIMULATION",status:"SIMULATION",blockers:[],openLivePositions:0};return <>
- <section className="owner-hero"><div><span>OWNER HOME</span><h2>Everything important, without digging.</h2><p>Real users, trading, discovery and engine activity. Use the controls below to change how MemeCloud operates.</p></div>
-  <div className={`owner-mode ${lr.status==="LIVE"?"live":lr.status==="SIMULATION"?"safe":"watch"}`}>
-   <small>Actual execution</small><b>{lr.actualRuntimeMode||"SIMULATION"}</b>
-   <span>Requested: {lr.requestedMode||"SIMULATION"}</span>
-   <span>Status: {String(lr.status||"SIMULATION").replaceAll("_"," ")}</span>
-   <span>Qualified signal: {String(lr.nextQualifiedSignalAction||"SIMULATION").replaceAll("_"," ")}</span>
-   {lr.blockers?.[0]&&<span style={{marginTop:4}}>Blocked by: {lr.blockers[0].message}</span>}
-   {lr.openLivePositions>0&&<span style={{marginTop:4}}>{lr.openLivePositions} real open position{lr.openLivePositions===1?"":"s"} — always exited for real regardless of this switch.</span>}
-  </div>
- </section>
- <section className="admin-quick-grid">
-  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="whales"]')?.click()}><Fish/><div><b>Whales</b><small>Discovered wallets awaiting review</small></div><ChevronRight/></button>
-  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="tokens"]')?.click()}><Coins/><div><b>Tokens</b><small>What Discovery has seen</small></div><ChevronRight/></button>
-  <button onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="config"]')?.click()}><PlugZap/><div><b>APIs & providers</b><small>RPC, Birdeye, Jupiter, Privy</small></div><ChevronRight/></button>
-  <a href="/app/"><Wallet/><div><b>Open user app</b><small>See MemeCloud exactly as users do</small></div><ChevronRight/></a>
- </section>
- <section className="admin-kpi-row"><Metric label="Users" value={u.registered} note={`${u.active??0} active`}/><Metric label="Wallets connected" value={u.walletConnected} note={`${u.autoCopyEnabled??0} Auto Copy`}/><Metric label="Open positions" value={t.openPositions} note={`${t.ordersToday??0} orders today`}/><Metric label="Platform traders" value={s.platform} note={`${s.candidates??0} candidates`}/></section>
- <div className="admin-section-grid" style={{marginTop:12}}><section className="app-card"><div className="card-title"><div><span>DISCOVERY</span><h2>What MemeCloud is seeing</h2></div></div><div className="control-list"><div><span>Watched tokens</span><b>{x.watchedTokens??0}</b></div><div><span>Opportunities today</span><b>{x.opportunitiesToday??0}</b></div><div><span>Signals today</span><b>{e.signalsToday??0}</b></div><div><span>BUY decisions</span><b>{e.buyDecisions??0}</b></div><div><span>WAIT / SKIP</span><b>{e.waitDecisions??0} / {e.skipDecisions??0}</b></div></div></section>
- <section className="app-card"><div className="card-title"><div><span>TRADING</span><h2>Real execution activity</h2></div></div><div className="control-list"><div><span>Allocated cash</span><b>{money(t.allocatedCashUsd??0)}</b></div><div><span>Orders today</span><b>{t.ordersToday??0}</b></div><div><span>Buys / sells</span><b>{t.buysToday??0} / {t.sellsToday??0}</b></div><div><span>Live P&amp;L</span><b>{t.realizedPnlUsd==null&&t.unrealizedPnlUsd==null?"—":money((t.realizedPnlUsd??0)+(t.unrealizedPnlUsd??0))}</b></div></div></section></div>
- <section className="app-card owner-next" style={{marginTop:12}}><div><span>START HERE</span><h2>Configure the platform</h2><p>Set APIs, trading fees, wallet signer, discovery rules, email and push notifications from Settings. Nothing is hard-coded into this screen.</p></div><button className="action-primary" onClick={()=>document.querySelector<HTMLButtonElement>('button[data-admin-target="config"]')?.click()}>Open Settings <ChevronRight size={15}/></button></section>
- </>}
-
-function BrainAdmin({d}:{d:any}){const rows=d.opportunities||[],flows=d.flows||[];return <><section className="owner-hero"><div><span>GLOBAL TRADE BRAIN</span><h2>MemeCloud is watching money move.</h2><p>Chain-wide flow, known whales, newly discovered wallets, market momentum and social acceleration are combined here. Big historical pumps or deep dips are context, not automatic rejection.</p></div><div className="owner-mode live"><small>Scanner</small><b>ACTIVE</b><span>{rows.length} recent opportunities</span></div></section><div className="app-grid-4"><Metric label="Money-rush tokens" value={rows.filter((x:any)=>x.state==="MONEY_RUSH").length} note="Highest live flow state"/><Metric label="Buy now" value={rows.filter((x:any)=>x.action==="BUY_NOW").length} note="Brain-qualified now"/><Metric label="Whale flow" value={flows.filter((x:any)=>String(x.walletTier||"").startsWith("WHALE_")).length} note="Recent $50K+ wallet observations"/><Metric label="Flow events" value={flows.length} note="Recent on-chain swaps stored"/></div><section className="app-card admin-table-wrap" style={{marginTop:10}}><div className="card-title"><div><span>LIVE DISCOVERY</span><h2>What the brain is seeing</h2></div></div><table className="admin-table"><thead><tr><th>Token</th><th>Chain</th><th>State</th><th>Score</th><th>10s buyers</th><th>60s whales</th><th>60s inflow</th><th>Action</th><th>Contract</th></tr></thead><tbody>{rows.map((x:any)=><tr key={x.id}><td><b>{x.symbol||x.name||"Token"}</b></td><td>{x.chain}</td><td>{x.state}</td><td>{Math.round(x.score)}</td><td>{x.buyers10s}</td><td>{(x.whaleBuyers60s||0)+(x.knownWhaleBuyers60s||0)}</td><td>{money(x.inflow60sUsd||0)}</td><td><span className={`status-badge ${x.action==="BUY_NOW"?"":"watch"}`}>{x.action.replaceAll("_"," ")}</span></td><td><small>{x.mint}</small></td></tr>)}{!rows.length&&<tr><td colSpan={9}>The brain has not stored an opportunity yet. Check flow-scanner and market-worker health.</td></tr>}</tbody></table></section></>}
-function UsersView({d,reload}:{d:any;reload:()=>void}){
- const[detail,setDetail]=useState<any>(null),[detailErr,setDetailErr]=useState("");
- async function status(id:string,s:string){await apiFetch(`/v1/admin/users/${id}`,{method:"PATCH",body:JSON.stringify({status:s})});reload();if(detail?.user?.id===id)await view(id)}
- async function view(id:string){setDetailErr("");try{setDetail(await apiFetch(`/v1/admin/users/${id}`))}catch(e){setDetailErr(plainError(e))}}
- return <>
-  <section className="app-card admin-table-wrap"><table className="admin-table"><thead><tr><th>User</th><th>Status</th><th>Auto Copy</th><th>Wallets</th><th>Traders</th><th>Positions</th><th>Last login</th><th>Action</th></tr></thead><tbody>{(d.users||[]).map((u:any)=><tr key={u.id}><td><b>{u.displayName||u.email||u.id.slice(-6)}</b><br/><small>{u.email||"wallet account"}</small></td><td>{u.status}</td><td>{u.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</td><td>{u._count?.wallets??0}</td><td>{u._count?.follows??0}</td><td>{u._count?.positions??0}</td><td>{u.lastLoginAt?new Date(u.lastLoginAt).toLocaleString():"—"}</td><td><div className="table-actions"><button className="soft-action" onClick={()=>view(u.id)}>View</button><select value={u.status} onChange={e=>status(u.id,e.target.value)}><option>ACTIVE</option><option>SUSPENDED</option><option>CLOSED</option></select></div></td></tr>)}</tbody></table></section>
-  {detailErr&&<div className="auth-error" style={{marginTop:10}}>{detailErr}</div>}
-  {detail&&<section className="app-card admin-user-detail" style={{marginTop:10}}><div className="card-title"><div><span>USER DETAIL</span><h2>{detail.user.displayName||detail.user.email||detail.user.id}</h2></div><button className="soft-action" onClick={()=>setDetail(null)}>Close</button></div>
-   <div className="app-grid-4"><div className="stat-card"><span>Trading Cash</span><b>{money(detail.summary.tradingCashUsd)}</b><small>{money(detail.summary.availableUsd)} available</small></div><div className="stat-card"><span>Live P&amp;L</span><b className={(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)>=0?"positive":"negative"}>{money(detail.summary.realizedPnlUsd+detail.summary.unrealizedPnlUsd)}</b><small>Realized + unrealized</small></div><div className="stat-card"><span>Live positions</span><b>{detail.summary.openLivePositions}</b><small>Simulation {detail.summary.simulationPositions}</small></div><div className="stat-card"><span>Auto Copy</span><b>{detail.user.tradingSettings?.autoCopyEnabled?"ON":"OFF"}</b><small>{detail.user.status}</small></div></div>
-   <div className="admin-detail-grid"><div><h3>Wallets</h3>{detail.user.wallets.length?detail.user.wallets.map((w:any)=><div className="wallet-line" key={w.id}><div><b>{w.chain} · {w.address.slice(0,8)}…{w.address.slice(-6)}</b><small>{w.isPrimary?"Primary · ":""}{w.tradingEnabled?"Trading permission active":"No live trading permission"}</small></div></div>):<small>No linked wallets.</small>}</div><div><h3>Copied / watched traders</h3>{detail.user.follows.length?detail.user.follows.slice(0,12).map((f:any)=><div className="wallet-line" key={f.id}><div><b>{f.trader.displayName}</b><small>{f.mode} · {money(f.fixedAmountUsd)} per copy</small></div></div>):<small>No traders followed.</small>}</div></div>
-  </section>}
- </>}
-function TradersAdmin({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){const[open,setOpen]=useState(false);const[form,setForm]=useState<any>({displayName:"",handle:"",xHandle:"",category:"",wallet:"",chain:"SOLANA"});const[err,setErr]=useState("");
- async function add(e:React.FormEvent){e.preventDefault();setErr("");try{await apiFetch("/v1/admin/traders",{method:"POST",body:JSON.stringify({displayName:form.displayName,handle:form.handle,xHandle:form.xHandle,category:form.category,recommended:true,wallets:form.wallet?[{chain:form.chain,address:form.wallet,verified:true}]:[]})});setOpen(false);reload()}catch(e){setErr(plainError(e))}}
- async function patch(id:string,body:any){await apiFetch(`/v1/admin/traders/${id}`,{method:"PATCH",body:JSON.stringify(body)});reload()}
- return <>
-  {admin&&<button className="action-primary" style={{padding:"10px 13px",borderRadius:12,marginBottom:12}} onClick={()=>setOpen(!open)}><Plus size={13}/> Add platform trader</button>}
-  {open&&<section className="app-card" style={{marginBottom:10}}><form className="form-grid" onSubmit={add}><label className="field"><span>Name</span><input value={form.displayName} onChange={e=>setForm({...form,displayName:e.target.value})} required/></label><label className="field"><span>Handle</span><input value={form.handle} onChange={e=>setForm({...form,handle:e.target.value})} required/></label><label className="field"><span>X handle</span><input value={form.xHandle} onChange={e=>setForm({...form,xHandle:e.target.value})}/></label><label className="field"><span>Category</span><input value={form.category} onChange={e=>setForm({...form,category:e.target.value})}/></label><label className="field"><span>Chain</span><select value={form.chain} onChange={e=>setForm({...form,chain:e.target.value})}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option></select></label><label className="field"><span>Verified public wallet</span><input value={form.wallet} onChange={e=>setForm({...form,wallet:e.target.value})}/></label>{err&&<div className="auth-error span2">{err}</div>}<button className="action-primary span2" style={{height:42,borderRadius:12}}>Create trader</button></form></section>}
-  <section className="app-card admin-table-wrap"><table className="admin-table trader-admin-table"><thead><tr><th>Trader</th><th>Source wallets</th><th>Followers</th><th>Signals</th><th>Featured</th><th>Recommended</th><th>Default</th><th>Enabled</th></tr></thead><tbody>{(d.traders||[]).map((t:any)=><tr key={t.id}><td><b>{t.displayName}</b><br/><small>@{t.handle}</small>{t.xHandle&&<><br/><small>X @{t.xHandle}</small></>}</td><td><TraderWalletControls trader={t} admin={admin} reload={reload}/></td><td>{t._count?.follows||0}</td><td>{t._count?.signals||0}</td><td><input type="checkbox" checked={t.featured} disabled={!admin} onChange={e=>patch(t.id,{featured:e.target.checked})}/></td><td><input type="checkbox" checked={t.recommended} disabled={!admin} onChange={e=>patch(t.id,{recommended:e.target.checked})}/></td><td><input type="checkbox" checked={t.defaultSelected} disabled={!admin} onChange={e=>patch(t.id,{defaultSelected:e.target.checked})}/></td><td><input type="checkbox" checked={t.enabled} disabled={!admin} onChange={e=>patch(t.id,{enabled:e.target.checked})}/></td></tr>)}</tbody></table></section>
- </>}
-function TraderWalletControls({trader,admin,reload}:{trader:any;admin:boolean;reload:()=>void}){
- const[adding,setAdding]=useState(false),[chain,setChain]=useState("SOLANA"),[address,setAddress]=useState(""),[msg,setMsg]=useState("");
- async function add(){setMsg("");try{await apiFetch(`/v1/admin/traders/${trader.id}/wallets`,{method:"POST",body:JSON.stringify({chain,address,verified:true})});setAddress("");setAdding(false);reload()}catch(e){setMsg(plainError(e))}}
- async function remove(id:string){if(!confirm("Remove this public source wallet from the trader? Auto-copy monitoring for this mapping will stop."))return;setMsg("");try{await apiFetch(`/v1/admin/trader-wallets/${id}`,{method:"DELETE"});reload()}catch(e){setMsg(plainError(e))}}
- return <div className="trader-wallets-admin">
-  {(trader.wallets||[]).length===0&&<small>No wallet mapped — tracking unavailable.</small>}
-  {(trader.wallets||[]).map((w:any)=><div className="trader-wallet-chip" key={w.id}><span><b>{w.chain}</b><small>{String(w.address).slice(0,6)}…{String(w.address).slice(-5)} · {w.verified?"verified":"unverified"}</small></span>{admin&&<button title="Remove wallet" onClick={()=>remove(w.id)}>×</button>}</div>)}
-  {admin&&!adding&&<button className="wallet-add-mini" onClick={()=>setAdding(true)}>+ Add source wallet</button>}
-  {admin&&adding&&<div className="wallet-add-box"><select value={chain} onChange={e=>setChain(e.target.value)}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Public wallet address"/><div><button disabled={!address.trim()} onClick={add}>Save</button><button onClick={()=>{setAdding(false);setAddress("");setMsg("")}}>Cancel</button></div>{chain!=="SOLANA"&&<small>Adapter-ready only: this wallet can be registered, but Auto Copy stays unavailable until that chain listener is implemented.</small>}</div>}
-  {msg&&<small className="negative">{msg}</small>}
- </div>
-}
-function Signals({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>Trader</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Copies</th><th>Detected</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{s.trader?.displayName}</td><td>{s.chain}</td><td>{s.action}</td><td>{s.action==="BUY"?s.outputMint.slice(0,10):s.inputMint.slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s._count?.copyDecisions||0}</td><td>{new Date(s.observedAt).toLocaleString()}</td></tr>)}</tbody></table></section>}
-function Trades({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>User</th><th>Trader</th><th>Mode</th><th>Chain</th><th>Status</th><th>Venue</th><th>Created</th></tr></thead><tbody>{(d.orders||[]).map((o:any)=><tr key={o.id}><td>{o.user?.email||o.user?.displayName||o.userId.slice(-6)}</td><td>{o.decision?.signal?.trader?.displayName||"—"}</td><td>{o.mode}</td><td>{o.chain}</td><td>{o.status}</td><td>{o.venue||"—"}</td><td>{new Date(o.createdAt).toLocaleString()}</td></tr>)}{!(d.orders||[]).length&&<tr><td colSpan={7}>No trades recorded yet.</td></tr>}</tbody></table></section>}
-function AdminPositions({d}:{d:any}){
- const[filter,setFilter]=useState("ALL");
- const rows=(d.positions||[]).filter((p:any)=>filter==="ALL"?true:filter==="OPEN"?(p.status==="OPEN"||p.status==="PARTIALLY_CLOSED"):p.status==="CLOSED");
- return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>ALL USERS</span><h2>Open &amp; closed positions</h2></div><div className="performance-tabs">{["ALL","OPEN","CLOSED"].map(x=><button key={x} className={filter===x?"active":""} onClick={()=>setFilter(x)}>{x}</button>)}</div></div>
-  <table className="admin-table"><thead><tr><th>User</th><th>Token</th><th>Chain</th><th>Mode</th><th>Status</th><th>Cost</th><th>Unrealized</th><th>Realized</th><th>Recovery</th><th>Opened</th></tr></thead><tbody>{rows.map((p:any)=>{const recovered=(p.profitTakenUsd||0)>=(p.costUsd||0)&&(p.costUsd||0)>0;return <tr key={p.id}><td>{p.user?.email||p.user?.displayName||p.userId.slice(-6)}</td><td><small>{p.mint.slice(0,8)}…</small></td><td>{p.chain}</td><td>{p.mode}</td><td>{String(p.status).replaceAll("_"," ")}</td><td>{money(p.costUsd)}</td><td className={(p.unrealizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.unrealizedPnlUsd)}</td><td className={(p.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(p.realizedPnlUsd)}</td><td>{p.status!=="CLOSED"?(recovered?"✓ Recovered":"Not yet"):"—"}</td><td>{new Date(p.openedAt).toLocaleString()}</td></tr>})}{!rows.length&&<tr><td colSpan={10}>No positions in this filter.</td></tr>}</tbody></table>
- </section>
-}
-function FailedTrades({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>EXECUTION SAFETY</span><h2>Failed / risk incidents</h2></div></div><table className="admin-table"><thead><tr><th>Severity</th><th>Scope</th><th>Chain</th><th>Token</th><th>Code</th><th>When</th></tr></thead><tbody>{(d.incidents||[]).map((i:any)=><tr key={i.id}><td><span className={`status-badge ${i.severity==="CRITICAL"?"watch":""}`}>{i.severity}</span></td><td>{i.scope}</td><td>{i.chain||"—"}</td><td>{i.mint?<small>{i.mint.slice(0,8)}…</small>:"—"}</td><td>{i.code}</td><td>{new Date(i.createdAt).toLocaleString()}</td></tr>)}{!(d.incidents||[]).length&&<tr><td colSpan={6}>No failed or risky executions recorded. Good sign.</td></tr>}</tbody></table></section>}
-function Tokens({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>DISCOVERY</span><h2>Tokens MemeCloud has seen</h2></div></div><table className="admin-table"><thead><tr><th>Chain</th><th>Mint</th><th>Market cap</th><th>Liquidity</th><th>Holders</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>{(d.tokens||[]).map((t:any)=><tr key={t.id}><td>{t.chain}</td><td><small>{t.mint.slice(0,10)}…</small></td><td>{t.marketCapUsd?money(t.marketCapUsd):"—"}</td><td>{t.liquidityUsd?money(t.liquidityUsd):"—"}</td><td>{t.holders??"—"}</td><td>{t.discoveredAt?new Date(t.discoveredAt).toLocaleDateString():"—"}</td><td>{t.lastSeenAt?new Date(t.lastSeenAt).toLocaleString():"—"}</td></tr>)}{!(d.tokens||[]).length&&<tr><td colSpan={7}>No tokens discovered yet — needs a configured Solana RPC.</td></tr>}</tbody></table></section>}
-// Real gap found by forensic audit (M-11/PC-C): the spec calls for FOUND TODAY / ACTIVE NOW /
-// WATCHLIST as real sections of the Smart Money desk, distinct from the pipeline stage tabs
-// (DISCOVERED/PAPER_TRACKING/PROVEN/...). These are client-side views over the same already-loaded
-// candidate list -- WATCHLIST is adminWatched (fix from the prior watchlist commit), FOUND TODAY and
-// ACTIVE NOW are real time-based filters, not new data.
-const SMART_MONEY_VIEWS=["ALL","FOUND_TODAY","ACTIVE_NOW","WATCHLIST","DISCOVERED","PAPER_TRACKING","PROVEN","REJECTED","PAUSED"] as const;
-function smartMoneyViewLabel(v:string){return v==="FOUND_TODAY"?"Found today":v==="ACTIVE_NOW"?"Active now":v==="WATCHLIST"?"Watchlist":v.replaceAll("_"," ")}
-function winRatePct(c:any){return c.sampleTrades?Math.round((c.profitableTrades/c.sampleTrades)*100):null}
-// Real gap found by forensic audit (M-12/PC-D): GET/POST /v1/admin/alerts and the whole
-// checkWatchlist() backend (brain-worker, 10s interval) that generates "watched wallet entered
-// TOKEN" alerts had zero frontend surface -- admin could WATCH a wallet and the backend would
-// genuinely keep monitoring it, but there was nowhere to actually see what it found.
-function AdminAlerts(){
- const[alerts,setAlerts]=useState<any[]|null>(null);
- const[err,setErr]=useState("");
- async function load(){try{const x=await apiFetch<any>("/v1/admin/alerts?unresolved=true");setAlerts(x.alerts||[])}catch(e){setErr(plainError(e))}}
- useEffect(()=>{void load()},[]);
- async function resolve(id:string){try{await apiFetch(`/v1/admin/alerts/${id}/resolve`,{method:"POST"});void load()}catch(e){setErr(plainError(e))}}
- return <section className="app-card" style={{marginTop:12}}>
-  <div className="card-title"><div><span>WATCHLIST ALERTS</span><h2>What watched wallets just did</h2></div><button className="soft-action" onClick={load}><RefreshCw size={12}/> Refresh</button></div>
-  {err&&<div className="auth-error">{err}</div>}
-  {alerts===null?<div className="loading" style={{minHeight:80}}>Loading…</div>:alerts.length?<div className="list">{alerts.map(a=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={a.id}><div><b>{a.message}</b><small>{a.chain} · {timeAgo(a.createdAt)}</small></div><button className="soft-action" onClick={()=>resolve(a.id)}>Resolve</button></div>)}</div>:<p style={{fontSize:11,color:"#8a8fa0"}}>No unresolved alerts. Watch a wallet below and alerts appear here automatically when it buys -- monitoring runs continuously in the background, no need to keep this page open.</p>}
- </section>;
-}
-function Whales({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
- const[stage,setStage]=useState<typeof SMART_MONEY_VIEWS[number]>("ALL");
- const[open,setOpen]=useState(false);
- const[form,setForm]=useState<any>({chain:"SOLANA",address:"",label:""});
- const[err,setErr]=useState("");
- const[expandedId,setExpandedId]=useState<string|null>(null);
- const[detail,setDetail]=useState<Record<string,{recentActivity:any[];currentTokens:any[]}|"loading"|"error">>({});
- const now=Date.now();
- async function toggleActivity(id:string){
-  if(expandedId===id){setExpandedId(null);return}
-  setExpandedId(id);
-  if(detail[id]&&detail[id]!=="error")return;
-  setDetail(x=>({...x,[id]:"loading"}));
-  try{
-   const r=await apiFetch<any>(`/v1/smart-wallets/${id}`);
-   setDetail(x=>({...x,[id]:{recentActivity:r.recentActivity||[],currentTokens:r.currentTokens||[]}}));
-  }catch{
-   setDetail(x=>({...x,[id]:"error"}));
-  }
- }
- const rows=(d.candidates||[]).filter((c:any)=>{
-  if(stage==="ALL")return true;
-  if(stage==="FOUND_TODAY")return now-new Date(c.createdAt).getTime()<24*3600_000;
-  if(stage==="ACTIVE_NOW")return c.lastScoredAt&&now-new Date(c.lastScoredAt).getTime()<3600_000;
-  if(stage==="WATCHLIST")return Boolean(c.adminWatched);
-  return c.stage===stage;
- });
- async function decide(id:string,action:string){try{await apiFetch(`/v1/admin/discovery/candidates/${id}/decision`,{method:"POST",body:JSON.stringify({action})});reload()}catch(e){setErr(plainError(e))}}
- async function relabel(id:string,label:string){try{await apiFetch(`/v1/admin/discovery/candidates/${id}`,{method:"PATCH",body:JSON.stringify({label})});reload()}catch(e){setErr(plainError(e))}}
- async function add(e:React.FormEvent){e.preventDefault();setErr("");try{await apiFetch("/v1/admin/discovery/candidates",{method:"POST",body:JSON.stringify(form)});setOpen(false);setForm({chain:"SOLANA",address:"",label:""});reload()}catch(e){setErr(plainError(e))}}
- return <>
-  {admin&&<button className="action-primary" style={{padding:"10px 13px",borderRadius:12,marginBottom:12}} onClick={()=>setOpen(!open)}><Plus size={13}/> Add wallet manually</button>}
-  {open&&<section className="app-card" style={{marginBottom:10}}><form className="form-grid" onSubmit={add}><label className="field"><span>Chain</span><select value={form.chain} onChange={e=>setForm({...form,chain:e.target.value})}><option>SOLANA</option><option>BASE</option><option>ETHEREUM</option><option>BNB</option><option>ARBITRUM</option><option>AVALANCHE</option></select></label><label className="field span2"><span>Wallet address</span><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})} required/></label><label className="field"><span>Label (e.g. KOL name)</span><input value={form.label} onChange={e=>setForm({...form,label:e.target.value})}/></label>{err&&<div className="auth-error span2">{err}</div>}<button className="action-primary span2" style={{height:42,borderRadius:12}}>Track wallet</button></form></section>}
-  <div className="config-tabs" style={{marginBottom:12}}>{SMART_MONEY_VIEWS.map(s=><button key={s} className={stage===s?"active":""} onClick={()=>setStage(s)}>{smartMoneyViewLabel(s)}</button>)}</div>
-  {stage==="WATCHLIST"&&<AdminAlerts/>}
-  <section className="app-card admin-table-wrap"><table className="admin-table"><thead><tr><th>Wallet</th><th>Chain</th><th>Label</th><th>Stage</th><th>Copyability</th><th>Win rate</th><th>Risk</th><th>7D P&amp;L</th><th>30D P&amp;L</th><th>Source</th><th>Action</th></tr></thead><tbody>{rows.map((c:any)=><React.Fragment key={c.id}><tr><td><small>{c.address.slice(0,6)}…{c.address.slice(-5)}</small></td><td>{c.chain}</td><td><input defaultValue={c.label||""} placeholder="Add label" disabled={!admin} onBlur={e=>{if(e.target.value!==(c.label||""))relabel(c.id,e.target.value)}} style={{background:"transparent",border:"1px solid var(--line)",borderRadius:8,padding:"4px 7px",color:"inherit",width:110,fontSize:9}}/></td><td><span className="status-badge">{c.stage.replaceAll("_"," ")}</span>{c.adminWatched&&<span className="status-badge" style={{marginLeft:4}}>Watched</span>}</td><td>{Math.round(c.copyabilityScore)}</td><td>{winRatePct(c)==null?"Unknown":`${winRatePct(c)}%`}</td><td>{Math.round(c.riskScore)}</td><td className={c.realizedPnl7dUsd==null?"":(c.realizedPnl7dUsd>=0?"positive":"negative")}>{c.realizedPnl7dUsd==null?"Unknown":money(c.realizedPnl7dUsd)}</td><td className={(c.realizedPnlUsd||0)>=0?"positive":"negative"}>{money(c.realizedPnlUsd)}</td><td>{c.source}</td><td><div className="table-actions"><button className="soft-action" onClick={()=>toggleActivity(c.id)}>{expandedId===c.id?"Hide activity":"View activity"}</button>{admin&&<><button className="soft-action" onClick={()=>decide(c.id,c.adminWatched?"UNWATCH":"WATCH")}>{c.adminWatched?"Unwatch":"Watch"}</button><button className="soft-action" onClick={()=>decide(c.id,"PROVEN")}>Prove</button><button className="soft-action" onClick={()=>decide(c.id,"PAUSED")}>Pause</button><button className="soft-action" onClick={()=>decide(c.id,"REJECTED")}>Reject</button></>}</div></td></tr>{expandedId===c.id&&<tr><td colSpan={11}>
-   {detail[c.id]==="loading"&&<div className="loading" style={{minHeight:40}}>Loading activity…</div>}
-   {detail[c.id]==="error"&&<p style={{fontSize:11,color:"#8a8fa0"}}>Could not load recent activity for this wallet.</p>}
-   {detail[c.id]&&detail[c.id]!=="loading"&&detail[c.id]!=="error"&&(()=>{const dd=detail[c.id] as {recentActivity:any[];currentTokens:any[]};return <div style={{display:"grid",gap:10,padding:"8px 2px"}}>
-    <div><b style={{fontSize:10,color:"#8a8fa0"}}>CURRENTLY TRACKED TOKENS</b>{dd.currentTokens.length?<div className="list" style={{marginTop:6}}>{dd.currentTokens.map((t:any,i:number)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={i}><div><b>{t.mint.slice(0,6)}…{t.mint.slice(-4)}</b></div><span className="status-badge">{t.side} · {timeAgo(t.lastSeenAt)}</span></div>)}</div>:<p style={{fontSize:11,color:"#8a8fa0",margin:"6px 0 0"}}>No currently-tracked tokens.</p>}</div>
-    <div><b style={{fontSize:10,color:"#8a8fa0"}}>RECENT ON-CHAIN ACTIVITY (last {dd.recentActivity.length})</b>{dd.recentActivity.length?<div className="list" style={{marginTop:6}}>{dd.recentActivity.slice(0,15).map((a:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={a.id}><div><b>{a.side} {a.mint.slice(0,6)}…{a.mint.slice(-4)}</b><small>{a.amountUsd!=null?money(a.amountUsd):"Amount unavailable"}</small></div><span className="status-badge">{timeAgo(a.observedAt)}</span></div>)}</div>:<p style={{fontSize:11,color:"#8a8fa0",margin:"6px 0 0"}}>No recent on-chain activity observed yet.</p>}</div>
-   </div>})()}
-  </td></tr>}</React.Fragment>)}{!rows.length&&<tr><td colSpan={11}>No wallets in this view yet.</td></tr>}</tbody></table></section>
- </>
-}
 const CFG_LABELS:Record<string,string>={brain:"Global Brain",marketData:"Market data",execution:"Trade routing",signer:"Delegated signer",discovery:"Discovery tuning",risk:"Risk defaults",fees:"Platform fee",email:"Email",push:"Push notifications",social:"X (social)",chains:"Chains",branding:"Branding"};
 // Some keys have safe, intentional defaults (0 fee, generous risk limits, Solana-only chains) —
 // "never saved" there means "using defaults," not "broken," per the no-conventional-caps philosophy.
