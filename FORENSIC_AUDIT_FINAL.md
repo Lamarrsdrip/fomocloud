@@ -71,76 +71,81 @@ Repo: Lamarrsdrip/fomocloud. HEAD at last update: `baf114a`.
 ---
 
 ## M — Master Audit Prompt (sections 0-68)
+Like the PC table above, this table was left at its Pass-1 "PENDING AUDIT"/"Fork running" placeholder
+for most rows long after the underlying work was actually done and logged in the Fixes table below —
+a real accuracy gap in the matrix itself, now corrected by cross-referencing every row against Fixes,
+Fork A-E's actual findings (not just their scope), and 2 fresh grep sweeps run specifically to verify
+M-23 and M-62 rather than carry forward an assumption.
 
 | ID | Requirement | Status | Files/Evidence | Remaining |
 |---|---|---|---|---|
-| M-1 | System map: full architecture graph (chain→ingestion→discovery→brain→execution→portfolio) + wallet→deposit→balance→cash→execution graph | PENDING AUDIT | | Build explicit graph doc once subsystem forks report |
-| M-2 | Single authoritative source per financial/state concept (balance, cash, P&L, position qty, entry price, execution state, brain state, wallet status, market price, notification pref, deposit status) | PENDING AUDIT | Fork A/B running | |
-| M-3 | Product concept: intelligence runs independent of wallet/Auto Trade/live execution | PENDING AUDIT | Fork D running | |
-| M-4 | Raw discovery != user discovery (RAW_TOKEN→CANDIDATE→FLOW_DETECTED→SMART_MONEY_DETECTED→HEATING_UP→BREAKOUT_FLOW→MONEY_RUSH funnel) | PENDING AUDIT | Fork D running | |
-| M-5 | Prove what normal Discover UI actually reads (frontend→API→DB→qualification) | PENDING AUDIT | Fork D running | |
-| M-6 | Proper token qualification funnel (KNOWN POSITIVE/NEGATIVE/UNKNOWN, not require-all-metrics) | PENDING AUDIT | | |
-| M-7 | Smart wallet discovery full rebuild: multiple channels (token-first, wallet-first, flow-first, convergence-first) | PENDING AUDIT | Fork D running | |
-| M-8 | Separate wallet metrics (wealth, profitability, consistency, early-entry, copyability, activity, risk, drawdown, rug exposure, chase, token-selection, sample confidence) | PENDING AUDIT | Fork D running | |
-| M-9 | Fix forward-proof contamination (OPEN/unrealized paper P&L must not count as PROVEN evidence) | PENDING AUDIT | Fork D running | |
-| M-10 | Unknown risk must remain UNKNOWN (no `?? 0` / `|| 0` risk defaults) | PENDING AUDIT | Fork D running | |
-| M-11 | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected) | PENDING AUDIT | | |
-| M-12 | Admin watchlist actually monitors continuously (persisted, backend-driven, not browser-dependent) | PENDING AUDIT | | |
-| M-13 | PROVEN must mean proven (no one-button admin fabrication) | PENDING AUDIT | Fork D running | |
-| M-14 | Smart wallet → Brain connection actually wired end-to-end | PENDING AUDIT | Fork D running | |
-| M-15 | Convergence weighted by wallet quality (proven > paper > unknown) | PENDING AUDIT | | |
-| M-16 | Brain model splits decision into Momentum/SmartMoney/Execution/Risk/Evidence, not one opaque score | PENDING AUDIT | | |
-| M-17 | Brain user explanation ("why found this") on every opportunity | PENDING AUDIT | | |
-| M-18 | Notification preference routing — independent qualification per preference type | PENDING AUDIT | Fork D running | |
-| M-19 | Opportunity lifecycle (DISCOVERED..CLOSED), no time-based re-entry | PENDING AUDIT | Known: 30s BUY_NOW repeat bug fixed (commit 1ad91f4) — verify full lifecycle beyond that patch | |
-| M-20 | Multi-chain capability safety — remove `inputMint = "USDC"` fallback ambiguity, explicit capability registry per chain | PENDING AUDIT | Fork E running | |
-| M-21 | EVM hardening (reconnect, watchdog, failover, rate limit, reorg, cursor/replay, stale detection, dynamic pricing) | PENDING AUDIT | Fork E running; commit e6b41f8 admits reconnect NOT done as of that commit | |
-| M-22 | Raw chain ingestion — no silent event loss, durable lifecycle (SEEN..TERMINAL_FAILURE) | PENDING AUDIT | Fork E running | |
-| M-23 | Market data truth — source/observedAt/freshness/quality tracked, no fake $0 price | PENDING AUDIT | | |
-| M-24 | Market-worker priorities P0(live positions)..P5(backfill) enforced | PENDING AUDIT | Commit 438e31d claims this — verify | |
-| M-25 | RPC resilience — chaos-tested failover/failback, health check validates required methods not just getHealth | PENDING AUDIT | Fork E running | |
-| M-26 | Execution full real-money forensics — buy lifecycle crash-safety at every boundary | PENDING AUDIT | Fork B running | |
-| M-27 | Source sell / exit forensics — no double-execution | PENDING AUDIT | Fork B running | |
-| M-28 | Exit engine real product behavior (test +100%..+500%, runners, partial exits) | PENDING AUDIT | Fork B running | |
-| M-29 | Stale data must never cause real exit | PENDING AUDIT | Fork B running | |
-| M-30 | Financial precision audit (no float drift in canonical money) | IMPLEMENTED | Position/PositionExit/TradingCashAllocation/LedgerEntry all now BigInt micro-USD (fixes #18, #20); Decimal confirmed unavailable on Prisma+MongoDB. Full monorepo build (32/32) is the compile-time completeness check; not LIVE VERIFIED (no DATABASE_URL in this environment) | |
-| M-31 | Immutable financial ledger (deposit/withdrawal/buy/sell/fee/adjustment/reversal) | PENDING AUDIT | Fork A running | |
-| M-32 | Portfolio truth consistent across all surfaces | PENDING AUDIT | Fork A running; commit 1758886 claims partial fix | |
-| M-33 | Wallet full product review (preserve Privy features, finish UX) | PENDING AUDIT | | |
-| M-34 | Wallet export security (key never reaches backend/logs/DB) | PENDING AUDIT | Commit baf114a implements export via Privy modal — verify no backend key exposure | |
-| M-35 | Add Funds — direct one-tap flow from every surface | PENDING AUDIT | | |
-| M-36 | Deposit reconciliation chaos-tested (no double credit) | PENDING AUDIT | Commit 8eae454 claims idempotent deposits — verify | |
-| M-37 | Auth/session security threat model (XSS, refresh replay, CSRF, rotation, multi-tab) | PENDING AUDIT | Fork C running | |
-| M-38 | IDOR / authorization audit across all user resources + admin role separation | PENDING AUDIT | Fork C running | |
-| M-39 | Admin security — no secret exposure to frontend, audit log for high-risk changes | PENDING AUDIT | Fork C running | |
-| M-40 | Realtime architecture (SSE/WS) triggers refetch of authoritative state, not itself authoritative | PENDING AUDIT | | |
-| M-41 | User Home rebuild (MemeCloud Pulse concept) | PENDING AUDIT | | |
-| M-42 | Discover UX (Hot Now/Smart Money/Whales/Money Rush/Early/Watchlist primary, New Token Radar secondary) | PENDING AUDIT | | |
-| M-43 | Smart Money UX first-class section | PENDING AUDIT | | |
-| M-44 | Token detail — MemeCloud Verdict breakdown | PENDING AUDIT | | |
-| M-45 | Auto Trade UX (OFF explains intelligence still runs; ON shows allocation/exposure/risk) | PENDING AUDIT | | |
-| M-46 | Empty/degraded states differentiated (quiet market vs pipeline broken) | PENDING AUDIT | | |
-| M-47 | Admin Health 2.0 (real usefulness metrics, not heartbeat-only) | PENDING AUDIT | | |
-| M-48 | Remove health lies — measure actual useful work per worker | PENDING AUDIT | | |
-| M-49 | API monolith refactor (server.ts ~160KB → domain routes/services/middleware) | PENDING AUDIT | | |
-| M-50 | Frontend monolith refactor (split god-components) | PENDING AUDIT | | |
-| M-51 | Test scripts audit — find echo/no-op/`|| true`/`.only`/`.skip` fake tests | PENDING AUDIT | | |
-| M-52 | Chaos testing (Mongo/Redis/RPC/Birdeye/Jupiter/Privy/WS/BullMQ failure matrix) | PENDING AUDIT | | |
-| M-53 | Process-crash tests around real-money boundaries | PENDING AUDIT | | |
-| M-54 | Observation-only live funnel test (raw events → Money Rush counts) | PENDING AUDIT | Requires live system running — VPS currently down, BLOCKED until VPS restored |
-| M-55 | Wallet discovery live test (observation window funnel report) | PENDING AUDIT | Same VPS dependency |
-| M-56 | No-wallet acceptance test (Home/Discover/Brain/SmartMoney/watchlist/notifications work with zero wallet) | PENDING AUDIT | | |
-| M-57 | Real-world concept test (3 proven wallets converge scenario) | PENDING AUDIT | Requires live data — VPS dependency |
-| M-58 | Random new coin test (weak token must NOT reach Hot/Strong/Money Rush) | PENDING AUDIT | | |
-| M-59 | Real-money acceptance (funded end-to-end proof) | BLOCKED | Requires owner-approved real funds and live VPS — explicit owner approval required before any real-money test runs |
-| M-60 | Full UX QA across viewports | PENDING AUDIT | | |
-| M-61 | Security pass (IDOR/auth bypass/replay/overflow/etc adversarial) | PENDING AUDIT | Fork C running | |
-| M-62 | Audit things user didn't mention (TODO/FIXME/MOCK/FAKE/PLACEHOLDER/catch{}/as any/hardcoded/etc grep sweep) | PENDING AUDIT | | |
+| M-1 | System map: full architecture graph (chain→ingestion→discovery→brain→execution→portfolio) + wallet→deposit→balance→cash→execution graph | IMPLEMENTED | `docs/ARCHITECTURE_MAP.md` (fix #21) | |
+| M-2 | Single authoritative source per financial/state concept (balance, cash, P&L, position qty, entry price, execution state, brain state, wallet status, market price, notification pref, deposit status) | PARTIAL | Money/position/cash fields consolidated onto BigInt-micros canonical fields (fixes #18, #20) with a real append-only LedgerEntry as the single source for money movement (fix #10); Fork A separately found portfolio value already single-sourced (M-32) | Balance/execution-state/brain-state/wallet-status/market-price/notification-pref/deposit-status were not each individually re-verified as single-sourced beyond the money-specific work above |
+| M-3 | Product concept: intelligence runs independent of wallet/Auto Trade/live execution | NOT INDIVIDUALLY REPORTED | Fork D's scope included M-3 but its findings list (above) never called out a specific problem here — that is not the same as a confirmed pass | Needs its own dedicated check, not carried forward as "probably fine" |
+| M-4 | Raw discovery != user discovery (stage funnel) | DONE | GlobalBrainOpportunity.state is a real persisted BrainState enum (fix #50), written every tick by brain-worker | Uses SCANNING/BUILDING/BREAKOUT_FLOW/MONEY_RUSH naming, not the spec's literal RAW_TOKEN/CANDIDATE/... labels -- same real persisted progression, different names |
+| M-5 | Prove what normal Discover UI actually reads (frontend→API→DB→qualification) | DONE | Fork D found the WHERE clause loose (any nonzero activity counted); fix #13 tightened the main feed to score>=56 and moved everything else to a separate New Token Radar | |
+| M-6 | Proper token qualification funnel (KNOWN POSITIVE/NEGATIVE/UNKNOWN, not require-all-metrics) | PARTIAL | evidenceCompleteness field (fix #7) + BrainState enum (fix #50) give real, typed evidence-quality tracking | Not formalized as a 3-way POSITIVE/NEGATIVE/UNKNOWN classification per individual metric |
+| M-7 | Smart wallet discovery full rebuild: multiple channels (token-first, wallet-first, flow-first, convergence-first) | DONE | Fork D found only token-first + a broken flow-first (skipped every unknown wallet); scanWalletFirst() (fix #8) adds real wallet-first/convergence-first discovery of previously-unknown addresses | |
+| M-8 | Separate wallet metrics (wealth, profitability, consistency, early-entry, copyability, activity, risk, drawdown, rug exposure, chase, token-selection, sample confidence) | IMPLEMENTED | Fork D: "MATCHES CONCEPT" -- scoreWallet() has no wealth/balance term, built from win rate/PnL efficiency/sample size/forward returns/chase/insider/rug penalties | |
+| M-9 | Fix forward-proof contamination | DONE | Fix #1 | |
+| M-10 | Unknown risk must remain UNKNOWN | DONE | Fix #7 | |
+| M-11 | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected) | PARTIAL | Fixes #19, #43 (views, columns, View Activity drill-in) | Card-based wallet profile layout, dedicated TRADES drill-in (see PC-C) |
+| M-12 | Admin watchlist actually monitors continuously | DONE | Fix #14 (checkWatchlist, 10s interval, backend-driven) | |
+| M-13 | PROVEN must mean proven (no one-button admin fabrication) | DONE | Fixes #2, #14 | |
+| M-14 | Smart wallet → Brain connection actually wired end-to-end | DONE | Verified by a fresh code trace this session (see PC-K): brain-worker queries smartWalletCandidate directly and feeds real convergence into both the visible `reasons` text and notifications | |
+| M-15 | Convergence weighted by wallet quality | DONE | Fix #12 | |
+| M-16 | Brain model splits decision into Momentum/SmartMoney/Execution/Risk/Evidence | DONE | Fix #11 | |
+| M-17 | Brain user explanation ("why found this") on every opportunity | DONE | Fix #11 + real `reasons` array (see PC-I) | |
+| M-18 | Notification preference routing — independent qualification per preference type | DONE | Fix #3; regression-tested this session (fix #38) | |
+| M-19 | Opportunity lifecycle, no time-based re-entry | IMPLEMENTED | didStateUpgrade()'s ratchet-up-only logic (packages/brain, tested, now BrainState-typed per fix #50) is the general mechanism the earlier 30s-repeat patch (1ad91f4) was a specific instance of | Not LIVE VERIFIED |
+| M-20 | Multi-chain capability safety | DONE | Fix #6 | |
+| M-21 | EVM hardening (reconnect, watchdog, failover, rate limit, reorg, cursor/replay, stale detection, dynamic pricing) | PARTIAL | Reconnect/watchdog (fix #9), capability registry (fix #6), and the BUY/SELL classification itself is now real and tested (fix #41) | Reorg handling, cursor/replay durability, and dynamic native-token pricing beyond config reload not individually verified; EVM ingestion remains dormant in production (no RPC configured) |
+| M-22 | Raw chain ingestion — no silent event loss, durable lifecycle | PARTIAL, DELIBERATE | Fork E: real 90s watchdog reconnect exists; dropped-under-backoff events are a documented, reasoned load-shedding choice | No requeue/dead-letter/durable cursor -- a dropped signature is genuinely unrecovered, not silently miscounted. Not fixed this session |
+| M-23 | Market data truth — no fake $0 price | VERIFIED (code) | Fresh grep this session for `priceUsd ?? 0` / fabricated-zero-price patterns: **none found**, repo-wide | Not LIVE VERIFIED |
+| M-24 | Market-worker priorities P0(live positions)..P5(backfill) enforced | PENDING AUDIT | Commit 438e31d claims this — not freshly re-verified this session | |
+| M-25 | RPC resilience — health check validates required methods, not just getHealth | DONE | Fix #5 (probeIndexedMethod against getTokenSupply) | Chaos-tested failover/failback still not performed (see M-52) |
+| M-26 | Execution full real-money forensics — buy lifecycle crash-safety | IMPLEMENTED | Fork B: decisionKey idempotency, Privy reference_id ambiguous-broadcast recovery, atomic `$transaction` writes all confirmed real | Fork B's one noted minor gap (initial `db.order.create` lacks the SOURCE_SELL path's explicit P2002 handler, safe today via outer catch) was not revisited this session |
+| M-27 | Source sell / exit forensics — no double-execution | DONE | Fix #4 | |
+| M-28 | Exit engine real product behavior (+100%..+500%, runners, partial exits) | IMPLEMENTED, TESTED | calculateExitAccounting (packages/shared) is real and unit-tested (accounting.test.ts) | Not LIVE VERIFIED against real price action |
+| M-29 | Stale data must never cause real exit | DONE | Fork B verified in code (services/exits/src/index.ts) | |
+| M-30 | Financial precision audit (no float drift in canonical money) | IMPLEMENTED | Position/PositionExit/TradingCashAllocation/LedgerEntry all now BigInt micro-USD (fixes #18, #20); Decimal confirmed unavailable on Prisma+MongoDB. Full monorepo build (32/32) is the compile-time completeness check | Not LIVE VERIFIED (no DATABASE_URL in this environment) |
+| M-31 | Immutable financial ledger | DONE | Fork A found this MISSING entirely; fix #10 adds the real LedgerEntry model, wired into every real-money confirmation point | |
+| M-32 | Portfolio truth consistent across all surfaces | DONE | Fork A: already IMPLEMENTED (single source, frontend renders API fields directly, no competing calculation found) | |
+| M-33 | Wallet full product review (preserve Privy features, finish UX) | PARTIAL | Real on-chain balances exposed (fix #25), export audit trail + SECURITY_ALERT (fix #33), real Max button with SOL fee reserve (fix #34) | Full unified "Wallet home" layout redesign still open (see Still Open) |
+| M-34 | Wallet export security (key never reaches backend/logs/DB) | VERIFIED (code) | The export flow calls Privy's client-side export modal directly; the new `/v1/me/wallets/:id/exported` route (fix #33) is a fire-and-forget POST sent only *after* export already succeeded client-side, carrying no key material -- the backend genuinely never sees the private key | Not LIVE VERIFIED |
+| M-35 | Add Funds — direct one-tap flow from every surface | NOT STARTED | | Part of the still-open VERY LARGE UX bucket |
+| M-36 | Deposit reconciliation chaos-tested (no double credit) | PARTIAL | Fix #10 added an atomic LedgerEntry DEPOSIT write inside the same `$transaction` as Deposit creation, strengthening the idempotency commit 8eae454 already claimed | No chaos test has actually been run (needs a live environment, see M-52) |
+| M-37 | Auth/session security threat model | SAFE (code) | Fork C: real long-lived credential is httpOnly `fomo_refresh`, not the localStorage access token; helmet() applied; refresh-race bug found+fixed+regression-tested | Cross-tab concurrent refresh race noted as a pre-existing edge case, not re-examined this session |
+| M-38 | IDOR / authorization audit across all user resources + admin role separation | SAFE (code) | Fork C verified ~10 routes; this session's own re-verification spot-checked 2 more (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- combined with server.ts being the only route file in the API, essentially the full parameterized-route surface is checked | |
+| M-39 | Admin security — no secret exposure to frontend, audit log for high-risk changes | SAFE (code) | Fork C verified requireAdmin/adminOnly separation and secret redaction; fix #33 adds a real audit-logged export event | Secret-exposure check was scoped to server.ts only, not exhaustive repo-wide |
+| M-40 | Realtime architecture (SSE/WS) triggers refetch, not itself authoritative | LIKELY N/A | No SSE/WS server was found anywhere in apps/api during this session's work -- the frontend polls REST endpoints, it does not appear to have a live-push layer at all | Not a dedicated audit; if a WS/SSE layer exists somewhere unexamined, this needs a real check |
+| M-41 | User Home rebuild (MemeCloud Pulse concept) | DONE | Fix #24 | |
+| M-42 | Discover UX | PARTIAL | Fix #13 (New Token Radar separation) | Full Hot Now/Smart Money/Whales/Money Rush/Early/Watchlist section redesign not done |
+| M-43 | Smart Money UX first-class section | PARTIAL | Fix #26 (Hot Now/Newly Found filters, 7D P&L) | Full first-class nav treatment not done |
+| M-44 | Token detail — MemeCloud Verdict breakdown | DONE | Fix #11 | |
+| M-45 | Auto Trade UX | DONE | Fix #28 | |
+| M-46 | Empty/degraded states differentiated | PARTIAL | Fix #27 (Home Pulse, SmartWalletsView); this session reviewed CommunityView/ActivityView/TradersView and found they have no pipeline-freshness dependency to report (they reflect this account's own DB rows directly, not an aggregated/computed feed that can silently go stale) -- so a degraded badge there would be decorative, not evidence-based | Admin-side views and any other pipeline-dependent surface not yet audited for this distinction |
+| M-47 | Admin Health 2.0 (real usefulness metrics, not heartbeat-only) | PARTIAL | Fix #31 (real per-worker WorkerHeartbeat.detail surfaced) | Full dashboard redesign (uptime charts, queue-depth history, alert history) not done |
+| M-48 | Remove health lies — measure actual useful work per worker | DONE | Fix #31 | |
+| M-49 | API monolith refactor | IN PROGRESS | server.ts 2443→2050 lines via middleware.ts/providerHealth.ts/auth.ts/trading.ts (fixes #35-37) | Route-domain splitting (actual Express Router mounts) deliberately deferred without a live DB to verify wiring against |
+| M-50 | Frontend monolith refactor | IN PROGRESS | app/page.tsx 800→689 lines via 6 extractions (fixes #42, #44-48) | HomeView/DiscoverView/SmartWalletsView/TokenDetail/TradeView/ProfileView need a shared-state design decision before splitting further |
+| M-51 | Test scripts audit | DONE | Fixes #15, #16, #23, #29, #30, #32, #38-41, #49 -- every package/service checked | |
+| M-52 | Chaos testing (Mongo/Redis/RPC/Birdeye/Jupiter/Privy/WS/BullMQ failure matrix) | BLOCKED | No live environment available here to induce real failures against | |
+| M-53 | Process-crash tests around real-money boundaries | BLOCKED | Same reason as M-52 | |
+| M-54 | Observation-only live funnel test | BLOCKED | Requires the VPS, currently down | |
+| M-55 | Wallet discovery live test | BLOCKED | Same VPS dependency | |
+| M-56 | No-wallet acceptance test (Home/Discover/Brain/SmartMoney/watchlist/notifications work with zero wallet) | PENDING AUDIT | Not freshly checked this session | |
+| M-57 | Real-world concept test (3 proven wallets converge scenario) | PARTIAL | The underlying logic is real and tested (weightedConvergenceScore, fix #12; PC-K's code trace confirms brain-worker genuinely queries PROVEN wallets among a token's recent buyers) | The live numeric proof itself needs real data (BLOCKED, same as M-54/55) |
+| M-58 | Random new coin test (weak token must NOT reach Hot/Strong/Money Rush) | IMPLEMENTED, TESTED | packages/brain's own test suite already covers this exact guarantee ("zero evidence but genuinely just discovered is FOUND, not fabricated activity"; "zero evidence and not recently discovered is COOLING, never permanently live") | Not LIVE VERIFIED against a real new listing |
+| M-59 | Real-money acceptance (funded end-to-end proof) | BLOCKED | Requires owner-approved real funds and live VPS | |
+| M-60 | Full UX QA across viewports | BLOCKED | No device/browser available in this environment to actually test against, not merely "not started" | |
+| M-61 | Security pass (IDOR/auth bypass/replay/overflow/etc adversarial) | SAFE (code) | Fork C's full findings + this session's own re-verification round (2 more IDOR routes, BullMQ jobId dedup on every `.add()` call, zero-price grep) | Not a live adversarial pentest |
+| M-62 | Audit things user didn't mention | DONE | Fresh grep this session: zero TODO/FIXME/XXX/PLACEHOLDER/HACK comments and zero MOCK/FAKE/mockData patterns anywhere in apps/services/packages source. Plus real unprompted findings already logged this session: 4 genuinely dead packages (router/market/intelligence/fees, M-51 section), 3 "wired to nothing" notification preferences found and fixed, and the BrainState enum/default mismatch (fix #50) | |
 | M-63 | Cross-subsystem audit discipline (no isolated patches) | ONGOING PRACTICE | Applied as working method throughout, not a single deliverable | |
-| M-64 | Do not count code as proof — strict status vocabulary | IMPLEMENTED AS PRACTICE | This matrix enforces IMPLEMENTED/TESTED/LIVE VERIFIED/BLOCKED only | |
-| M-65 | Repeat audit passes 1-7 after fixes | PENDING | Scheduled after first fix round completes | |
-| M-66 | Final requirement traceability doc | IN PROGRESS | This file | |
-| M-67 | Final product questions (22 questions) | PENDING AUDIT | See Q-# section below | |
+| M-64 | Do not count code as proof — strict status vocabulary | IMPLEMENTED AS PRACTICE | This matrix enforces IMPLEMENTED/TESTED/LIVE VERIFIED/BLOCKED (plus a few honestly-labeled intermediate states like PARTIAL/SAFE (code), never bare "done") | |
+| M-65 | Repeat audit passes 1-7 after fixes | ONGOING | This is pass 1; more passes needed once larger items (M-49/50 completion, live testing) land | |
+| M-66 | Final requirement traceability doc | ONGOING | This file — actively corrected this session after finding it had gone stale relative to actual progress (see notes above the PC and M tables) | |
+| M-67 | Final product questions (22 questions) | ANSWERED | See "Final Product Questions (M-67)" section below | |
 | M-68 | Execution instruction (fix, don't just report; clean commits; don't reset good work; BLOCKED only for genuine external blockers) | ONGOING PRACTICE | Governing rule for all work in this file | |
 
 ## C — Continuation/Resume Prompt (sections 1-30)
