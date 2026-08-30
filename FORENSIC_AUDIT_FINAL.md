@@ -228,6 +228,9 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 23 | packages/flow-worker: extracted ownerDeltas (pure balance-delta parsing) to a side-effect-free module + 6 real tests, replacing no-op script | ec3a96d | M-51 (partial) |
 | 24 | Home: real MemeCloud Pulse (Heating Up/Strong/Money Rush/Whale counts), Auto Trade status card, Hot Right Now, expanded account hero (Total Value/Available/In Trades/Today P&L) -- all from already-fetched data | bc41bb0 | M-41 (partial) |
 | 25 | Wallet: exposed real on-chain USDC/SOL balances (WalletAssetBalance had been synced since commit 8eae454 but never read by any route) via new GET /v1/me/wallets/:id/balances + display in WalletDetailSheet, with honest Unknown/Delayed states | 54a3064 | M-33 (partial) |
+| 26 | Smart Money: Hot Now + Newly Found filters, 7D P&L surfaced (schema/scoring already had it, never returned by the API) | 8d65b58 | M-43, PC-C (partial) |
+| 27 | Empty states: SmartWalletsView + Home Pulse now distinguish degraded pipeline from genuinely quiet (was already tracked, just not used) | 2783ac2 | M-46 (partial) |
+| 28 | Auto Trade: OFF/ON explanatory copy (spec's own wording) + real allocation/trades-today/last-action from already-fetched data | 9c40dda | M-45 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
