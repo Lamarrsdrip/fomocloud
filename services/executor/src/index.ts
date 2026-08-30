@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros } from "@memecloud/shared";
+import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
 import { evaluateEntry } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
@@ -115,7 +115,7 @@ async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitt
   const already=await db.position.findFirst({where:{userId:follow.userId,mode:"LIVE",entryTxHash:txHash}});
   await db.$transaction([
     db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsd:actualUsd,avgEntryPriceUsd:actualEntry,currentPriceUsd:actualEntry,peakPriceUsd:actualEntry,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date()}})]),
+    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date()}})]),
     db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}}),
     // Real-money accounting audit trail (LedgerEntry) written atomically alongside the state change
     // it documents -- never a separate, un-atomic write that could drift from what actually happened.
@@ -173,8 +173,9 @@ async function finalizeLiveSell(order:any,attemptKey:string,txHash:string,permit
   const actualTokenAmount=Number(actualTokensSoldRaw)/(10**decimals);
   if(!Number.isFinite(actualTokenAmount)||actualTokenAmount<=0)throw Object.assign(new Error("INVALID_CONFIRMED_TOKEN_AMOUNT"),{code:"INVALID_CONFIRMED_TOKEN_AMOUNT"});
   const actualExecutionPriceUsd=actualProceedsUsd/actualTokenAmount;
-  const fresh=await db.position.findUnique({where:{id:position.id}});
-  if(!fresh)throw Object.assign(new Error("POSITION_MISSING_ON_RECONCILE"),{code:"POSITION_MISSING_ON_RECONCILE"});
+  const freshRaw=await db.position.findUnique({where:{id:position.id}});
+  if(!freshRaw)throw Object.assign(new Error("POSITION_MISSING_ON_RECONCILE"),{code:"POSITION_MISSING_ON_RECONCILE"});
+  const fresh={...freshRaw,...positionUsdFields(freshRaw)};
   const freshRemaining=BigInt(fresh.remainingTokenRaw);
   const cappedSoldRaw=actualTokensSoldRaw>freshRemaining?freshRemaining:actualTokensSoldRaw;
   if(cappedSoldRaw<=0n||!fresh.avgEntryPriceUsd)throw Object.assign(new Error("POSITION_ALREADY_FULLY_EXITED"),{code:"POSITION_ALREADY_FULLY_EXITED"});
@@ -186,8 +187,8 @@ async function finalizeLiveSell(order:any,attemptKey:string,txHash:string,permit
   // @default(auto()); a 24-hex-char string is all a Mongo ObjectId needs to be valid).
   const exitId=crypto.randomBytes(12).toString("hex");
   await db.$transaction([
-    db.positionExit.create({data:{id:exitId,positionId:position.id,reason:"SOURCE_SELL_MIRROR_LIVE",tokenRaw:cappedSoldRaw.toString(),proceedsUsd:accounting.netProceedsUsd,pnlUsd:accounting.realizedPnlUsd,txHash}}),
-    db.position.update({where:{id:position.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:accounting.realizedPnlUsd},profitTakenUsd:{increment:Math.max(0,accounting.realizedPnlUsd)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}}),
+    db.positionExit.create({data:{id:exitId,positionId:position.id,reason:"SOURCE_SELL_MIRROR_LIVE",tokenRaw:cappedSoldRaw.toString(),proceedsUsdMicros:usdToMicros(accounting.netProceedsUsd),pnlUsdMicros:usdToMicros(accounting.realizedPnlUsd),txHash}}),
+    db.position.update({where:{id:position.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsdMicros:{increment:usdToMicros(accounting.realizedPnlUsd)},profitTakenUsdMicros:{increment:usdToMicros(Math.max(0,accounting.realizedPnlUsd))},unrealizedPnlUsdMicros:isClosed?0n:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}}),
     db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
     db.ledgerEntry.create({data:{userId:position.userId,type:"SELL_PROCEEDS",amountUsdMicros:usdToMicros(accounting.netProceedsUsd),chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live source-sell mirror confirmed on-chain, tx ${txHash}`}}),
     db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}})
@@ -197,10 +198,12 @@ async function finalizeLiveSell(order:any,attemptKey:string,txHash:string,permit
 
 async function handleSourceSell(signal:any){
   const mode=(process.env.EXECUTION_MODE??"simulation").toUpperCase() as "SIMULATION"|"LIVE";
-  const positions=await db.position.findMany({
+  // M-30: convert once, right after fetch -- everything below (both the LIVE and SIMULATION loops)
+  // keeps reading the same field names as plain numbers, unchanged.
+  const positions=(await db.position.findMany({
     where:{sourceTraderId:signal.traderId,mode,mint:signal.inputMint,status:{in:["OPEN","PARTIALLY_CLOSED"]}},
     include:{sourceTrader:true}
-  });
+  })).map(p=>({...p,...positionUsdFields(p)}));
   const byUser=new Map<string,typeof positions>();
   for(const p of positions){const list=byUser.get(p.userId)??[];list.push(p);byUser.set(p.userId,list)}
   for(const [userId,userPositions] of byUser){
@@ -337,8 +340,8 @@ async function handleSourceSell(signal:any){
       const nextRaw=BigInt(accounting.remainingTokenRaw);
       const isClosed=nextRaw<=0n||soldPct>=99.9;
       await db.$transaction([
-        db.positionExit.create({data:{positionId:p.id,reason:"SOURCE_SELL_MIRROR_SIMULATION",tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
-        db.position.update({where:{id:p.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:isClosed?0:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}})
+        db.positionExit.create({data:{positionId:p.id,reason:"SOURCE_SELL_MIRROR_SIMULATION",tokenRaw:rawToExit.toString(),proceedsUsdMicros:usdToMicros(proceeds),pnlUsdMicros:usdToMicros(pnl)}}),
+        db.position.update({where:{id:p.id},data:{remainingTokenRaw:isClosed?"0":nextRaw.toString(),realizedPnlUsdMicros:{increment:usdToMicros(pnl)},profitTakenUsdMicros:{increment:usdToMicros(Math.max(0,pnl))},unrealizedPnlUsdMicros:isClosed?0n:undefined,status:isClosed?"CLOSED":"PARTIALLY_CLOSED",closedAt:isClosed?new Date():undefined}})
       ]);
       totalPnl+=pnl;totalProceeds+=proceeds;if(isClosed)closed++;else partial++;
     }
@@ -411,14 +414,17 @@ const worker=new Worker("signals",async job=>{
     }
 
     const mode=(process.env.EXECUTION_MODE??"simulation").toUpperCase() as "SIMULATION"|"LIVE";
-    const open=await db.position.findMany({where:{userId:follow.userId,mode,status:{in:["OPEN","PARTIALLY_CLOSED"]}}});
+    // M-30: Position's authoritative USD fields are BigInt micro-USD in storage; convert to plain
+    // numbers under the original names right here so remainingCostBasisUsd below (unchanged) keeps
+    // working exactly as before.
+    const open=(await db.position.findMany({where:{userId:follow.userId,mode,status:{in:["OPEN","PARTIALLY_CLOSED"]}}})).map(p=>({...p,...positionUsdFields(p)}));
     if(global.maxConcurrentPositions>0 && open.length>=global.maxConcurrentPositions){
       await saveDecision({allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_POSITIONS",explanation:"Your own open-position limit is currently reached."});
       skippedCount++; continue;
     }
 
     const allocation=follow.user.cashAllocations.find(a=>a.chain===signal.chain);
-    const availableUsd=allocation?.availableUsd??0;
+    const availableUsd=allocation?microsToUsd(allocation.availableUsdMicros):0;
     const currentExposureUsd=open.reduce((a,p)=>a+remainingCostBasisUsd(p),0);
     const tokenMint=signal.outputMint;
     const sameOpen=open.filter(p=>p.mint===tokenMint&&p.sourceTraderId===signal.traderId);
@@ -667,8 +673,8 @@ const worker=new Worker("signals",async job=>{
         db.position.create({
           data:{
             userId:follow.userId,sourceTraderId:signal.traderId,chain:signal.chain,mode:"SIMULATION",mint:signal.outputMint,quoteMint:usdcSol,
-            entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsd:amountUsd,
-            avgEntryPriceUsd:executablePriceUsd,currentPriceUsd:executablePriceUsd,peakPriceUsd:executablePriceUsd,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
+            entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),
+            avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
             status:"OPEN",lastMarkedAt:new Date()
           }
         })

@@ -3,7 +3,7 @@ import { Redis } from "ioredis";
 import crypto from "node:crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
-import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros } from "@memecloud/shared";
+import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
 import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
@@ -107,10 +107,10 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
 }
 
 async function positionState(p:any){
-  const exits=await db.positionExit.findMany({where:{positionId:p.id},select:{reason:true,proceedsUsd:true}});
+  const exits=await db.positionExit.findMany({where:{positionId:p.id},select:{reason:true,proceedsUsdMicros:true}});
   const has=(x:string)=>exits.some(e=>e.reason.includes(x));
   const original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);
-  const recovered=Math.max(0,exits.reduce((a,e)=>a+Number(e.proceedsUsd??0),0))/Math.max(0.01,p.costUsd)*100;
+  const recovered=Math.max(0,exits.reduce((a,e)=>a+microsToUsd(e.proceedsUsdMicros??0n),0))/Math.max(0.01,p.costUsd)*100;
   const entry=Number(p.avgEntryPriceUsd),peak=Number(p.peakPriceUsd??entry);
   return {tp1Taken:has("TP1"),tp2Taken:has("TP2"),tp3Taken:has("TP3"),principalRecoveredPct:recovered,peakProfitPct:((peak-entry)/entry)*100,remainingPct:frac(remaining,original)*100};
 }
@@ -127,8 +127,8 @@ async function applySimulationExit(p:any,current:number,instruction:any){
   const proceeds=accounting.netProceedsUsd,pnl=accounting.realizedPnlUsd,next=BigInt(accounting.remainingTokenRaw);
   const reason=`${instruction.action}_${instruction.reason.replace(/[^A-Za-z0-9]+/g,"_").slice(0,70)}_SIMULATION`;
   await db.$transaction([
-    db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:rawToExit.toString(),proceedsUsd:proceeds,pnlUsd:pnl}}),
-    db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}})
+    db.positionExit.create({data:{positionId:p.id,reason,tokenRaw:rawToExit.toString(),proceedsUsdMicros:usdToMicros(proceeds),pnlUsdMicros:usdToMicros(pnl)}}),
+    db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsdMicros:{increment:usdToMicros(pnl)},profitTakenUsdMicros:{increment:usdToMicros(Math.max(0,pnl))},unrealizedPnlUsdMicros:next<=0n?0n:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}})
   ]);
   profitEvents++;
   await userEvent(p.userId,next<=0n?"POSITION_CLOSED":"PROFIT_TAKEN",next<=0n?"Position closed in simulation":"Profit protected in simulation",instruction.reason,{positionId:p.id,sellPct,pnlUsd:pnl,mode:"SIMULATION"});
@@ -177,14 +177,14 @@ async function executeLiveExit(p:any,instruction:any){
     const tokenSold=BigInt(fill.actualInputRaw),usdcRaw=BigInt(fill.actualOutputRaw);
     const proceeds=Number(usdcRaw)/1_000_000;
     const costBasis=p.costUsd*frac(tokenSold,BigInt(p.entryTokenRaw));const pnl=proceeds-costBasis;
-    const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)return;
-    const nowRemaining=BigInt(fresh.remainingTokenRaw);const next=nowRemaining>tokenSold?nowRemaining-tokenSold:0n;
+    const freshRaw=await db.position.findUnique({where:{id:p.id}});if(!freshRaw)return;
+    const nowRemaining=BigInt(freshRaw.remainingTokenRaw);const next=nowRemaining>tokenSold?nowRemaining-tokenSold:0n;
     // Pre-generated so the LedgerEntry below can reference this exact PositionExit within the same
     // array-form $transaction (see executor.ts's identical pattern for the SOURCE_SELL mirror).
     const exitId=crypto.randomBytes(12).toString("hex");
     await db.$transaction([
-      db.positionExit.create({data:{id:exitId,positionId:p.id,reason:`${instruction.action}_${instruction.reason}`.slice(0,180),tokenRaw:tokenSold.toString(),proceedsUsd:proceeds,pnlUsd:pnl,txHash:existing.txHash}}),
-      db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsd:{increment:pnl},profitTakenUsd:{increment:Math.max(0,pnl)},unrealizedPnlUsd:next<=0n?0:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}}),
+      db.positionExit.create({data:{id:exitId,positionId:p.id,reason:`${instruction.action}_${instruction.reason}`.slice(0,180),tokenRaw:tokenSold.toString(),proceedsUsdMicros:usdToMicros(proceeds),pnlUsdMicros:usdToMicros(pnl),txHash:existing.txHash}}),
+      db.position.update({where:{id:p.id},data:{remainingTokenRaw:next.toString(),realizedPnlUsdMicros:{increment:usdToMicros(pnl)},profitTakenUsdMicros:{increment:usdToMicros(Math.max(0,pnl))},unrealizedPnlUsdMicros:next<=0n?0n:undefined,status:next<=0n?"CLOSED":"PARTIALLY_CLOSED",closedAt:next<=0n?new Date():undefined}}),
       db.liveExecutionAttempt.update({where:{idempotencyKey:idem},data:{status:"CONFIRMED"}}),
       ...(order?[db.order.update({where:{id:order.id},data:{status:"CONFIRMED",actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}})]:[]),
       db.ledgerEntry.create({data:{userId:p.userId,type:"SELL_PROCEEDS",amountUsdMicros:usdToMicros(proceeds),chain:"SOLANA",asset:"USDC",referenceType:"PositionExit",referenceId:exitId,note:`Live exit confirmed on-chain, tx ${existing.txHash}`}})
@@ -261,7 +261,12 @@ async function executeLiveExit(p:any,instruction:any){
 }
 
 async function tick(){
-  const positions=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});scanned+=positions.length;
+  // M-30: Position's authoritative USD fields are BigInt micro-USD in storage now (Decimal is
+  // unavailable on Prisma+MongoDB). positionUsdFields() converts them to plain numbers under their
+  // original names right here, once, so every line below -- already correct, already tested --
+  // reads exactly the same shape it always has.
+  const positionRows=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});scanned+=positionRows.length;
+  const positions=positionRows.map(p=>({...p,...positionUsdFields(p)}));
   for(const p of positions){
     try{
       if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0)continue;
@@ -269,13 +274,13 @@ async function tick(){
       if(!mark||Date.now()-mark.observedAt.getTime()>60_000){stale++;continue}
       const current=mark.priceUsd,entry=p.avgEntryPriceUsd,original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);
       if(original<=0n||remaining<=0n)continue;
-      await db.position.update({where:{id:p.id},data:{currentPriceUsd:current,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current),lastMarkedAt:new Date()}});
+      await db.position.update({where:{id:p.id},data:{currentPriceUsdMicros:usdToMicros(current),peakPriceUsdMicros:usdToMicros(Math.max(p.peakPriceUsd??entry,current)),lastMarkedAt:new Date()}});
       const market=await richMarket({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)},current);
       if(!market){
         // No fabricated flow/holder/liquidity data. Mark-to-market continues, but automatic adaptive
         // exits wait for a fresh rich snapshot. A configured emergency source-sell path remains separate.
         const remainingCost=p.costUsd*frac(remaining,original);const value=remainingCost*(current/entry);
-        await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:value-remainingCost}});stale++;continue;
+        await db.position.update({where:{id:p.id},data:{unrealizedPnlUsdMicros:usdToMicros(value-remainingCost)}});stale++;continue;
       }
       const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
       const userSettings=await db.globalTradingSettings.findUnique({where:{userId:p.userId}});
@@ -295,9 +300,10 @@ async function tick(){
       }else instruction=evaluateExit(market,state);
       if(p.mode==="SIMULATION")await applySimulationExit(p,current,instruction);
       else if(instruction.action!=="HOLD")await executeLiveExit(p,instruction);
-      const fresh=await db.position.findUnique({where:{id:p.id}});if(!fresh)continue;
+      const freshRaw=await db.position.findUnique({where:{id:p.id}});if(!freshRaw)continue;
+      const fresh={...freshRaw,...positionUsdFields(freshRaw)};
       const rr=BigInt(fresh.remainingTokenRaw),remainingCost=fresh.costUsd*frac(rr,BigInt(fresh.entryTokenRaw)),value=remainingCost*(current/entry);
-      await db.position.update({where:{id:p.id},data:{unrealizedPnlUsd:rr<=0n?0:value-remainingCost,lastMarkedAt:new Date()}});marked++;
+      await db.position.update({where:{id:p.id},data:{unrealizedPnlUsdMicros:rr<=0n?0n:usdToMicros(value-remainingCost),lastMarkedAt:new Date()}});marked++;
     }catch(e:any){
       errors++;console.error("[exits]",p.id,e);
       const code=String(e?.code??"EXIT_ERROR");

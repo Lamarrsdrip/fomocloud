@@ -20,7 +20,8 @@ async function makeUserAndTrader() {
   const trader = await db.trader.create({ data: { handle: `t${crypto.randomBytes(6).toString("hex")}`, displayName: "test", category: "MANUAL", kind: "PLATFORM" } });
   return { user, trader };
 }
-const basePosition = { chain: "SOLANA" as const, quoteMint: "USDC", entryInputRaw: "1", entryTokenRaw: "1", remainingTokenRaw: "1", costUsd: 1, takeProfitPct: 200, status: "OPEN" as const };
+// costUsdMicros: BigInt micro-USD (M-30 -- Decimal is unavailable on Prisma+MongoDB), 1_000_000n = $1.
+const basePosition = { chain: "SOLANA" as const, quoteMint: "USDC", entryInputRaw: "1", entryTokenRaw: "1", remainingTokenRaw: "1", costUsdMicros: 1_000_000n, takeProfitPct: 200, status: "OPEN" as const };
 
 test("multiple simulation positions (no real txHash) can coexist", async () => {
   const { user, trader } = await makeUserAndTrader();

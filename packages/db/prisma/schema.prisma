@@ -381,9 +381,11 @@ model TradingCashAllocation {
   userId       String    @db.ObjectId
   chain        Chain
   asset        String    @default("USDC")
-  usdcRaw      String    @default("0")
-  availableUsd Float     @default(0)
-  inTradesUsd  Float     @default(0)
+  usdcRaw            String    @default("0")
+  // M-30: BigInt micro-USD, see Position's schema comment for full rationale (Decimal unavailable
+  // on Prisma+MongoDB; renamed, not just retyped, so a missed call site fails loudly).
+  availableUsdMicros BigInt    @default(0)
+  inTradesUsdMicros  BigInt    @default(0)
   lastSyncedAt DateTime?
   source       String?
   createdAt    DateTime  @default(now())
@@ -581,22 +583,26 @@ model Position {
   entryInputRaw     String
   entryTokenRaw     String
   remainingTokenRaw String
-  // M-30 attempted fix: Prisma's MongoDB connector does NOT support the `Decimal` scalar at all
-  // (verified: `prisma generate` hard-errors "The current connector does not support the Decimal
-  // type" on every field it was tried on here) -- a genuine external tooling limitation, not
-  // something fixable in this codebase. Left as Float for these fields; see LedgerEntry.amountUsdMicros
-  // for the BigInt-micro-USD pattern (the master spec's other approved option) applied to the new
-  // ledger. Migrating Position/PositionExit/TradingCashAllocation to the same pattern is real,
-  // scoped, remaining work -- tracked in FORENSIC_AUDIT_FINAL.md, not done in this pass because it
-  // touches ~14 files of live real-money execution code with no way to verify against a running
-  // database/frontend from this environment, and deserves more care than a single blind pass.
-  costUsd           Float
-  avgEntryPriceUsd  Float?
-  currentPriceUsd   Float?
-  peakPriceUsd      Float?
-  realizedPnlUsd    Float          @default(0)
-  unrealizedPnlUsd  Float          @default(0)
-  profitTakenUsd    Float          @default(0)
+  // M-30: Prisma's MongoDB connector does NOT support the `Decimal` scalar at all (verified:
+  // `prisma generate` hard-errors "The current connector does not support the Decimal type") -- a
+  // genuine external tooling limitation. Integer micro-USD (BigInt, 1_000_000 = $1.00) is the
+  // spec's other approved authoritative-money representation, same pattern already applied to
+  // LedgerEntry. Fields are renamed (not just retyped) specifically so a missed call site fails
+  // loudly -- most Position rows flow through this codebase typed `any`, so keeping the old names
+  // would let a stale read site silently return `undefined` instead of erroring. Every write site
+  // goes through Prisma's generated (non-`any`) input types and is therefore compiler-verified;
+  // every read site was manually, exhaustively audited (see FORENSIC_AUDIT_FINAL.md) since `any`
+  // typing means the compiler cannot be trusted for those. usdToMicros/microsToUsd (packages/shared)
+  // are the only sanctioned conversion points -- application arithmetic itself is unchanged, still
+  // plain JS numbers in dollars, exactly as already proven correct by packages/shared's
+  // accounting.test.ts; only the immediate read/write boundary changed.
+  costUsdMicros           BigInt
+  avgEntryPriceUsdMicros  BigInt?
+  currentPriceUsdMicros   BigInt?
+  peakPriceUsdMicros      BigInt?
+  realizedPnlUsdMicros    BigInt         @default(0)
+  unrealizedPnlUsdMicros  BigInt         @default(0)
+  profitTakenUsdMicros    BigInt         @default(0)
   takeProfitPct     Float
   stopLossPct       Float?
   status            PositionStatus @default(OPEN)
@@ -617,8 +623,8 @@ model PositionExit {
   positionId  String   @db.ObjectId
   reason      String
   tokenRaw    String
-  proceedsUsd Float?
-  pnlUsd      Float?
+  proceedsUsdMicros BigInt?
+  pnlUsdMicros      BigInt?
   txHash      String?
   createdAt   DateTime @default(now())
   position    Position @relation(fields: [positionId], references: [id], onDelete: Cascade)

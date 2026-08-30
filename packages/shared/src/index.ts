@@ -171,6 +171,71 @@ export function usdToMicros(usd: number): bigint {
 export function microsToUsd(micros: bigint): number {
   return Number(micros) / 1_000_000;
 }
+function microsToUsdNullable(micros: bigint | null): number | null {
+  return micros === null ? null : microsToUsd(micros);
+}
+
+// Real gap found by forensic audit (M-30): Position's authoritative USD fields moved to BigInt
+// micro-USD storage (Decimal is unavailable on Prisma+MongoDB). Position rows flow through
+// executor.ts/exits.ts largely typed `any`, passed between many functions (positionState,
+// richMarket, applySimulationExit, executeLiveExit, tick) that all read costUsd/avgEntryPriceUsd/etc.
+// This helper is the ONE conversion point: spread a raw Prisma Position row through it immediately
+// after every fetch, and every downstream function keeps reading the exact same field names holding
+// plain numbers, exactly as before this migration -- none of that already-tested business logic
+// needed to change, only the fetch/write boundary.
+export function positionUsdFields(row: {
+  costUsdMicros: bigint;
+  avgEntryPriceUsdMicros: bigint | null;
+  currentPriceUsdMicros: bigint | null;
+  peakPriceUsdMicros: bigint | null;
+  realizedPnlUsdMicros: bigint;
+  unrealizedPnlUsdMicros: bigint;
+  profitTakenUsdMicros: bigint;
+}) {
+  return {
+    costUsd: microsToUsd(row.costUsdMicros),
+    avgEntryPriceUsd: microsToUsdNullable(row.avgEntryPriceUsdMicros),
+    currentPriceUsd: microsToUsdNullable(row.currentPriceUsdMicros),
+    peakPriceUsd: microsToUsdNullable(row.peakPriceUsdMicros),
+    realizedPnlUsd: microsToUsd(row.realizedPnlUsdMicros),
+    unrealizedPnlUsd: microsToUsd(row.unrealizedPnlUsdMicros),
+    profitTakenUsd: microsToUsd(row.profitTakenUsdMicros),
+    // Real gap caught while wiring this into apps/api: `{...row, ...positionUsdFields(row)}` still
+    // leaves the ORIGINAL costUsdMicros/etc. BigInt fields present in the merged object (a spread
+    // adds new keys, it doesn't remove old ones) -- and any of those reaching `res.json()` would
+    // throw at runtime ("Do not know how to serialize a BigInt"), not silently misbehave. Setting
+    // them to `undefined` here means JSON.stringify omits them from the response entirely (unlike
+    // BigInt, `undefined` values are dropped, not an error) while leaving them harmlessly absent for
+    // any internal (non-serialized) consumer that only ever reads the plain-number fields anyway.
+    costUsdMicros: undefined as unknown as bigint,
+    avgEntryPriceUsdMicros: undefined as unknown as bigint | null,
+    currentPriceUsdMicros: undefined as unknown as bigint | null,
+    peakPriceUsdMicros: undefined as unknown as bigint | null,
+    realizedPnlUsdMicros: undefined as unknown as bigint,
+    unrealizedPnlUsdMicros: undefined as unknown as bigint,
+    profitTakenUsdMicros: undefined as unknown as bigint,
+  };
+}
+
+// Same rationale as positionUsdFields above, for TradingCashAllocation rows.
+export function tradingCashUsdFields(row: { availableUsdMicros: bigint; inTradesUsdMicros: bigint }) {
+  return {
+    availableUsd: microsToUsd(row.availableUsdMicros),
+    inTradesUsd: microsToUsd(row.inTradesUsdMicros),
+    availableUsdMicros: undefined as unknown as bigint,
+    inTradesUsdMicros: undefined as unknown as bigint,
+  };
+}
+
+// Same rationale, for PositionExit rows (proceedsUsd/pnlUsd are nullable there).
+export function positionExitUsdFields(row: { proceedsUsdMicros: bigint | null; pnlUsdMicros: bigint | null }) {
+  return {
+    proceedsUsd: microsToUsdNullable(row.proceedsUsdMicros),
+    pnlUsd: microsToUsdNullable(row.pnlUsdMicros),
+    proceedsUsdMicros: undefined as unknown as bigint | null,
+    pnlUsdMicros: undefined as unknown as bigint | null,
+  };
+}
 
 export function calculateExitAccounting(params: {
   entryTokenRaw: string;

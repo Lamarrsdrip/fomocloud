@@ -4,7 +4,7 @@ import {Redis} from "ioredis";
 import {db} from "@memecloud/db";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {RpcBudget,solanaRpcCandidates,pickHealthyRpc,usdToMicros} from "@memecloud/shared";
+import {RpcBudget,solanaRpcCandidates,pickHealthyRpc,usdToMicros,microsToUsd} from "@memecloud/shared";
 import {depositStatus,extractInboundDeposits,rawToDecimalString,SOL_NATIVE_MINT} from "./deposits.js";
 
 const rpcRedis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
@@ -227,15 +227,17 @@ async function cycle(){
         // real trade against a zero this worker itself invented.
         if(addresses.some(address=>addressBalances.get(address)===null)){allocationsSkippedUnresolved++;continue}
         const totalRaw=addresses.reduce((sum,address)=>sum+(addressBalances.get(address)??0n),0n);
-        const liveOpen=await db.position.findMany({where:{userId,chain:"SOLANA",mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{costUsd:true,entryTokenRaw:true,remainingTokenRaw:true}});
+        // M-30: Position.costUsd is BigInt micro-USD in storage now (Decimal unavailable on
+        // Prisma+MongoDB); convert immediately to a plain number so the reduce below is unchanged.
+        const liveOpen=await db.position.findMany({where:{userId,chain:"SOLANA",mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{costUsdMicros:true,entryTokenRaw:true,remainingTokenRaw:true}});
         const inTradesUsd=liveOpen.reduce((sum,p)=>{
-          try{const original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);const f=original>0n?Number((remaining*1_000_000n)/original)/1_000_000:0;return sum+p.costUsd*f}catch{return sum}
+          try{const original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);const f=original>0n?Number((remaining*1_000_000n)/original)/1_000_000:0;return sum+microsToUsd(p.costUsdMicros)*f}catch{return sum}
         },0);
         // The wallet's current USDC already reflects confirmed buys, so do not subtract open
         // position cost a second time. `availableUsd` is genuine spendable USDC; `inTradesUsd`
         // is the remaining deployed principal tracked separately for the unified account view.
         const walletUsd=Number(totalRaw)/1_000_000;
-        await db.tradingCashAllocation.upsert({where:{userId_chain:{userId,chain:"SOLANA"}},create:{userId,chain:"SOLANA",asset:"USDC",usdcRaw:totalRaw.toString(),availableUsd:walletUsd,inTradesUsd,lastSyncedAt:new Date(),source:"SOLANA_RPC"},update:{usdcRaw:totalRaw.toString(),availableUsd:walletUsd,inTradesUsd,lastSyncedAt:new Date(),source:"SOLANA_RPC"}});
+        await db.tradingCashAllocation.upsert({where:{userId_chain:{userId,chain:"SOLANA"}},create:{userId,chain:"SOLANA",asset:"USDC",usdcRaw:totalRaw.toString(),availableUsdMicros:usdToMicros(walletUsd),inTradesUsdMicros:usdToMicros(inTradesUsd),lastSyncedAt:new Date(),source:"SOLANA_RPC"},update:{usdcRaw:totalRaw.toString(),availableUsdMicros:usdToMicros(walletUsd),inTradesUsdMicros:usdToMicros(inTradesUsd),lastSyncedAt:new Date(),source:"SOLANA_RPC"}});
         allocationsUpdated++;
       }catch(e){errors++;console.error("[balance-worker] user",userId,e)}
     }

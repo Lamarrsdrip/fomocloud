@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { usdToMicros, microsToUsd } from "./index.js";
+import { usdToMicros, microsToUsd, positionUsdFields, tradingCashUsdFields } from "./index.js";
 
 // Real gap found by forensic audit (M-30): Prisma+MongoDB doesn't support Decimal, so LedgerEntry
 // uses integer micro-USD (BigInt) instead. This is exactly the boundary where a naive float
@@ -29,4 +29,71 @@ test("microsToUsd round-trips exactly through usdToMicros for realistic dollar a
   for (const usd of [0.01, 0.1, 1, 19.99, 100.5, 1234.56, 999999.99]) {
     assert.equal(microsToUsd(usdToMicros(usd)), usd);
   }
+});
+
+test("positionUsdFields converts every BigInt-micros field to a plain number under the original name", () => {
+  const raw = {
+    costUsdMicros: 25_000_000n,
+    avgEntryPriceUsdMicros: 500_000n,
+    currentPriceUsdMicros: 750_000n,
+    peakPriceUsdMicros: 900_000n,
+    realizedPnlUsdMicros: 5_000_000n,
+    unrealizedPnlUsdMicros: -1_500_000n,
+    profitTakenUsdMicros: 5_000_000n,
+  };
+  const converted = positionUsdFields(raw);
+  assert.equal(converted.costUsd, 25);
+  assert.equal(converted.avgEntryPriceUsd, 0.5);
+  assert.equal(converted.currentPriceUsd, 0.75);
+  assert.equal(converted.peakPriceUsd, 0.9);
+  assert.equal(converted.realizedPnlUsd, 5);
+  assert.equal(converted.unrealizedPnlUsd, -1.5);
+  assert.equal(converted.profitTakenUsd, 5);
+});
+
+test("positionUsdFields preserves null for nullable price fields (a genuinely unset entry price), never coercing to 0", () => {
+  const raw = {
+    costUsdMicros: 25_000_000n,
+    avgEntryPriceUsdMicros: null,
+    currentPriceUsdMicros: null,
+    peakPriceUsdMicros: null,
+    realizedPnlUsdMicros: 0n,
+    unrealizedPnlUsdMicros: 0n,
+    profitTakenUsdMicros: 0n,
+  };
+  const converted = positionUsdFields(raw);
+  assert.equal(converted.avgEntryPriceUsd, null);
+  assert.equal(converted.currentPriceUsd, null);
+  assert.equal(converted.peakPriceUsd, null);
+});
+
+test("positionUsdFields' merged object is safe to JSON.stringify (the raw BigInt micros fields are nulled to undefined, not left in)", () => {
+  const raw = {
+    id: "abc123",
+    costUsdMicros: 25_000_000n,
+    avgEntryPriceUsdMicros: 500_000n,
+    currentPriceUsdMicros: 750_000n,
+    peakPriceUsdMicros: 900_000n,
+    realizedPnlUsdMicros: 5_000_000n,
+    unrealizedPnlUsdMicros: -1_500_000n,
+    profitTakenUsdMicros: 5_000_000n,
+  };
+  const merged = { ...raw, ...positionUsdFields(raw) };
+  // This is the actual failure mode being guarded against: JSON.stringify throws a TypeError on a
+  // real BigInt value (unlike `undefined`, which it silently omits) -- exactly what every apps/api
+  // response containing a raw Position row would have hit if this weren't handled.
+  assert.doesNotThrow(() => JSON.stringify(merged));
+  const parsed = JSON.parse(JSON.stringify(merged));
+  assert.equal(parsed.costUsd, 25);
+  assert.equal("costUsdMicros" in parsed, false);
+});
+
+test("tradingCashUsdFields converts and is safe to JSON.stringify", () => {
+  const raw = { id: "xyz", availableUsdMicros: 100_000_000n, inTradesUsdMicros: 50_000_000n };
+  const merged = { ...raw, ...tradingCashUsdFields(raw) };
+  assert.doesNotThrow(() => JSON.stringify(merged));
+  const parsed = JSON.parse(JSON.stringify(merged));
+  assert.equal(parsed.availableUsd, 100);
+  assert.equal(parsed.inTradesUsd, 50);
+  assert.equal("availableUsdMicros" in parsed, false);
 });
