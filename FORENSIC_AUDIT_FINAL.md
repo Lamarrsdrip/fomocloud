@@ -149,38 +149,41 @@ M-23 and M-62 rather than carry forward an assumption.
 | M-68 | Execution instruction (fix, don't just report; clean commits; don't reset good work; BLOCKED only for genuine external blockers) | ONGOING PRACTICE | Governing rule for all work in this file | |
 
 ## C — Continuation/Resume Prompt (sections 1-30)
+Every C-# row is a named alias of an M-# row (or a straightforward pair of them) -- statuses below
+are mechanically carried over from the just-corrected M table rather than re-derived, since they are
+literally the same underlying requirement.
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| C-1 | EVM hardening completion | PENDING AUDIT | = M-21, Fork E |
-| C-2 | Durable flow ingestion / no silent drops | PENDING AUDIT | = M-22, Fork E |
-| C-3 | Smart-wallet discovery skill-centric (not wealth-gated) | PENDING AUDIT | = M-7/M-8, Fork D |
-| C-4 | Forward-proof smart-wallet promotion (objective thresholds, not admin button) | PENDING AUDIT | = M-9/M-13, Fork D |
-| C-5 | New Token Radar dedicated path | PENDING AUDIT | | 
-| C-6 | Notification preference correctness | PENDING AUDIT | = M-18, Fork D |
-| C-7 | Full opportunity lifecycle | PENDING AUDIT | = M-19 |
-| C-8 | Brain risk/evidence model split | PENDING AUDIT | = M-16 |
-| C-9 | Accounting/financial ledger | PENDING AUDIT | = M-31, Fork A |
-| C-10 | Live execution forensic audit | PENDING AUDIT | = M-26, Fork B |
-| C-11 | Exit engine full audit | PENDING AUDIT | = M-28/29, Fork B |
-| C-12 | Real-time UX (SSE/WS + refetch) | PENDING AUDIT | = M-40 |
-| C-13 | Full wallet product redesign | PENDING AUDIT | = M-33 |
-| C-14 | Add Funds one-tap flow | PENDING AUDIT | = M-35 |
-| C-15 | Complete Home UX redesign | PENDING AUDIT | = M-41 |
-| C-16 | Complete Discover UX | PENDING AUDIT | = M-42 |
-| C-17 | Smart Money first-class nav | PENDING AUDIT | = M-43 |
-| C-18 | Token detail redesign | PENDING AUDIT | = M-44 |
-| C-19 | Auto Trade UX | PENDING AUDIT | = M-45 |
-| C-20 | Empty/error states | PENDING AUDIT | = M-46 |
-| C-21 | User-facing status language translation (internal codes → plain English) | PENDING AUDIT | New requirement not in M-list — track separately |
-| C-22 | Design system / mobile-first unification | PENDING AUDIT | = M-60 |
-| C-23 | Admin UX / Health 2.0 reorg | PENDING AUDIT | = M-47 |
-| C-24 | Security/IDOR/auth repeat audit | PENDING AUDIT | = M-38, Fork C |
-| C-25 | Chaos testing | PENDING AUDIT | = M-52 |
-| C-26 | Monolith refactor | PENDING AUDIT | = M-49/50 |
-| C-27 | Final multi-pass audit (7 passes) | PENDING | = M-65 |
+| C-1 | EVM hardening completion | PARTIAL | = M-21 |
+| C-2 | Durable flow ingestion / no silent drops | PARTIAL, DELIBERATE | = M-22 |
+| C-3 | Smart-wallet discovery skill-centric (not wealth-gated) | DONE | = M-7/M-8 |
+| C-4 | Forward-proof smart-wallet promotion (objective thresholds, not admin button) | DONE | = M-9/M-13 |
+| C-5 | New Token Radar dedicated path | DONE | Same fix as M-5/M-42/PC-J (fix #13) — a structurally separate array, not a lower tier of the main feed |
+| C-6 | Notification preference correctness | DONE | = M-18 |
+| C-7 | Full opportunity lifecycle | IMPLEMENTED | = M-19 |
+| C-8 | Brain risk/evidence model split | DONE | = M-16 |
+| C-9 | Accounting/financial ledger | DONE | = M-31 |
+| C-10 | Live execution forensic audit | IMPLEMENTED | = M-26 |
+| C-11 | Exit engine full audit | IMPLEMENTED, TESTED | = M-28/29 |
+| C-12 | Real-time UX (SSE/WS + refetch) | LIKELY N/A | = M-40 |
+| C-13 | Full wallet product redesign | PARTIAL | = M-33 |
+| C-14 | Add Funds one-tap flow | NOT STARTED | = M-35 |
+| C-15 | Complete Home UX redesign | DONE | = M-41 |
+| C-16 | Complete Discover UX | PARTIAL | = M-42 |
+| C-17 | Smart Money first-class nav | PARTIAL | = M-43 |
+| C-18 | Token detail redesign | DONE | = M-44 |
+| C-19 | Auto Trade UX | DONE | = M-45 |
+| C-20 | Empty/error states | PARTIAL | = M-46 |
+| C-21 | User-facing status language translation (internal codes → plain English) | DONE | Fix #22; new requirement not in the M-list, tracked separately as intended |
+| C-22 | Design system / mobile-first unification | BLOCKED | = M-60 — no device/browser available in this environment |
+| C-23 | Admin UX / Health 2.0 reorg | PARTIAL | = M-47 |
+| C-24 | Security/IDOR/auth repeat audit | SAFE (code) | = M-38 |
+| C-25 | Chaos testing | BLOCKED | = M-52 |
+| C-26 | Monolith refactor | IN PROGRESS | = M-49/50 |
+| C-27 | Final multi-pass audit (7 passes) | ONGOING | = M-65 |
 | C-28 | Live verification rule discipline | ONGOING PRACTICE | = M-64/59 |
-| C-29 | Final forensic report | IN PROGRESS | This file |
+| C-29 | Final forensic report | ONGOING | This file |
 | C-30 | Do not stop early | ONGOING PRACTICE | Governing rule |
 
 ## PC — Product-Concept Alignment (sections A-M)
