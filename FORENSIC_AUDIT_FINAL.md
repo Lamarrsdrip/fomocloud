@@ -232,7 +232,7 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | ED-9 | 7D current form / 30D / 90D durability states | PARTIAL | 7D and 30D exist; 90D/form-state model not verified. |
 | ED-10 | Objective PROVEN promotion | IMPLEMENTED | Mature closed-paper evidence and server-side gate are recorded under M-9/M-13. |
 | ED-11 | Explicit VERIFIED/PARTIAL/UNKNOWN/STALE/FAILED evidence states | PARTIAL | UNKNOWN-risk fix exists; complete producer-state audit remains open. |
-| ED-12 | No fabricated token age | PENDING AUDIT | Must re-check all market-worker fallback producers. |
+| ED-12 | No fabricated token age | IMPLEMENTED, TESTED | Removed all `1440`-minute age fallbacks. Provider normalization now emits VERIFIED or UNKNOWN age evidence; market snapshots store nullable age plus explicit state, and strategy treats unknown age as an age-sensitive timing warning rather than an invented age. |
 | ED-13 | Durable chain-wide event ingestion lifecycle | PARTIAL, IMPLEMENTED + TESTED | New `ChainIngestionEvent` records SEEN→QUEUED→PROCESSING→PARSED→PERSISTED/RETRYING/TERMINAL_FAILURE with queue recovery; watched-listener path still needs the same treatment. |
 | ED-14 | P0–P6 event prioritization | PENDING AUDIT | Flow scanner now uses P4; cross-system queue priority ordering remains unverified. |
 | ED-15 | Durable watched-wallet listener / replay / health | PARTIAL | Reconnect and replay helpers exist; durable queued listener lifecycle is still open. |
@@ -345,6 +345,7 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | 63 | Advanced user-facing Hunt terminal: original high-contrast live-flow visual system, Money Rush/top-flow/whale/acceleration filters, visible wallet/flow aggregation, a first-class Smart Money nav destination, and truthful Opportunity Quality/current-decision language in token detail. It deliberately does not fabricate an Entry Quality value until ED-17 is implemented. | Current uncommitted pass | M-42, M-43, ED-43 |
 | 64 | Split token opportunity from executable entry timing in the actual strategy authority, and replace profit-percentage drawdown with one canonical peak-price calculation in paper/live exits. | Current uncommitted pass | ED-17, ED-23, M-28 |
 | 65 | Immutable EntryThesis plus thesis-aware runner management: atomically persist automated/manual entry evidence, compare current evidence in exits, persist current thesis state, and expose it on Portfolio cards. | Current uncommitted pass | ED-21, ED-22, ED-44 |
+| 66 | Removed fabricated token-age evidence from provider normalization and market snapshots; unknown remains UNKNOWN/null and is visible to strategy timing. | Current uncommitted pass | ED-12, ED-11 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).

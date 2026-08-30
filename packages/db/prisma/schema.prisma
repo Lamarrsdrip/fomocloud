@@ -1041,7 +1041,8 @@ model MemeMarketSnapshot {
   marketCapUsd           Float?
   liquidityUsd           Float
   exitLiquidityUsd       Float?
-  ageMinutes             Float
+  ageMinutes             Float?
+  ageEvidenceState       String  @default("UNKNOWN")
   volume1mUsd            Float
   volume5mUsd            Float
   volume15mUsd           Float

@@ -1,5 +1,5 @@
 export type BrainEvidence={
-  marketCapUsd?:number; liquidityUsd:number; ageMinutes:number;
+  marketCapUsd?:number; liquidityUsd:number; ageMinutes?:number;
   inflow10sUsd:number; inflow60sUsd:number; buyers10s:number; buyers60s:number;
   whaleBuyers60s:number; knownWhaleBuyers60s:number;
   volumeAcceleration1m:number; volumeAcceleration5m:number;

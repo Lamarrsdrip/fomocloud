@@ -85,7 +85,7 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
   const recentSourceSell=await db.signal.findFirst({where:{traderId:p.sourceTraderId,chain:p.chain,action:"SELL",inputMint:p.mint,observedAt:{gt:new Date(Date.now()-15*60_000)}},orderBy:{observedAt:"desc"},select:{sourceSoldPct:true}});
   const sourceSold=recentSourceSell?.sourceSoldPct==null?undefined:Number(recentSourceSell.sourceSoldPct);
   return {
-    ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
+    ageMinutes:rich.ageMinutes??undefined,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
     priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:priceDrawdownFromPeakPct(peak,current),
     volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
     volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,

@@ -547,7 +547,7 @@ const worker=new Worker("signals",async job=>{
       const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:signal.sourceWallet}}}).catch(()=>null);
       const sourceQuality=Number(candidate?.sourceQualityScore??65);
       const intelligence=evaluateEntry({
-        ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
+        ageMinutes:rich.ageMinutes??undefined,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
         priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
         volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
         volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,

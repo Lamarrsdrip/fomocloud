@@ -1,11 +1,11 @@
-export type TokenAgeClass = "JUST_LAUNCHED" | "NEW" | "EARLY" | "ESTABLISHED";
+export type TokenAgeClass = "UNKNOWN" | "JUST_LAUNCHED" | "NEW" | "EARLY" | "ESTABLISHED";
 export type TrendState = "HYPER" | "ACCELERATING" | "HEALTHY" | "PULLBACK" | "COOLING" | "BROKEN";
 export type RiskState = "LOWER_RISK" | "WATCH" | "HIGH_RISK" | "BLOCKED";
 export type EntryAction = "BUY_NOW" | "BUY_SMALLER" | "WAIT_PULLBACK" | "SKIP";
 export type ThesisState = "THESIS_STRENGTHENING" | "THESIS_HEALTHY" | "THESIS_WEAKENING" | "DISTRIBUTION" | "BROKEN" | "UNKNOWN";
 
 export type MarketSnapshot = {
-  ageMinutes: number;
+  ageMinutes?: number;
   liquidityUsd: number;
   marketCapUsd?: number;
   sourceMarketCapUsd?: number;
@@ -140,7 +140,8 @@ export function priceDrawdownFromPeakPct(peakPriceUsd:number, currentPriceUsd:nu
   return clamp(((peakPriceUsd - currentPriceUsd) / peakPriceUsd) * 100, 0, 100);
 }
 
-export function classifyAge(ageMinutes:number):TokenAgeClass {
+export function classifyAge(ageMinutes?:number):TokenAgeClass {
+  if (!Number.isFinite(ageMinutes) || ageMinutes == null || ageMinutes < 0) return "UNKNOWN";
   if (ageMinutes <= 30) return "JUST_LAUNCHED";
   if (ageMinutes <= 24 * 60) return "NEW";
   if (ageMinutes <= 7 * 24 * 60) return "EARLY";
@@ -240,6 +241,7 @@ export function dynamicChaseCapPct(m:MarketSnapshot):number {
   let base =
     age === "JUST_LAUNCHED" ? MEME_POLICY.chase.justLaunchedBasePct :
     age === "NEW" ? MEME_POLICY.chase.newBasePct :
+    age === "UNKNOWN" ? MEME_POLICY.chase.newBasePct :
     age === "EARLY" ? MEME_POLICY.chase.earlyBasePct :
     MEME_POLICY.chase.establishedBasePct;
 
@@ -271,6 +273,7 @@ export function evaluateOpportunityQuality(m:MarketSnapshot, sourceQualityScore=
   );
   const reasons:string[]=[];
   const warnings=[...risk.reasons];
+  if (classifyAge(m.ageMinutes)==="UNKNOWN") warnings.push("Token age is unknown; age-sensitive timing is not being assumed");
   if (momentum >= 75) reasons.push("Buying momentum is strong");
   if (m.volumeAcceleration1m >= 1.5) reasons.push("Volume is accelerating");
   if ((m.smartMoneyNetFlow5mUsd ?? 0) > 0) reasons.push("Tracked smart wallets are net buying");
