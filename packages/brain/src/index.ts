@@ -38,6 +38,11 @@ function scoreBreakdown(e:BrainEvidence,flowRatio:number,whaleDensity:number):Br
     clamp(Math.log10(1+e.liquidityUsd)*14,0,72)-
     clamp(Math.max(0,(e.top10EffectivePct??0)-45)*.55,0,28)
   );
+  const criticalRiskFields=[e.liquidityChange5mPct,e.top10EffectivePct,e.bundledSupplyPct,e.creatorHoldingPct,e.lpRiskScore];
+  const riskKnown=criticalRiskFields.filter(v=>v!==undefined).length/criticalRiskFields.length;
+  // Unknown token structure is not the same as verified-safe structure. Add uncertainty risk instead
+  // of silently substituting zero for every missing holder/LP field.
+  const unknownRiskPenalty=(1-riskKnown)*24;
   const risk=clamp(
     clamp(Math.max(0,-(e.liquidityChange5mPct??0))*.85,0,32)+
     clamp((e.creatorNetSell5mPct??0)*.5,0,35)+
@@ -45,7 +50,7 @@ function scoreBreakdown(e:BrainEvidence,flowRatio:number,whaleDensity:number):Br
     clamp(Math.max(0,(e.top10EffectivePct??0)-60)*.45,0,20)+
     clamp(Math.max(0,(e.bundledSupplyPct??0)-20)*.7,0,24)+
     clamp(Math.max(0,(e.creatorHoldingPct??0)-10)*.8,0,20)+
-    clamp((e.lpRiskScore??0)*.22,0,22)+
+    clamp((e.lpRiskScore??0)*.22,0,22)+unknownRiskPenalty+
     (e.mintAuthorityActive?8:0)+(e.freezeAuthorityActive?10:0)+(e.token2022DangerousExtension?15:0)+
     (e.liquidityUsd<5_000?20:0)
   );
@@ -99,7 +104,7 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
 
   if((e.provenSmartWallets??0)>0)reasons.push(`${e.provenSmartWallets} PROVEN meme wallet(s) entered recently`);
   else if((e.trackedSmartWallets??0)>=2)reasons.push(`${e.trackedSmartWallets} verified smart-wallet candidates are converging`);
-  if(e.whaleBuyers60s>=1)reasons.push(`${e.whaleBuyers60s} $50K+ wallet(s) joined in the last minute`);
+  if(e.whaleBuyers60s>=1)reasons.push(`${e.whaleBuyers60s} whale-tier or $50K+ tracked buy(s) joined in the last minute`);
   if(e.inflow10sUsd>=10_000)reasons.push(`$${Math.round(e.inflow10sUsd).toLocaleString()} entered in ~10s`);
   else if(e.inflow60sUsd>=5_000)reasons.push(`$${Math.round(e.inflow60sUsd).toLocaleString()} entered in ~60s`);
   if(e.buyers60s>=5)reasons.push(`${e.buyers60s} independent wallet addresses bought in ~60s`);
@@ -107,6 +112,9 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   if(flowRatio>=1.5)reasons.push(`Buy money is ${flowRatio.toFixed(1)}x sell money`);
   if((e.socialVelocity??0)>=1.5)reasons.push("Community/social attention is accelerating behind the money flow");
   if(ageKnown&&age>24*60&&reawakening)reasons.push("Older token is only resurfacing because fresh capital is re-accelerating it");
+
+  const criticalRiskKnown=[e.liquidityChange5mPct,e.top10EffectivePct,e.bundledSupplyPct,e.creatorHoldingPct,e.lpRiskScore].filter(v=>v!==undefined).length;
+  const riskEvidenceReady=criticalRiskKnown>=3;
 
   if((e.liquidityChange5mPct??0)<-35)warnings.push("Liquidity is falling quickly");
   if((e.creatorNetSell5mPct??0)>40)warnings.push("Creator/dev selling is heavy");
@@ -118,27 +126,18 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   if(e.freezeAuthorityActive)warnings.push("Freeze authority is still active");
   if(e.token2022DangerousExtension)warnings.push("Token extensions require extra execution caution");
   if(e.liquidityUsd<5_000)warnings.push("Very thin liquidity: actual execution may be unusable");
+  if(!riskEvidenceReady)warnings.push("Token structure evidence is incomplete; automatic entry is held back");
   if(!ageKnown)warnings.push("Token launch age is not verified yet");
   else if(age>7*24*60&&!reawakening)warnings.push("Old token has not shown enough re-awakening evidence");
 
   score=clamp(Math.round(score));
   const severeStructure=breakdown.risk>=80||e.liquidityUsd<2_500;
-  const moneyRush=score>=82&&evidenceChannels>=4&&hasQualifiedCapital&&strongFlow&&accelerating&&breakdown.executionQuality>=38&&!severeStructure;
-  const breakout=!moneyRush&&score>=68&&evidenceChannels>=3&&hasQualifiedCapital&&strongFlow&&breakdown.executionQuality>=30&&!severeStructure;
+  const moneyRush=score>=82&&evidenceChannels>=4&&hasQualifiedCapital&&strongFlow&&accelerating&&breakdown.executionQuality>=38&&riskEvidenceReady&&!severeStructure;
+  const breakout=!moneyRush&&score>=68&&evidenceChannels>=3&&hasQualifiedCapital&&strongFlow&&breakdown.executionQuality>=30&&riskEvidenceReady&&!severeStructure;
   const building=!moneyRush&&!breakout&&score>=52&&evidenceChannels>=2&&(hasQualifiedCapital||strongFlow)&&!severeStructure;
   const state:BrainState=moneyRush?"MONEY_RUSH":breakout?"BREAKOUT_FLOW":building?"BUILDING":"SCANNING";
   const action=(moneyRush||breakout)?"BUY_NOW":building?"WATCH":"IGNORE";
   return {score,action,state,reasons,warnings,survivorScore,breakdown,evidenceChannels};
-}
-
-/** New-token push alerts are alpha alerts, not a firehose of every fresh mint. */
-export function qualifiesNewTokenAlert(e:BrainEvidence,d:BrainDecision):boolean{
-  const young=e.ageMinutes>=0&&e.ageMinutes<=180;
-  const smart=(e.smartWalletWeightedScore??0)>=2||(e.provenSmartWallets??0)>=1;
-  const whale=e.whaleBuyers60s>=1||e.knownWhaleBuyers60s>=1;
-  const money=(e.smartMoneyNetFlow5mUsd??0)>=Math.max(2_500,e.liquidityUsd*.03)||e.inflow60sUsd>=7_500;
-  const organic=e.buyers60s>=4||e.uniqueBuyers1m>=4;
-  return young&&e.liquidityUsd>=10_000&&d.score>=52&&d.breakdown.risk<75&&organic&&(smart||whale)&&money;
 }
 
 export type LifecycleRow={score:number;lastEvaluatedAt:Date;firstSeenAt:Date;inflow60sUsd:number;buyers60s:number;whaleBuyers60s:number;knownWhaleBuyers60s:number;state?:BrainState};
@@ -159,7 +158,7 @@ export function didStateUpgrade(priorNotifiedState:BrainState|null|undefined,new
   const newRank=STATE_RANK[newState]??0;
   return newRank>priorRank&&newRank>0;
 }
-export function isNewConvergence(convergentCount:number,priorConvergentCount:number):boolean{return convergentCount>=2&&convergentCount>priorConvergentCount;}
+export function isNewConvergence(convergentCount:number,priorConvergentCount:number):boolean{return convergentCount>=5&&convergentCount>priorConvergentCount;}
 
 const CONVERGENCE_WEIGHT:Record<string,number>={PROVEN:2.5,PAPER_TRACKING:1,ANALYZING:.35,DISCOVERED:.2};
 export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?:number|null;currentFormScore?:number|null;earlyRepeatHits?:number|null}[]):number{
@@ -174,6 +173,7 @@ export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?
 }
 export function countUniqueWhaleWallets(rows:{walletAddress:string;walletTier?:string|null}[]):number{return new Set(rows.filter(r=>String(r.walletTier??"").startsWith("WHALE_")).map(r=>r.walletAddress)).size;}
 export function countUniqueKnownWallets(rows:{walletAddress:string;knownWallet?:boolean|null}[]):number{return new Set(rows.filter(r=>r.knownWallet).map(r=>r.walletAddress)).size;}
+export function countUniqueKnownWhaleWallets(rows:{walletAddress:string;knownWallet?:boolean|null;walletTier?:string|null}[]):number{return new Set(rows.filter(r=>r.knownWallet&&String(r.walletTier??"").startsWith("WHALE_")).map(r=>r.walletAddress)).size;}
 export function walletTier(balanceUsd?:number){
   const b=Number(balanceUsd??0);
   if(b>=10_000_000)return "WHALE_10M";

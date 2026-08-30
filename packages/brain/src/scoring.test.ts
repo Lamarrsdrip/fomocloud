@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countUniqueWhaleWallets, countUniqueKnownWallets, evaluateOpportunity, type BrainEvidence } from "./index.js";
+import { countUniqueWhaleWallets, countUniqueKnownWallets, countUniqueKnownWhaleWallets, evaluateOpportunity, type BrainEvidence } from "./index.js";
 
 test("the same whale buying repeatedly counts as one whale, not one per buy", () => {
   const rows = [
@@ -108,4 +108,16 @@ test("young token with proven-wallet convergence, real money and acceleration ca
   assert.ok(["BREAKOUT_FLOW","MONEY_RUSH"].includes(d.state),`got ${d.state} score ${d.score}`);
   assert.equal(d.action,"BUY_NOW");
   assert.ok(d.evidenceChannels>=4);
+});
+
+
+test("known wallet is not automatically a whale",()=>{
+  assert.equal(countUniqueKnownWhaleWallets([{walletAddress:"smart",knownWallet:true,walletTier:"FLOW"}]),0);
+  assert.equal(countUniqueKnownWhaleWallets([{walletAddress:"whale",knownWallet:true,walletTier:"WHALE_100K"}]),1);
+});
+
+test("missing token-structure evidence cannot produce BUY_NOW",()=>{
+  const d=evaluateOpportunity({...baseEvidence,liquidityUsd:150000,inflow10sUsd:40000,inflow60sUsd:180000,buyers10s:20,buyers60s:60,uniqueBuyers1m:50,uniqueBuyers5m:100,provenSmartWallets:5,trackedSmartWallets:6,smartWalletWeightedScore:12,smartMoneyNetFlow5mUsd:200000,volumeAcceleration1m:4,volumeAcceleration5m:3,buyVolume5mUsd:400000,sellVolume5mUsd:100000});
+  assert.notEqual(d.action,"BUY_NOW");
+  assert.ok(d.warnings.some(w=>w.includes("structure evidence")));
 });

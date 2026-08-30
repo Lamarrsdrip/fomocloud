@@ -14,6 +14,7 @@ export type CandidateMetrics={
   distinctTokens30d?:number;
   lastActivityHours?:number;
   earlyEntryEdgePct?:number;
+  providerEvidenceCompletenessPct?:number;
 };
 const clamp=(n:number,a=0,b=100)=>Math.min(b,Math.max(a,n));
 function robustMean(xs:number[]){
@@ -74,7 +75,14 @@ export function scoreWallet(m:CandidateMetrics){
   const insiderKnown=m.insiderRiskPct!==undefined,rugKnown=m.rugExposurePct!==undefined;
   const insiderPenalty=clamp((insiderKnown?m.insiderRiskPct!:UNKNOWN_RISK_DEFAULT_PCT)*.8,0,45);
   const rugPenalty=clamp((rugKnown?m.rugExposurePct!:UNKNOWN_RISK_DEFAULT_PCT)*.8,0,35);
-  const evidenceCompleteness=clamp(((insiderKnown?1:0)+(rugKnown?1:0))/2*100);
+  const riskEvidence=((insiderKnown?1:0)+(rugKnown?1:0))/2*100;
+  const providerEvidence=clamp(m.providerEvidenceCompletenessPct??0);
+  const behaviorEvidence=clamp(((m.distinctTokens30d!==undefined?1:0)+(m.lastActivityHours!==undefined?1:0)+(m.averageObservedChasePct!==undefined?1:0)+(m.earlyEntryEdgePct!==undefined?1:0))/4*100);
+  const forwardEvidence=clamp(m.recentSignalReturnsPct.length/20*100);
+  // PROVEN means we have several independent kinds of evidence, not merely a PnL endpoint plus an
+  // assumed-zero risk field. Provider completeness, risk provenance, observed behavior and forward
+  // outcomes all contribute. Unknown stays unknown and can never look fully verified.
+  const evidenceCompleteness=clamp(providerEvidence*.35+riskEvidence*.25+behaviorEvidence*.20+forwardEvidence*.20);
   const riskScore=clamp(insiderPenalty+rugPenalty+Math.max(0,48-winRate)*.34+Math.max(0,unrealizedReliance-70)*.12);
 
   const entryQuality=clamp(52+forward*.78+(earlyEdge-50)*.22-chasePenalty);
@@ -116,20 +124,42 @@ export function scoreWallet(m:CandidateMetrics){
     forwardMeanPct:Number(forward.toFixed(2)),
     forwardHitRatePct:Number(forwardHitRate.toFixed(1)),
     evidenceCompleteness:Math.round(evidenceCompleteness),
+    riskEvidenceCompleteness:Math.round(riskEvidence),
     unrealizedReliancePct:Math.round(unrealizedReliance),
     diversityScore:Math.round(diversityScore)
   };
 }
 
-export function shouldPaperTrack(s:{copyabilityScore:number;sourceQualityScore:number;riskScore:number},trades:number){
-  return trades>=15&&s.copyabilityScore>=65&&s.sourceQualityScore>=65&&s.riskScore<=55;
+export type WalletPromotionScores={
+  copyabilityScore:number;sourceQualityScore:number;riskScore:number;
+  skillScore?:number;consistencyScore?:number;entryQualityScore?:number;
+  currentFormScore?:number;activityScore?:number;forwardHitRatePct?:number;
+  evidenceCompleteness?:number;riskEvidenceCompleteness?:number;
+};
+
+export function shouldPaperTrack(s:WalletPromotionScores,trades:number){
+  // Paper tracking is cheap and reversible, but still requires repeated skill. Wealth alone or one
+  // lucky trade is not enough. Hard floors cannot be weakened by an admin config value.
+  return trades>=20&&s.copyabilityScore>=65&&s.sourceQualityScore>=65&&s.riskScore<=52&&
+    (s.skillScore??65)>=62&&(s.consistencyScore??60)>=52&&(s.evidenceCompleteness??0)>=55;
 }
 
 export function shouldProve(
-  s:{copyabilityScore:number;sourceQualityScore:number;riskScore:number;currentFormScore?:number;activityScore?:number},
+  s:WalletPromotionScores,
   forwardSignals:number,
-  forwardMeanPct:number,
-  evidenceCompleteness=100
+  robustForwardMeanPct:number,
+  evidenceCompleteness=s.evidenceCompleteness??100,
+  closedPaperTrades=0
 ){
-  return forwardSignals>=20&&forwardMeanPct>5&&s.copyabilityScore>=78&&s.sourceQualityScore>=72&&s.riskScore<=42&&evidenceCompleteness>=50&&(s.currentFormScore??50)>=42&&(s.activityScore??50)>=35;
+  // PROVEN is real-money authority. Require repeatable forward edge, breadth of evidence, current
+  // form and copyability. A huge outlier cannot promote a wallet because the worker passes the
+  // robust/trimmed forward mean, not a raw arithmetic mean. At least some evidence must come from
+  // actual MemeCloud paper copies, unless the forward sample is exceptionally deep.
+  const proofDepth=closedPaperTrades>=8||forwardSignals>=30;
+  return proofDepth&&forwardSignals>=20&&robustForwardMeanPct>=5&&
+    s.copyabilityScore>=80&&s.sourceQualityScore>=75&&s.riskScore<=40&&
+    evidenceCompleteness>=75&&(s.riskEvidenceCompleteness??0)>=50&&(s.skillScore??80)>=76&&(s.consistencyScore??60)>=58&&
+    (s.entryQualityScore??60)>=58&&(s.currentFormScore??55)>=50&&(s.activityScore??50)>=40&&
+    (s.forwardHitRatePct??55)>=55;
 }
+

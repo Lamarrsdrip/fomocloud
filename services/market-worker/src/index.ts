@@ -12,10 +12,10 @@ const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZw
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
 const decimalsCache=new Map<string,{decimals:number;supply:number;at:number}>();
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
-// Shared, cross-process Solana RPC budget -- same account, same bucket, as flow-worker. This
+// Shared, cross-process Solana RPC budget for the remaining wallet-first services. This
 // worker marks real open positions' current value (trackedMints() pulls OPEN/PARTIALLY_CLOSED
 // positions, not just discovery candidates), so its getTokenSupply calls draw at P2: well above
-// pure background discovery (flow-worker, P4) since stale marks are user-visible, but still below
+// background discovery since stale marks are user-visible, but still below
 // the true real-money execution paths (exits/executor).
 const sharedRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{
   capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),
@@ -66,16 +66,26 @@ async function tokenMeta(mint:string){
 // explicit recency ordering to signals/discoveries, which previously had none -- "most recent N"
 // wasn't actually guaranteed to mean recent without it.
 async function trackedMints(){
-  const since=new Date(Date.now()-48*60*60_000);
-  const [positions,discoveries,signals]=await Promise.all([
+  const since=new Date(Date.now()-24*60*60_000);
+  const [positions,qualityWallets,signals]=await Promise.all([
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
-    db.discoveryToken.findMany({where:{chain:"SOLANA",lastSeenAt:{gte:since}},select:{mint:true},orderBy:{lastSeenAt:"desc"},take:300}),
-    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true},orderBy:{observedAt:"desc"},take:1500})
+    db.smartWalletCandidate.findMany({where:{OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true}]},select:{address:true},take:1000}),
+    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"},take:1500})
   ]);
+  const addresses=[...new Set(qualityWallets.map(w=>w.address))];
+  const flows=addresses.length?await db.chainFlowObservation.findMany({
+    where:{chain:"SOLANA",side:"BUY",walletAddress:{in:addresses},observedAt:{gte:since}},
+    select:{mint:true,amountUsd:true,observedAt:true},orderBy:{observedAt:"desc"},take:2500
+  }):[];
   const excluded=new Set([usdc,"So11111111111111111111111111111111111111112"]);
-  const unique=[...new Set([...positions.map(p=>p.mint),...discoveries.map(x=>x.mint),...signals.map(s=>s.outputMint)])].filter(m=>!excluded.has(m));
-  const positionCount=new Set(positions.map(p=>p.mint)).size;
-  return unique.slice(0,Math.max(350,positionCount+350));
+  const positionMints=[...new Set(positions.map(p=>p.mint))];
+  const walletMints=[...new Set(flows.map(f=>f.mint))];
+  const signalMints=[...new Set(signals.filter(s=>addresses.includes(s.sourceWallet)).map(s=>s.outputMint))];
+  // P0: real positions can never be dropped. P1: tokens just bought by objectively tracked wallets.
+  // P2: their source signals. Raw discoveryToken rows are deliberately NOT a pricing source anymore.
+  const unique=[...new Set([...positionMints,...walletMints,...signalMints])].filter(m=>!excluded.has(m));
+  const maxTracked=Math.max(positionMints.length,Math.max(50,Number(process.env.WALLET_FIRST_MARKET_MINT_LIMIT??220)));
+  return unique.slice(0,maxTracked);
 }
 
 async function jupiterMark(mint:string){
@@ -122,6 +132,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
     birdeye.exitLiquidity(mint)
   ]);
   const x=birdeye.normalizeMarket(m,t,h,l);
+  const tokenInfo=birdeye.normalizeToken(m);
   // Jupiter's actual executable mark is preferred for price. Birdeye provides the deeper context.
   const observedAt=new Date();
   const snap=await db.memeMarketSnapshot.create({data:{
@@ -136,6 +147,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
     source:"JUPITER+BIRDEYE",provenance:{jupiter:{priceImpactPct:j.priceImpactPct},birdeye:{marketData:true,tradeData:true,holderProfile:true,exitLiquidity:true}},observedAt
   }});
   await redis.set(`meme:SOLANA:${mint}`,JSON.stringify(snap),"EX",45);
+  await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint}},update:{symbol:tokenInfo.symbol,name:tokenInfo.name,marketCapUsd:x.marketCapUsd??j.marketCapUsd,liquidityUsd:Number(x.liquidityUsd??0),tokenAgeMin:Number(x.ageMinutes??-1),lastSeenAt:observedAt},create:{chain:"SOLANA",mint,symbol:tokenInfo.symbol,name:tokenInfo.name,source:"WALLET_TRIGGERED",marketCapUsd:x.marketCapUsd??j.marketCapUsd,liquidityUsd:Number(x.liquidityUsd??0),tokenAgeMin:Number(x.ageMinutes??-1),discoveredAt:observedAt,lastSeenAt:observedAt}}).catch(()=>{});
   richUpdates++;
   return snap;
 }

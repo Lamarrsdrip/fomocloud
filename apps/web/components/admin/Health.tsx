@@ -1,9 +1,9 @@
 // Every field here already exists in the real heartbeat.detail written by each worker this
-// session (flow-worker, balance-worker, social-worker) -- this only surfaces what's already true,
+// session (listener, balance-worker, social-worker) -- this only surfaces what's already true,
 // nothing new is computed or estimated. No historical time-series exists (that would need its own
 // metrics pipeline, not built) -- this is real-time current state, which is what actually would
 // have surfaced the 1M-credit Helius burn while it was happening instead of only after.
-const RPC_WORKERS=["solana-flow-scanner","solana-listener","market-worker","balance-worker","social-hype"];
+const RPC_WORKERS=["solana-listener","market-worker","balance-worker","social-hype"];
 function RpcUsage({services}:{services:any[]}){
  const rows=services.filter(s=>RPC_WORKERS.includes(s.name));
  if(!rows.length)return null;

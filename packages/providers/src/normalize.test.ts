@@ -67,3 +67,12 @@ test("normalizeMarket never fabricates a 24h token age or zero creator holding w
   assert.equal(parsed.ageMinutes,-1);
   assert.equal(parsed.creatorHoldingPct,undefined);
 });
+
+
+test("normalizeWalletPnl normalizes fractional win-rate to percent and exposes evidence completeness",()=>{
+  const fractional=client.normalizeWalletPnl({total_pnl:10,realized_pnl:8,volume_usd:100,trade_count:10,win_count:7,win_rate:.7});
+  assert.equal(fractional.winRate,70);
+  assert.equal(fractional.evidenceCompletenessPct,100);
+  const sparse=client.normalizeWalletPnl({total_pnl:10});
+  assert.ok(sparse.evidenceCompletenessPct<50);
+});

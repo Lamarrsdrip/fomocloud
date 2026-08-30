@@ -15,6 +15,7 @@ const DEFAULT_QUOTES = [
 ];
 export const quoteMints = new Set((process.env.SOLANA_QUOTE_MINTS ?? DEFAULT_QUOTES.join(",")).split(",").map((x) => x.trim()).filter(Boolean));
 export const usdcMint = process.env.USDC_MINT_SOLANA ?? DEFAULT_QUOTES[0];
+export const usdtMint = DEFAULT_QUOTES[1];
 
 export type Delta = { mint: string; raw: bigint; decimals: number };
 
@@ -79,5 +80,9 @@ export function classifySwap(tx: ParsedTransactionWithMeta, wallet: string) {
       sourceSoldPct = Math.max(0, Math.min(100, Number((sold * 10000n) / before) / 100));
     }
   }
-  return { action, inputMint: input.mint, outputMint: output.mint, inputRaw, outputRaw, sourcePriceUsd, sourceTokenBalanceBeforeRaw, sourceTokenBalanceAfterRaw, sourceSoldPct };
+  const quoteLeg=action==="BUY"?input:output;
+  const quoteRaw=BigInt(action==="BUY"?inputRaw:outputRaw);
+  const quoteAmount=Number(quoteRaw)/10**quoteLeg.decimals;
+  const amountUsd=(quoteLeg.mint===usdcMint||quoteLeg.mint===usdtMint)&&Number.isFinite(quoteAmount)?quoteAmount:undefined;
+  return { action, inputMint: input.mint, outputMint: output.mint, inputRaw, outputRaw, sourcePriceUsd, sourceTokenBalanceBeforeRaw, sourceTokenBalanceAfterRaw, sourceSoldPct, amountUsd };
 }

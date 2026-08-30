@@ -233,7 +233,7 @@ adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (
   if(!address) return res.status(400).json({error:"ADDRESS_REQUIRED"});
   const existing=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:chain as Chain,address}}});
   if(existing) return res.status(409).json({error:"WALLET_ALREADY_TRACKED"});
-  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"PAPER_TRACKING",source:"ADMIN_MANUAL",label}});
+  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source:"ADMIN_MANUAL",label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:"Added by admin for observation. Objective scoring decides PAPER_TRACKING/PROVEN automatically; admin addition itself grants no trust."}}});
   await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label});
   res.status(201).json({candidate});
 }));
@@ -280,7 +280,7 @@ adminRoutes.get("/v1/admin/risk-incidents", requireAdmin, asyncRoute(async (_req
 }));
 // Real gap found by forensic audit (M-12/PC-D): there was no admin-facing view of watched wallets
 // at all. Recent activity is pulled live from chainFlowObservation, the same continuous stream
-// flow-worker/evm-flow-worker already write to unconditionally -- this route doesn't drive the
+// wallet-first listener writes for explicitly monitored wallets -- this route doesn't drive the
 // monitoring itself (that runs in brain-worker's checkWatchlist regardless of whether anyone ever
 // opens this page), it just surfaces what's already been detected.
 adminRoutes.get("/v1/admin/discovery/watchlist", requireAdmin, asyncRoute(async (_req,res) => {
@@ -304,7 +304,7 @@ adminRoutes.post("/v1/admin/alerts/:id/resolve", adminOnly, asyncRoute(async (re
 }));
 adminRoutes.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const action=String(req.body?.action??"").toUpperCase();
-  if(!["PROVEN","REJECTED","PAUSED","WATCH","UNWATCH"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
+  if(!["REJECTED","PAUSED","WATCH","UNWATCH"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
   const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
   // WATCH/UNWATCH deliberately never touch `stage` -- a separate boolean so admin watch/unwatch can
   // never fight with or get silently overwritten by the objective scoring-worker pipeline. "WATCH
@@ -314,34 +314,12 @@ adminRoutes.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, async
     await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_DECISION",c.id,{action});
     return res.json({candidate:updated});
   }
-  // Real bug found by audit: this route let one admin click set PROVEN/enabled=true with zero
-  // server-side evidence check -- admin action alone manufactured "proven" status. PROVEN must mean
-  // objectively proven: enforce the exact same threshold scoring-worker uses to auto-promote, using
-  // the same evidence it already persisted onto this candidate (metadata.forwardSignals/forwardMeanPct
-  // from services/scoring-worker/src/index.ts). Admin can still WATCH/REVIEW/PAUSE/REJECT freely --
-  // only the PROVEN transition itself is gated on evidence, not on who clicked it.
-  if(action==="PROVEN"){
-    const dc=await getConfig<any>("discovery");
-    const provenMin=Math.max(50,Number(dc?.provenMinScore??process.env.DISCOVERY_PROVEN_MIN_SCORE??78));
-    const provenSamples=Math.max(5,Number(dc?.provenMinForwardSamples??process.env.DISCOVERY_PROVEN_MIN_FORWARD_SAMPLES??20));
-    const provenMean=Math.max(0,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
-    const meta=(c.metadata??{}) as any;
-    const forwardSignals=Number(meta?.forwardSignals??0),forwardMeanPct=Number(meta?.forwardMeanPct??0);
-    // evidenceCompleteness defaults to 0 (not 100) here specifically -- unlike shouldProve's own
-    // default, a candidate this route has never scored with the evidence-completeness-aware scorer
-    // must not be treated as if its risk evidence were fully verified merely because the field is
-    // absent from an older stored record. Missing completeness data is itself incomplete evidence.
-    const evidenceCompleteness=Number(meta?.evidenceCompleteness??0);
-    const evidenceOk=shouldProve({copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore},forwardSignals,forwardMeanPct,evidenceCompleteness)
-      &&c.copyabilityScore>=provenMin&&forwardSignals>=provenSamples&&forwardMeanPct>=provenMean;
-    if(!evidenceOk){
-      return res.status(409).json({error:"INSUFFICIENT_EVIDENCE_FOR_PROVEN",detail:{copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,forwardSignals,forwardMeanPct,evidenceCompleteness,requiredCopyabilityScore:provenMin,requiredForwardSignals:provenSamples,requiredForwardMeanPct:provenMean}});
-    }
-  }
-  const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{stage:action as any,provenAt:action==="PROVEN"?new Date():undefined,rejectedReason:action==="REJECTED"?String(req.body?.reason??"ADMIN_REJECTED"):undefined}});
+  // PROVEN is intentionally not an admin action. The scorer owns promotion from objective evidence.
+  // REJECTED/PAUSED are safety controls only and always remove live-copy eligibility immediately.
+  const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{stage:action as any,rejectedReason:action==="REJECTED"?String(req.body?.reason??"ADMIN_REJECTED"):undefined}});
   if(c.traderId){
-    await db.trader.update({where:{id:c.traderId},data:{enabled:action==="PROVEN",trackingStatus:action,recommended:action==="PROVEN"&&c.copyabilityScore>=85}}).catch(()=>{});
-    await db.traderWallet.updateMany({where:{traderId:c.traderId},data:{monitoringStatus:action==="PROVEN"?"PROVEN":action}}).catch(()=>{});
+    await db.trader.update({where:{id:c.traderId},data:{enabled:false,trackingStatus:action,recommended:false}}).catch(()=>{});
+    await db.traderWallet.updateMany({where:{traderId:c.traderId},data:{monitoringStatus:action}}).catch(()=>{});
   }
   await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_DECISION",c.id,{action,reason:req.body?.reason});
   res.json({candidate:updated});
@@ -365,10 +343,10 @@ adminRoutes.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) =>
 const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","discovery","brain"]);
 const secretConfigKeys=new Set(["push","email","execution","marketData","social","signer"]);
 // Verified 2026-08-29 against every current consumer (services/listener, executor, exits,
-// market-worker, balance-worker, paper-worker, discovery-worker, scoring-worker, flow-worker,
-// brain-worker): every key that once required a restart is now re-read on a live timer or fresh
-// every cycle/tick (executor/exits/paper-worker on a 60s reloadConfig timer; market-worker,
-// balance-worker, listener, flow-worker per-cycle; discovery-worker, scoring-worker fresh inside
+// market-worker, balance-worker, paper-worker, discovery-worker, scoring-worker, brain-worker):
+// every key that once required a restart is now re-read on a live timer or fresh every cycle/tick
+// (executor/exits/paper-worker on a 60s reloadConfig timer; market-worker, balance-worker, listener
+// per-cycle; discovery-worker, scoring-worker fresh inside
 // each scan; brain-worker fresh every 750ms tick). "chains" was never cached anywhere -- only
 // /v1/public/config reads it, fresh on every request. This set is intentionally empty; if a future
 // worker introduces a genuinely startup-only config read, add its key back here (and say why).

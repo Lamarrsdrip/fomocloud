@@ -15,6 +15,7 @@ const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[listener]");
 let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const queue=new Queue("signals",{connection:redis});
+const notificationQueue=new Queue("user-notifications",{connection:redis});
 const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
 const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
@@ -50,17 +51,42 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   decoded++;
   const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
   const idempotencyKey=crypto.createHash("sha256").update(["SOLANA",signature,wallet,tokenMint,swap.action].join(":")).digest("hex");
+  // Wallet-first source of truth: persist flow only for wallets we explicitly monitor. This replaces
+  // the old chain-wide all-logs firehose for normal production, while preserving the exact flow rows
+  // Brain/market/scoring already consume.
+  const observedAt=tx.blockTime?new Date(tx.blockTime*1000):new Date();
+  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
+  // A token record exists only because a monitored wallet touched it. This is metadata for the
+  // wallet-triggered research pipeline, not a resurrection of broad New Token Radar scanning.
+  await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:tokenMint}},update:{lastSeenAt:observedAt},create:{chain:"SOLANA",mint:tokenMint,source:"WALLET_TRIGGERED",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{firstSourceWallet:wallet,firstSourceTx:signature}}}).catch(()=>{});
   const signal=await db.signal.upsert({
     where:{idempotencyKey},update:{},
     create:{
       idempotencyKey,chain:"SOLANA",traderId,sourceWallet:wallet,sourceTx:signature,action:swap.action,
       inputMint:swap.inputMint,outputMint:swap.outputMint,inputRaw:swap.inputRaw,outputRaw:swap.outputRaw,
       sourcePriceUsd:swap.sourcePriceUsd,sourcePriceMethod:swap.sourcePriceUsd?"TX_USDC_RATIO":undefined,sourceTokenBalanceBeforeRaw:swap.sourceTokenBalanceBeforeRaw,
-      sourceTokenBalanceAfterRaw:swap.sourceTokenBalanceAfterRaw,sourceSoldPct:swap.sourceSoldPct,observedAt:tx.blockTime?new Date(tx.blockTime*1000):new Date()
+      sourceTokenBalanceAfterRaw:swap.sourceTokenBalanceAfterRaw,sourceSoldPct:swap.sourceSoldPct,observedAt
     }
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
-  const trader=await db.trader.findUnique({where:{id:traderId},select:{trackingStatus:true}});
+  const trader=await db.trader.findUnique({where:{id:traderId},select:{trackingStatus:true,displayName:true,handle:true}});
+  if(swap.action==="BUY"&&trader?.trackingStatus==="PROVEN"){
+    const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}},select:{copyabilityScore:true,riskScore:true,metadata:true}}).catch(()=>null);
+    const meta=(candidate?.metadata??{}) as any;
+    const skill=Number(meta?.skillScore??candidate?.copyabilityScore??0);
+    const elite=skill>=90&&Number(candidate?.riskScore??100)<=30&&Number(meta?.evidenceCompleteness??0)>=85&&Number(meta?.currentFormScore??0)>=60;
+    const tier=elite?"Elite":"Proven";
+    const users=await db.user.findMany({where:{status:"ACTIVE"},select:{id:true,notificationPrefs:true}});
+    const token=tokenMint;
+    const title=`${tier} wallet bought a token`;
+    const body=`${trader.displayName||trader.handle||wallet} (${wallet}) bought ${token}. MemeCloud Brain is researching it now.`;
+    for(const u of users){
+      if(u.notificationPrefs?.pushEnabled===false)continue;
+      const deliveryKey=`proven-wallet:${signature}:${wallet}:${u.id}`;
+      await db.userActivityEvent.create({data:{userId:u.id,type:"SMART_WALLET_BUY",title,body,data:{chain:"SOLANA",mint:token,walletAddress:wallet,sourceTx:signature,tier,skill} as any}}).catch(()=>null);
+      await notificationQueue.add("notify",{userId:u.id,type:"SMART_WALLET_BUY",title,body,data:{url:"/app/?view=discover",chain:"SOLANA",mint:token,walletAddress:wallet},deliveryKey},{jobId:deliveryKey,removeOnComplete:2000,attempts:3,backoff:{type:"exponential",delay:500}}).catch(()=>{});
+    }
+  }
   if(swap.action==="BUY" && trader && ["PAPER_TRACKING","PROVEN"].includes(trader.trackingStatus)){
     await forwardScheduleQueue.add("schedule",{signalId:signal.id},{jobId:`forward:${signal.id}`,removeOnComplete:1000});
     await paperQueue.add("paper",{signalId:signal.id},{jobId:`paper:${signal.id}`,removeOnComplete:1000,attempts:4,backoff:{type:"exponential",delay:1000}});
@@ -82,14 +108,33 @@ async function reconnectIfConfigChanged(){
   conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
   currentRpcHost=freshHost;
 }
+async function ensureObservationTrader(){
+  return db.trader.upsert({where:{handle:"memecloud-observation"},update:{enabled:false,trackingStatus:"WATCH_ONLY"},create:{handle:"memecloud-observation",displayName:"MemeCloud Observation",bio:"Internal public-wallet observation source. Not copy-eligible.",category:"SMART_MONEY_OBSERVATION",verification:"UNVERIFIED",kind:"PLATFORM",enabled:false,featured:false,recommended:false,defaultSelected:false,trackingStatus:"WATCH_ONLY"}});
+}
+
 async function refreshWatchlist(){
   await reconnectIfConfigChanged();
   // Watch every enabled verified source wallet ONCE. Fan-out happens downstream per user.
   // This also lets the platform track public trader history before a user enables Auto Copy.
+  const observationTrader=await ensureObservationTrader();
+  const profileLimit=Math.max(25,Math.min(300,Number(process.env.WALLET_PROFILE_WATCH_LIMIT??150)));
+  const [adminCandidates,profilingCandidates]=await Promise.all([
+    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},select:{address:true}}),
+    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:"ANALYZING",adminWatched:false},orderBy:[{sourceQualityScore:"desc"},{lastScoredAt:"desc"}],take:profileLimit,select:{address:true}})
+  ]);
+  const observationAddresses=[...new Set([...adminCandidates.map(c=>c.address),...profilingCandidates.map(c=>c.address)])];
+  for(const address of observationAddresses){
+    const isAdmin=adminCandidates.some(c=>c.address===address);
+    await db.traderWallet.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{},create:{traderId:observationTrader.id,chain:"SOLANA",address,verified:true,source:isAdmin?"ADMIN_WATCHLIST":"OBJECTIVE_PROFILING",verificationMethod:"PUBLIC_CHAIN_ADDRESS",evidenceNote:"Public wallet observed for objective scoring. Identity is not asserted and observation grants no copy authority.",verifiedAt:new Date(),monitoringStatus:"WATCH_ONLY"}}).catch(()=>{});
+  }
+  const observationAddressSet=new Set(observationAddresses);
+  const staleObservationWallets=await db.traderWallet.findMany({where:{traderId:observationTrader.id},select:{id:true,address:true}});
+  for(const w of staleObservationWallets)if(!observationAddressSet.has(w.address))await db.traderWallet.delete({where:{id:w.id}}).catch(()=>{});
   const wallets=await db.traderWallet.findMany({
     where:{
       verified:true,
       OR:[
+        {monitoringStatus:"WATCH_ONLY"},
         {trader:{trackingStatus:{in:["PAPER_TRACKING","PROVEN"]}}},
         {trader:{enabled:true,OR:[{kind:"PLATFORM"},{kind:"CUSTOM",follows:{some:{}}}]}}
       ]

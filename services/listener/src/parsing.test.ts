@@ -24,6 +24,7 @@ test("classifySwap detects a BUY: USDC spent, token received", () => {
   // sourcePriceUsd is the real per-token entry price this session's chase-% math depends on:
   // 100 USDC spent / 5 tokens received = $20/token.
   assert.equal(result?.sourcePriceUsd, 20);
+  assert.equal(result?.amountUsd, 100);
 });
 
 test("classifySwap detects a SELL: token spent, USDC received, and computes sourceSoldPct", () => {

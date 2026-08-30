@@ -374,8 +374,8 @@ export {
 // primary (confirmed live: Helius returning 429 "max usage reached") was used anyway rather than
 // skipped, and `fallbackRpc` -- already a real, admin-configurable field the Settings UI's own help
 // text claims is used ("then MemeCloud's public default") -- was silently never read by any of
-// them. Only services/flow-worker had real health-probing (pickHealthyRpc), and only for its own
-// two candidates. Generalized here so every consumer gets the same real failover, plus two verified
+// them. An earlier chain-wide scanner had local health-probing, but the rest of the product did not.
+// Generalized here so every remaining wallet-first consumer gets the same real failover, plus two verified
 // (curl-tested against the live network, both getSlot and getHealth) genuinely public, no-signup
 // Solana RPC endpoints as a last-resort safety net below whatever the admin has configured.
 export const FREE_PUBLIC_SOLANA_RPC_FALLBACKS = [

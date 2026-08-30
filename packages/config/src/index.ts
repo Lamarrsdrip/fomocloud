@@ -60,7 +60,7 @@ export async function isLiveTradingEnabled(): Promise<boolean> {
 const EXECUTION_HEARTBEAT_MAX_AGE_MS=45_000;
 const EXECUTION_PROVIDER_HEALTH_MAX_AGE_MS=60*60_000;
 const EXECUTION_CHAIN_DATA_MAX_AGE_MS=5*60_000;
-const EXECUTION_WORKERS=["executor","exits","market-worker","solana-listener","solana-flow-scanner"] as const;
+const EXECUTION_WORKERS=["executor","exits","market-worker","solana-listener"] as const;
 const EXECUTION_PROVIDER_FIELDS={
   marketData:{rpc:["solanaRpc","heliusRpc","fallbackRpc"],helius:["heliusApiKey"]},
   execution:{jupiter:["jupiterBaseUrl","jupiterApiKey"]},
@@ -116,8 +116,10 @@ export async function readExecutionState(options:ReadExecutionStateOptions={}){
     const running=name===options.selfWorkerName||Boolean(h)&&now-h!.lastBeatAt.getTime()<EXECUTION_HEARTBEAT_MAX_AGE_MS;
     return {name,running,lastBeatAt:h?.lastBeatAt??null,detail:h?.detail??null};
   });
-  const flow=workers.find(w=>w.name==="solana-flow-scanner")?.detail as any;
-  const scannerDegraded=Boolean(flow?.enabled===false||flow?.rateLimited===true||(Number.isFinite(Number(flow?.lastSuccessfulRpcAgoSec))&&Number(flow.lastSuccessfulRpcAgoSec)>60));
+  // Wallet-first ingress is the explicit-wallet listener. There is intentionally no chain-wide
+  // scanner heartbeat anymore; listener health is part of requiredWorkersHealthy and actual
+  // observed-chain freshness is enforced separately below.
+  const scannerDegraded=false;
   const chainDataFresh=Boolean(latestChainEvent)&&now-latestChainEvent!.observedAt.getTime()<EXECUTION_CHAIN_DATA_MAX_AGE_MS;
   const resolved=resolveExecutionState({
     liveTradingRequested:Boolean(liveCfg?.enabled),

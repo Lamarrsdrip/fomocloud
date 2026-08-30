@@ -76,11 +76,10 @@ app.get("/v1/public/config", asyncRoute(async (_req,res) => {
     supportedChains:chainCfg?.enabled??(process.env.ENABLED_CHAINS??"SOLANA").split(","),
     // Honest per the multi-chain capability audit: BASE/ARBITRUM/AVALANCHE/SUI/HYPERLIQUID exist
     // only as schema enum values with zero scanning or execution code anywhere in the repo.
-    // BNB/Ethereum have a real discovery scanner (services/evm-flow-worker) but no signer -- no
-    // chain other than Solana has an execution "adapter" in any real sense, so the field default
-    // previously claiming BASE/ARBITRUM/AVALANCHE were "adapter ready" was simply false.
+    // Wallet-first production is currently Solana-only. Other enum values are schema capability,
+    // not a claim that a scanner or execution adapter is running.
     adapterReadyChains:(process.env.ADAPTER_READY_CHAINS??"").split(",").filter(Boolean),
-    discoveryOnlyChains:["BNB","ETHEREUM"],
+    discoveryOnlyChains:[],
     xOAuthConfigured:Boolean(socialCfg?.xOAuthClientId||process.env.X_OAUTH_CLIENT_ID),
     embeddedWalletsConfigured:Boolean(privyAppId&&privySignerId&&privyPolicyId),
     privyAppId:privyAppId||null,
@@ -213,8 +212,8 @@ app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,r
 
 app.patch("/v1/me/settings/notifications", auth, asyncRoute(async (req:AuthedRequest,res) => {
   await ensureUserDefaults(req.user.sub);
-  const keys=["pushEnabled","emailEnabled","traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoveryNewToken","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
-  const alertKeys=["traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoveryNewToken","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
+  const keys=["pushEnabled","emailEnabled","traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
+  const alertKeys=["traderBought","tradeCopied","skippedTrade","profitTaken","positionClosed","securityAlerts","platformBroadcast","discoverySmartWallet","discoveryWhaleActivity","discoveryHeatingUp","discoveryStrong","discoveryHighConviction"] as const;
   const data:any={};
   // Normal users get ONE notification switch. Turning it on means "send me MemeCloud alerts",
   // not "now configure 13 more toggles." Granular fields stay in the schema for delivery routing
@@ -664,6 +663,11 @@ app.post("/v1/me/traders/custom", auth, asyncRoute(async (req:AuthedRequest,res)
       update:{displayName,xHandle}
     });
   }
+  if(address&&chain==="SOLANA")await db.smartWalletCandidate.upsert({
+    where:{chain_address:{chain:"SOLANA",address}},
+    update:{source:"USER_WATCHLIST"},
+    create:{chain:"SOLANA",address,stage:"DISCOVERED",source:"USER_WATCHLIST",metadata:{discoveryReason:"Added by a user for observation. Objective scoring decides whether it earns PAPER_TRACKING or PROVEN status."}}
+  }).catch(()=>{});
   const defaults=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
   const follow=await db.userFollow.upsert({
     where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}},
@@ -694,6 +698,7 @@ app.post("/v1/me/traders/:id/wallet", auth, asyncRoute(async (req:AuthedRequest,
     return res.json({ok:true,traderId:existing.traderId,reused:true,trackingReady:existing.chain==="SOLANA",message:existing.chain==="SOLANA"?"Wallet matched an existing tracked source. Tracking is ready.":"Wallet matched an existing source, but this chain's listener is adapter-ready only."});
   }
   await db.traderWallet.create({data:{traderId:pending.id,chain,address,verified:true,source:"USER_PUBLIC_WALLET"}});
+  if(chain==="SOLANA")await db.smartWalletCandidate.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{source:"USER_WATCHLIST"},create:{chain:"SOLANA",address,stage:"DISCOVERED",source:"USER_WATCHLIST",metadata:{discoveryReason:"Added by a user for observation. Objective scoring decides whether it earns PAPER_TRACKING or PROVEN status."}}}).catch(()=>{});
   await db.trader.update({where:{id:pending.id},data:{trackingStatus:chain==="SOLANA"?"TRACKING":"ADAPTER_READY"}});
   await db.userFollow.update({where:{id:follow.id},data:{mode:chain==="SOLANA"?"WATCH_ONLY":"FOLLOW_ONLY"}});
   await audit(req.user.sub,"USER","ADD_FAVORITE_TRADER_WALLET",pending.id,{chain,address});
@@ -818,7 +823,7 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   // arbitrary new number invented for this route. A token with truly no real buyer/inflow/whale
   // evidence cannot reach this score (the formula's base is ~24-30 with zero evidence).
   const QUALIFIED_MIN_SCORE=58;
-  const [opportunities,newTokenRadar,mostRecentlyEvaluated]=await Promise.all([
+  const [opportunities,mostRecentlyEvaluated]=await Promise.all([
     db.globalBrainOpportunity.findMany({
       where:{
         // Real bug found by audit, surfaced by a live 20+ hour outage (Helius RPC quota exhausted
@@ -834,18 +839,6 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
         state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}
       },
       orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
-    }),
-    // Explicit, separate "New Token Radar": early/raw intelligence for users who want it, clearly
-    // NOT the same list as the qualified opportunities above. Capped smaller and to genuinely recent
-    // tokens only -- this is meant to answer "what's brand new," not to be a second, looser Discover.
-    db.globalBrainOpportunity.findMany({
-      where:{
-        firstSeenAt:{gte:new Date(now-30*60_000)},
-        state:"SCANNING",
-        score:{lt:QUALIFIED_MIN_SCORE},
-        OR:[{buyers60s:{gte:2}},{inflow60sUsd:{gte:1000}},{whaleBuyers60s:{gte:1}},{knownWhaleBuyers60s:{gte:1}}]
-      },
-      orderBy:{firstSeenAt:"desc"},take:50
     }),
     // Deliberately unfiltered by the 6h window above -- this is the real signal of whether the
     // Brain's scoring loop is actually running at all right now, independent of whether any
@@ -863,7 +856,7 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
   // Main Hunt is intentionally NOT a generic trending-token list. A row must have earned either
   // quality smart-wallet convergence, whale participation, or material tracked smart-money flow.
-  // High raw volume alone belongs in New Token Radar until capital quality is understood.
+  // High raw volume alone never qualifies a wallet-first opportunity; capital quality is required.
   const qualifiedOpportunities=opportunities.filter((o:any)=>{
     const ev=(o.evidence??{}) as any;
     const weighted=Number(ev.convergentWeightedScore??ev.smartWalletWeightedScore??0);
@@ -875,10 +868,7 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   res.json({
     watching:true,
     opportunities:qualifiedOpportunities.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
-    // Additive field: existing clients reading only `opportunities` are unaffected. A future
-    // Discover UI pass can render this as the explicitly-separate "New Token Radar" the product
-    // spec calls for, rather than mixing unqualified rows into the main feed.
-    newTokenRadar:newTokenRadar.map(o=>({...o,lifecycleStatus:classifyLifecycle(o,now)})),
+    intelligenceMode:"WALLET_FIRST",
     pipelineDegraded,dataFreshnessSec
   });
 }));
@@ -896,7 +886,7 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
 // ------------------------ SMART WALLETS (public) ------------------------
 // Real evidence only, from packages/discovery's sample-size-aware scoring (shouldPaperTrack
 // requires >=15 observed trades, shouldProve requires >=20 forward signals) -- never a label from
-// one lucky trade. Whale status (walletTier in flow-worker) is a separate signal from trading skill
+// one lucky trade. Whale status (when independently verified) is a separate signal from trading skill
 // and is surfaced as its own field, not conflated with copyabilityScore.
 function smartWalletSummary(c:any){
   const winRatePct=c.sampleTrades>0?Math.round((c.profitableTrades/c.sampleTrades)*1000)/10:null;
@@ -906,6 +896,7 @@ function smartWalletSummary(c:any){
   const lastObservedTradeAt=meta.lastObservedTradeAt??null;
   return {
     id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
+    intelligenceTier:c.stage==="PROVEN"&&Number(meta.skillScore??c.copyabilityScore)>=90&&Number(c.riskScore)<=30&&Number(meta.evidenceCompleteness??0)>=85&&Number(meta.currentFormScore??0)>=60?"ELITE":c.stage==="PROVEN"?"PROVEN":c.stage==="PAPER_TRACKING"?"WATCHING":"CANDIDATE",
     copyEligible:c.stage==="PROVEN"&&Boolean(c.traderId),
     isWhale,whaleTier:isWhale?whaleTier:null,walletBalanceUsd:meta.walletBalanceUsd??null,
     copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
@@ -915,7 +906,7 @@ function smartWalletSummary(c:any){
     realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
     realizedPnl7dUsd:c.realizedPnl7dUsd??null,winRate7dPct:c.winRate7dPct??null,
     averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
-    rugExposurePct:c.rugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,
+    rugExposurePct:c.rugExposurePct??meta.derivedRugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
     source:c.source,sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
     firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt??c.updatedAt,
     paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
@@ -978,12 +969,12 @@ async function runBackgroundHealthChecks(){
 }
 // Real, provider-quota-percentage information isn't programmatically available from Helius with
 // what's configured here, so this monitors what actually is available: each worker's own tracked
-// rate-limit state (see the rateLimited field added to flow-worker/balance-worker/social-worker
+// rate-limit state (see the rateLimited field added to listener/balance-worker/social-worker
 // heartbeats this session). Runs on the same 15-minute cadence as the provider tests above, so a
 // single momentary blip can't trigger it -- only a worker still showing rate-limited at the next
 // full sampling interval does. Deduped via an unresolved RiskIncident per worker (never spams
 // repeatedly) and auto-resolves the moment that worker reports clear again.
-const RPC_HEARTBEAT_WORKERS=["solana-flow-scanner","solana-listener","market-worker","balance-worker","social-hype"];
+const RPC_HEARTBEAT_WORKERS=["solana-listener","market-worker","balance-worker","social-hype"];
 async function checkProviderDegradation(){
   try{
     const heartbeats=await db.workerHeartbeat.findMany({where:{name:{in:RPC_HEARTBEAT_WORKERS}}});

@@ -26,6 +26,15 @@ foreach ($legacy in $LegacyAppServices) {
   }
 }
 
+
+# Wallet-first production does not run chain-wide all-logs scanners. Their old service packages are
+# removed from the active source tree; disable any previously-installed Windows services so an old
+# deployment cannot silently recreate the RPC/storage firehose this architecture removes.
+foreach ($obsolete in @("memecloud-flow-worker","memecloud-evm-flow-worker")) {
+  $svc = Get-Service -Name $obsolete -ErrorAction SilentlyContinue
+  if ($svc) { Stop-Service -Name $obsolete -Force -ErrorAction SilentlyContinue; Set-Service -Name $obsolete -StartupType Disabled; Write-Host "Disabled obsolete chain-wide scanner: $obsolete" }
+}
+
 $services = @(
   @{Name="memecloud-api"; Script="apps\api\dist\server.js"},
   @{Name="memecloud-listener"; Script="services\listener\dist\index.js"},
@@ -40,8 +49,6 @@ $services = @(
   @{Name="memecloud-forward-worker"; Script="services\forward-worker\dist\index.js"},
   @{Name="memecloud-paper-worker"; Script="services\paper-worker\dist\index.js"},
   @{Name="memecloud-global-brain"; Script="services\brain-worker\dist\index.js"},
-  @{Name="memecloud-flow-worker"; Script="services\flow-worker\dist\index.js"},
-  @{Name="memecloud-evm-flow-worker"; Script="services\evm-flow-worker\dist\index.js"},
   @{Name="memecloud-social-worker"; Script="services\social-worker\dist\index.js"}
 )
 

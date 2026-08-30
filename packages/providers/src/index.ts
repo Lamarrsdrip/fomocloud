@@ -28,12 +28,6 @@ export class BirdeyeClient{
   private async get(path:string,params:Record<string,any>,chain:ChainName="solana"){
     return jsonFetch(`${this.base}${path}?${qs(params)}`,{headers:this.headers(chain)});
   }
-  async trending(chain:ChainName="solana",limit=50){
-    return dataOf(await this.get("/defi/token_trending",{sort_by:"rank",sort_type:"asc",interval:"1h",offset:0,limit},chain));
-  }
-  async tokenListSolana(opts:{minLiquidity?:number;maxMarketCap?:number;minMarketCap?:number;limit?:number}={}){
-    return dataOf(await this.get("/defi/v3/token/list",{sort_by:"volume_1h_usd",sort_type:"desc",offset:0,limit:opts.limit??50,min_liquidity:opts.minLiquidity??15000,max_market_cap:opts.maxMarketCap??50000000,min_market_cap:opts.minMarketCap??50000},"solana"));
-  }
   async topTraders(token:string,timeFrame="30d",limit=50){
     // Real bug found by audit: Birdeye's own top_traders endpoint hard-caps limit at 1-10 --
     // "limit should be integer, range 1-10" -- but every caller in this codebase was passing up to
@@ -42,6 +36,11 @@ export class BirdeyeClient{
     // data at all. Clamped here so the client itself can never violate the real API contract,
     // regardless of what a caller (or an Admin config value) passes in.
     return dataOf(await this.get("/defi/v2/tokens/top_traders",{address:token,time_frame:timeFrame,sort_by:"total_pnl",sort_type:"desc",offset:0,limit:Math.max(1,Math.min(10,Math.round(limit)))},"solana"));
+  }
+  async traderGainersLosers(type:"today"|"1W"|"30d"|"90d"="30d",sortBy:"PnL"|"realized_pnl"|"unrealized_pnl"="realized_pnl",limit=50,chain:ChainName="solana"){
+    // Wallet-first global seed: Birdeye exposes a trader leaderboard directly, so MemeCloud can
+    // discover profitable addresses without crawling token listings or chain-wide transactions.
+    return dataOf(await this.get("/trader/gainers-losers",{type,sort_by:sortBy,sort_type:"desc",offset:0,limit:Math.max(1,Math.min(100,Math.round(limit)))},chain));
   }
   async walletPnlSummary(address:string,duration="30d",chain:ChainName="solana"){
     return dataOf(await this.get("/wallet/v2/pnl/summary",{wallet:address,duration},chain));
@@ -57,8 +56,22 @@ export class BirdeyeClient{
   // the token's own deployer or a bundler is fundamentally different from an organically profitable
   // trader, even with an identical PnL curve, so this is surfaced separately rather than folded
   // silently into a PnL-derived score.
-  normalizeTrader(row:any){return {address:str(row,"owner","wallet","address","wallet_address"),totalPnlUsd:n(row,"totalPnl","total_pnl","total_pnl_usd","pnl"),realizedPnlUsd:n(row,"realizedPnl","realized_pnl","realized_pnl_usd"),volumeUsd:n(row,"volumeUsd","volume_usd","volume"),buyVolumeUsd:n(row,"volumeBuyUSD","volume_buy_usd"),sellVolumeUsd:n(row,"volumeSellUSD","volume_sell_usd"),tradeCount:n(row,"trade_count","tradeCount","trades"),tags:(Array.isArray(row?.tags)?row.tags.map((t:any)=>String(t)):[]) as string[]}}
-  normalizeWalletPnl(x:any){return {totalPnlUsd:n(x,"total_pnl","totalPnl","pnl","pnl_usd")??0,realizedPnlUsd:n(x,"realized_pnl","realizedPnl","realized_pnl_usd")??0,unrealizedPnlUsd:n(x,"unrealized_pnl","unrealizedPnl","unrealized_pnl_usd")??0,volumeUsd:n(x,"volume_usd","total_volume","volumeUsd","volume")??0,tradeCount:n(x,"trade_count","total_trades","tradeCount","trades")??0,profitableTrades:n(x,"win_count","profitable_trades","wins")??0,winRate:n(x,"win_rate","winRate","win_rate_percent")}}
+  normalizeTrader(row:any){return {address:str(row,"owner","wallet","address","wallet_address","walletAddress","trader","trader_address","wallet.address","trader.address"),totalPnlUsd:n(row,"totalPnl","total_pnl","total_pnl_usd","pnl"),realizedPnlUsd:n(row,"realizedPnl","realized_pnl","realized_pnl_usd"),volumeUsd:n(row,"volumeUsd","volume_usd","volume"),buyVolumeUsd:n(row,"volumeBuyUSD","volume_buy_usd"),sellVolumeUsd:n(row,"volumeSellUSD","volume_sell_usd"),tradeCount:n(row,"trade_count","tradeCount","trades"),tags:(Array.isArray(row?.tags)?row.tags.map((t:any)=>String(t)):[]) as string[]}}
+  normalizeWalletPnl(x:any){
+    const total=n(x,"total_pnl","totalPnl","pnl","pnl_usd");
+    const realized=n(x,"realized_pnl","realizedPnl","realized_pnl_usd");
+    const unrealized=n(x,"unrealized_pnl","unrealizedPnl","unrealized_pnl_usd");
+    const volume=n(x,"volume_usd","total_volume","volumeUsd","volume");
+    const trades=n(x,"trade_count","total_trades","tradeCount","trades");
+    const wins=n(x,"win_count","profitable_trades","wins");
+    const rawWinRate=n(x,"win_rate","winRate","win_rate_percent");
+    // Providers commonly expose win-rate as either 0.62 or 62. Never let the same wallet score
+    // ~100x differently merely because an endpoint changed percentage representation.
+    const winRate=rawWinRate==null?undefined:(rawWinRate>=0&&rawWinRate<=1?rawWinRate*100:rawWinRate);
+    const evidence=[total,realized,volume,trades,wins,rawWinRate];
+    const evidenceCompletenessPct=Math.round(evidence.filter(v=>v!==undefined).length/evidence.length*100);
+    return {totalPnlUsd:total??0,realizedPnlUsd:realized??0,unrealizedPnlUsd:unrealized??0,volumeUsd:volume??0,tradeCount:trades??0,profitableTrades:wins??0,winRate,evidenceCompletenessPct};
+  }
   normalizeMarket(m:any,t:any,h:any,l:any){
     const frame=(o:any,k:string)=>o?.[k]??o?.[`trade_${k}`]??o?.[`data_${k}`]??{};
     const f1=frame(t,"1m"),f5=frame(t,"5m"),f15=frame(t,"15m");

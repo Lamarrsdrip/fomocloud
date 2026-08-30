@@ -9,7 +9,7 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
  const s=d?.summary||{};
  const feed=useMemo(()=>{
   const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain}));
-  const eventItems=(activity?.events||[]).slice(0,8).map((e:any)=>eventLine(e));
+  const eventItems=(activity?.events||[]).filter((e:any)=>{const t=`${e?.title||""} ${e?.body||""}`.toLowerCase();return !t.includes("new token radar")&&!t.includes("early/raw intelligence")}).slice(0,8).map((e:any)=>eventLine(e));
   return [...brainItems,...eventItems].sort((a,b)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,10);
  },[brain,activity]);
  // Real gap found by forensic audit (M-41): Home showed only trading cash + net P&L, and had no
@@ -43,14 +43,14 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
   <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div>{brainDegraded&&<span className="status-badge watch">Degraded</span>}</div>
    {brainDegraded?<p style={{fontSize:11,color:"#8a8fa0",margin:0}}>The market data provider is rate-limited right now, so these counts aren't updating. Not a sign the market is quiet -- existing counts just aren't live.</p>:
    <div className="review-grid">
-    <div><span>Heating up</span><b>{pulse.heatingUp}</b></div>
-    <div><span>Strong setups</span><b>{pulse.strong}</b></div>
+    <div><span>Smart money building</span><b>{pulse.heatingUp}</b></div>
+    <div><span>Strong wallet-backed setups</span><b>{pulse.strong}</b></div>
     <div><span>Money Rush</span><b>{pulse.moneyRush}</b></div>
     <div><span>Whale activity</span><b>{pulse.whaleActive}</b></div>
    </div>}
   </section>
   <section className="app-card"><div className="card-title"><div><span>AUTO TRADE</span><h2>{autoTradeOn?"On":"Off"}</h2></div><span className="status-badge">{s.copiedTraders||0} traders copied</span></div>
-   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 10px"}}>{autoTradeOn?"Eligible opportunities are executed automatically within your own limits.":"MemeCloud still scans markets and alerts you. Turn Auto Trade on only if you want eligible opportunities executed automatically."}</p>
+   <p style={{fontSize:11,color:"#8a8fa0",margin:"0 0 10px"}}>{autoTradeOn?"Eligible opportunities are executed automatically within your own limits.":"MemeCloud keeps watching proven traders and whales even while Auto Trade is off. Turn it on only if you want Brain-approved opportunities executed automatically."}</p>
    <button className="soft-action" onClick={()=>setView("traders")}>{autoTradeOn?"Manage Auto Trade":"Set up Auto Trade"}</button>
   </section>
   {Boolean(hotNow.length)&&<section className="app-card"><div className="card-title"><div><span>HOT RIGHT NOW</span><h2>Top opportunities</h2></div><button className="soft-action" onClick={()=>setView("discover")}>See all</button></div>
@@ -61,7 +61,7 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
    </div>)}</div>
   </section>}
   <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">Live</span></div>
-   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Discovery activity is temporarily paused -- the market data provider is rate-limited right now. This will resume automatically once it recovers.":"MemeCloud is scanning the chain. Real activity appears here as evidence arrives — nothing is invented while it's quiet."}</div>}
+   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Discovery activity is temporarily paused -- the market data provider is rate-limited right now. This will resume automatically once it recovers.":"MemeCloud is watching its smart-money network. Activity appears when proven traders, watched wallets or whales actually move — no random-token firehose."}</div>}
   </section>
  </>;
 }
