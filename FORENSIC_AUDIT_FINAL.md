@@ -237,13 +237,13 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | ED-14 | P0–P6 event prioritization | PENDING AUDIT | Flow scanner now uses P4; cross-system queue priority ordering remains unverified. |
 | ED-15 | Durable watched-wallet listener / replay / health | PARTIAL | Reconnect and replay helpers exist; durable queued listener lifecycle is still open. |
 | ED-16 | Bounded forward-horizon evidence | IMPLEMENTED + TESTED | Forward worker records target/tolerance/delay/status; scorer uses only `OK` one-hour evidence. |
-| ED-17 | Entry Quality authority / good token ≠ good entry | PENDING AUDIT | Must be implemented as an explicit authority, not a score label. |
+| ED-17 | Entry Quality authority / good token ≠ good entry | IMPLEMENTED, TESTED | `packages/strategy` now emits independent `opportunityQuality` and `entryQuality` assessments. `evaluateEntry` permits `WAIT_PULLBACK` when a strong token's executable catch-up price lacks fresh 1-minute continuation evidence; executor and paper-copy paths consume that action. UI/persisted explainability remains partial. |
 | ED-18 | Contextual chase rather than universal ceiling | PENDING AUDIT | Requires entry-authority audit. |
 | ED-19 | Test/add/accumulate/trim/distribution classification | PENDING AUDIT | Requires flow behavior model. |
 | ED-20 | Temporal convergence velocity | PENDING AUDIT | Requires Brain evidence audit/implementation. |
 | ED-21 | Immutable entry-thesis snapshot | PENDING AUDIT | Requires schema and execution trace. |
 | ED-22 | Thesis-aware position management | PENDING AUDIT | Requires exits/position trace. |
-| ED-23 | Peak-price drawdown semantics everywhere | PENDING AUDIT | Must re-check paper/exits/analytics/UI. |
+| ED-23 | Peak-price drawdown semantics everywhere | PARTIAL — IMPLEMENTED, TESTED for decision producers | Canonical `priceDrawdownFromPeakPct(peak,current)` now powers paper and live exit market snapshots; deterministic +5,000% runner test proves $51 → $49 is ~3.9%, not 200 percentage points. Analytics/UI producer audit remains open. |
 | ED-24 | Uncapped runner behavior | PARTIAL | Existing runner accounting tests exist; 1,000%–10,000% thesis-aware cases are not verified. |
 | ED-25 | Meme-culture / memetic-strength intelligence | PENDING AUDIT | No utility-bias claim without code proof. |
 | ED-26 | Narrative rotation engine | PENDING AUDIT | Requires NarrativeCluster model and flow trace. |
@@ -343,6 +343,7 @@ The existing M/C/PC rows remain authoritative for overlapping work.
 | 61 | Durable Solana chain-flow ingestion: every received signature is persisted in `ChainIngestionEvent` and queued before RPC parsing; queue/retry/lease-recovery state is explicit (`SEEN`, `QUEUED`, `PROCESSING`, `PARSED`, `PERSISTED`, `RETRYING`, `TERMINAL_FAILURE`), P4 remains background priority, and heartbeat reports backlog/oldest/terminal/recovery metrics. Three focused lifecycle tests added. | Current uncommitted pass | M-22, C-2, ED-13 |
 | 62 | Corrected watched-wallet forward outcomes: source-signal observation now persists `targetAt`, tolerance, actual delay and `OK/LATE/MISSING/INVALID`; it queries only bounded historical prices and scoring accepts only timely `OK` one-hour evidence. Three focused horizon tests replace the former no-op test script. | Current uncommitted pass | ED-7, ED-16 |
 | 63 | Advanced user-facing Hunt terminal: original high-contrast live-flow visual system, Money Rush/top-flow/whale/acceleration filters, visible wallet/flow aggregation, a first-class Smart Money nav destination, and truthful Opportunity Quality/current-decision language in token detail. It deliberately does not fabricate an Entry Quality value until ED-17 is implemented. | Current uncommitted pass | M-42, M-43, ED-43 |
+| 64 | Split token opportunity from executable entry timing in the actual strategy authority, and replace profit-percentage drawdown with one canonical peak-price calculation in paper/live exits. | Current uncommitted pass | ED-17, ED-23, M-28 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).

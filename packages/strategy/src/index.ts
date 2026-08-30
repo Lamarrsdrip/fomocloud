@@ -73,9 +73,19 @@ export type PositionState = {
 
 export type EntryDecision = {
   action: EntryAction;
+  /** Whether the token is worth caring about, independent of this exact fill. */
+  opportunityQuality: QualityAssessment;
+  /** Whether the current executable moment is attractive. */
+  entryQuality: QualityAssessment;
   confidence: number;
   sizeMultiplier: number;
   chaseCapPct: number;
+  reasons: string[];
+  warnings: string[];
+};
+
+export type QualityAssessment = {
+  score: number;
   reasons: string[];
   warnings: string[];
 };
@@ -109,6 +119,16 @@ export const MEME_POLICY = {
 
 const clamp = (n:number, min:number, max:number) => Math.min(max, Math.max(min, n));
 const ratio = (a:number, b:number) => a / Math.max(1e-9, b);
+
+/**
+ * The one canonical definition used by every position producer.  This deliberately
+ * works from prices, not from percentage profit.  A move from $51 to $49 after a
+ * $1 entry is a ~3.9% drawdown, not a fictitious 200-point collapse.
+ */
+export function priceDrawdownFromPeakPct(peakPriceUsd:number, currentPriceUsd:number):number {
+  if (!Number.isFinite(peakPriceUsd) || peakPriceUsd <= 0 || !Number.isFinite(currentPriceUsd)) return 0;
+  return clamp(((peakPriceUsd - currentPriceUsd) / peakPriceUsd) * 100, 0, 100);
+}
 
 export function classifyAge(ageMinutes:number):TokenAgeClass {
   if (ageMinutes <= 30) return "JUST_LAUNCHED";
@@ -222,6 +242,79 @@ export function dynamicChaseCapPct(m:MarketSnapshot):number {
 }
 
 /**
+ * Token opportunity is deliberately independent from timing. A ridiculous-looking meme with
+ * independent buying flow can score well here; utility, polish and narrative seriousness are
+ * intentionally not inputs.
+ */
+export function evaluateOpportunityQuality(m:MarketSnapshot, sourceQualityScore=70):QualityAssessment {
+  const risk = riskScore(m);
+  const momentum = momentumScore(m);
+  const social = socialScore(m);
+  const liquidityScore = clamp(35 + Math.log10(Math.max(1, m.liquidityUsd)) * 10 - m.executablePriceImpactPct * 1.5, 0, 100);
+  const sourceScore = clamp(sourceQualityScore, 0, 100);
+  const score = Math.round(
+    momentum * .34 +
+    (100 - risk.score) * .24 +
+    sourceScore * .20 +
+    liquidityScore * .14 +
+    social * .08
+  );
+  const reasons:string[]=[];
+  const warnings=[...risk.reasons];
+  if (momentum >= 75) reasons.push("Buying momentum is strong");
+  if (m.volumeAcceleration1m >= 1.5) reasons.push("Volume is accelerating");
+  if ((m.smartMoneyNetFlow5mUsd ?? 0) > 0) reasons.push("Tracked smart wallets are net buying");
+  if (social >= 65) reasons.push("Social attention is growing");
+  if ((m.holderGrowth5mPct ?? 0) > 3) reasons.push("Holder count is expanding");
+  if (trendState(m) === "HYPER") reasons.push("Hyper-momentum setup detected");
+  return {score:clamp(score,0,100),reasons,warnings};
+}
+
+/**
+ * Entry quality answers a different question: should MemeCloud buy at this executable price now?
+ * Catch-up is allowed when a fresh expansion is actually being confirmed, but a good token that
+ * has gone quiet after smart money entered becomes WAIT_PULLBACK instead of exit liquidity.
+ */
+export function evaluateEntryQuality(m:MarketSnapshot, opportunityScore:number):QualityAssessment {
+  const risk=riskScore(m);
+  const momentum=momentumScore(m);
+  const chaseCap=dynamicChaseCapPct(m);
+  const moved=m.priceFromSourcePct ?? 0;
+  let score=clamp(68 + (opportunityScore-50)*.35 + (momentum-50)*.12 - risk.score*.12 - Math.max(0,m.executablePriceImpactPct-5)*1.2,0,100);
+  const reasons:string[]=[];
+  const warnings:string[]=[];
+
+  const expansionEvidence=[
+    m.volumeAcceleration1m >= 1.5,
+    m.volumeAcceleration5m >= 1.3,
+    (m.liquidityChange5mPct ?? 0) > 0,
+    (m.smartMoneyNetFlow5mUsd ?? 0) > 0,
+    m.sourceTraderStillHolding === true
+  ].filter(Boolean).length;
+  if (moved > chaseCap) {
+    // A wide chase needs every available confirmation of a *continuing* expansion. Four stale
+    // supportive fields are not enough when the current one-minute tape has stopped accelerating.
+    if (expansionEvidence === 5) {
+      score -= 8;
+      reasons.push("Catch-up expansion is confirmed by fresh flow, liquidity and source conviction");
+    } else {
+      score -= Math.min(55,18 + (moved-chaseCap)*.75);
+      warnings.push(`Entry is ${moved.toFixed(1)}% above source execution without enough fresh expansion evidence`);
+    }
+  }
+  if (m.sourceTraderStillHolding === false || (m.sourceTraderSoldPct ?? 0) >= 50) {
+    score -= 18;
+    warnings.push("Source conviction is fading");
+  }
+  if ((m.liquidityChange5mPct ?? 0) < -15) {
+    score -= 14;
+    warnings.push("Liquidity is deteriorating");
+  }
+  if (m.drawdownFromPeakPct >= 8 && momentum >= 55) reasons.push("Pullback may offer a cleaner entry");
+  return {score:clamp(Math.round(score),0,100),reasons,warnings};
+}
+
+/**
  * Smart entry:
  * - hard blockers are rare and objective
  * - risk warnings lower size instead of automatically rejecting
@@ -232,47 +325,25 @@ export function dynamicChaseCapPct(m:MarketSnapshot):number {
 export function evaluateEntry(m:MarketSnapshot, sourceQualityScore=70):EntryDecision {
   const blockers = hardBlockers(m);
   if (blockers.length) return {
-    action:"SKIP", confidence:0, sizeMultiplier:0, chaseCapPct:dynamicChaseCapPct(m),
+    action:"SKIP", opportunityQuality:{score:0,reasons:[],warnings:blockers}, entryQuality:{score:0,reasons:[],warnings:blockers}, confidence:0, sizeMultiplier:0, chaseCapPct:dynamicChaseCapPct(m),
     reasons:[], warnings:blockers
   };
 
-  const risk = riskScore(m);
-  const momentum = momentumScore(m);
-  const social = socialScore(m);
   const trend = trendState(m);
   const chaseCap = dynamicChaseCapPct(m);
-  const moved = m.priceFromSourcePct ?? 0;
+  const opportunityQuality=evaluateOpportunityQuality(m,sourceQualityScore);
+  const entryQuality=evaluateEntryQuality(m,opportunityQuality.score);
+  const confidence=entryQuality.score;
+  const reasons=[...opportunityQuality.reasons,...entryQuality.reasons];
+  const warnings=[...opportunityQuality.warnings,...entryQuality.warnings];
 
-  const liquidityScore = clamp(35 + Math.log10(Math.max(1, m.liquidityUsd)) * 10 - m.executablePriceImpactPct * 1.5, 0, 100);
-  const safetyScore = 100 - risk.score;
-  const sourceScore = clamp(sourceQualityScore, 0, 100);
-
-  // Fast signals dominate. Social is useful but intentionally lower weight because it can lag.
-  const confidence = Math.round(
-    momentum * .34 +
-    safetyScore * .24 +
-    sourceScore * .20 +
-    liquidityScore * .14 +
-    social * .08
-  );
-
-  const reasons:string[] = [];
-  const warnings:string[] = [...risk.reasons];
-  if (momentum >= 75) reasons.push("Buying momentum is strong");
-  if (m.volumeAcceleration1m >= 1.5) reasons.push("Volume is accelerating");
-  if ((m.smartMoneyNetFlow5mUsd ?? 0) > 0) reasons.push("Tracked smart wallets are net buying");
-  if (social >= 65) reasons.push("Social attention is growing");
-  if ((m.holderGrowth5mPct ?? 0) > 3) reasons.push("Holder count is expanding");
-  if (trend === "HYPER") reasons.push("Hyper-momentum setup detected");
-
-  // A meme can already be up thousands of percent and still be entering a new expansion. Chase is
-  // evidence for confidence/size, never a hidden platform ceiling. A user may set their own ceiling.
-  if (moved > chaseCap) warnings.push(`Fast catch-up entry: ${moved.toFixed(1)}% from source execution`);
-
-  if (confidence >= 72) return {action:"BUY_NOW", confidence, sizeMultiplier:1, chaseCapPct:chaseCap, reasons, warnings};
-  if (confidence >= 58) return {action:"BUY_SMALLER", confidence, sizeMultiplier:.65, chaseCapPct:chaseCap, reasons, warnings};
-  if (momentum >= 55 && trend !== "BROKEN") return {action:"WAIT_PULLBACK", confidence, sizeMultiplier:0, chaseCapPct:chaseCap, reasons, warnings};
-  return {action:"SKIP", confidence, sizeMultiplier:0, chaseCapPct:chaseCap, reasons, warnings};
+  if (opportunityQuality.score >= 65 && entryQuality.score >= 72)
+    return {action:"BUY_NOW",opportunityQuality,entryQuality,confidence,sizeMultiplier:1,chaseCapPct:chaseCap,reasons,warnings};
+  if (opportunityQuality.score >= 55 && entryQuality.score >= 58)
+    return {action:"BUY_SMALLER",opportunityQuality,entryQuality,confidence,sizeMultiplier:.65,chaseCapPct:chaseCap,reasons,warnings};
+  if (opportunityQuality.score >= 55 && trend !== "BROKEN")
+    return {action:"WAIT_PULLBACK",opportunityQuality,entryQuality,confidence,sizeMultiplier:0,chaseCapPct:chaseCap,reasons,warnings};
+  return {action:"SKIP",opportunityQuality,entryQuality,confidence,sizeMultiplier:0,chaseCapPct:chaseCap,reasons,warnings};
 }
 
 export function adaptiveTrailPct(m:MarketSnapshot):number {

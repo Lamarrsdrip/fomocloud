@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dynamicChaseCapPct, evaluateEntry, evaluateExit, MarketSnapshot } from "./index.js";
+import { dynamicChaseCapPct, evaluateEntry, evaluateExit, MarketSnapshot, priceDrawdownFromPeakPct } from "./index.js";
 
 const strong:MarketSnapshot = {
   ageMinutes:10, liquidityUsd:250000, marketCapUsd:600000, sourceMarketCapUsd:450000,
@@ -37,4 +37,12 @@ test("5000 percent hyper runner can keep breathing", ()=>{
   const r=evaluateExit({...strong,priceFromEntryPct:5000,peakProfitPct:5200,drawdownFromPeakPct:3},
     {tp1Taken:true,tp2Taken:true,tp3Taken:true,principalRecoveredPct:100,peakProfitPct:5200,remainingPct:35});
   assert.equal(r.action,"HOLD");
+});
+
+test("drawdown is always calculated from peak price, not profit percentage", ()=>{
+  // Entry $1, peak $51 (+5000%), current $49 (+4800%). The actual price pullback is
+  // only 3.92%, so runner protection must not see a fabricated 200% collapse.
+  assert.ok(Math.abs(priceDrawdownFromPeakPct(51,49) - 3.921568627) < 0.000001);
+  assert.equal(priceDrawdownFromPeakPct(51,51),0);
+  assert.equal(priceDrawdownFromPeakPct(0,49),0);
 });

@@ -5,7 +5,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
 import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
-import { evaluateExit, type MarketSnapshot } from "@memecloud/strategy";
+import { evaluateExit, priceDrawdownFromPeakPct, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { getConfig } from "@memecloud/config";
@@ -86,7 +86,7 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
   const sourceSold=recentSourceSell?.sourceSoldPct==null?undefined:Number(recentSourceSell.sourceSoldPct);
   return {
     ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
-    priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:Math.max(0,peakProfit-profit),
+    priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:priceDrawdownFromPeakPct(peak,current),
     volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
     volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
     buys1m:rich.buys1m,sells1m:rich.sells1m,buys5m:rich.buys5m,sells5m:rich.sells5m,
