@@ -50,8 +50,13 @@ export default function AppPage(){
   const[newTokenRadar,setNewTokenRadar]=useState<any[]>([]);
   const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
+  // Real gap found by forensic audit (M-35): "Fund" from Home landed on Account and left the user
+  // to find "Send / Receive / History" themselves. A changing number (not a boolean) so tapping
+  // Fund again while already on Profile still reopens the sheet.
+  const[fundSignal,setFundSignal]=useState(0);
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
+  function openFund(){setSelectedMint(null);setView("profile");setFundSignal(x=>x+1)}
   async function load(){
     setLoading(true);setError("");
     try{
@@ -128,7 +133,7 @@ export default function AppPage(){
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
-        {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
+        {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint} onFund={openFund}/>}
         {view==="discover"&&<DiscoverView brain={brain} newTokenRadar={newTokenRadar} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="smart-wallets"&&<SmartWalletsView/>}
         {view==="trade"&&<TradeView settings={settings} trades={trades} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
@@ -137,7 +142,7 @@ export default function AppPage(){
         {view==="social"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
         {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard} me={me} reload={load}/>}
-        {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView}/>}
+        {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView} openReceiveSignal={fundSignal}/>}
         </>}
       </section>
     </div>

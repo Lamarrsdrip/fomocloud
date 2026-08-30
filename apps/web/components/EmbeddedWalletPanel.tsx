@@ -18,7 +18,7 @@ type Step = "idle" | "email" | "code" | "creating" | "delegating" | "registering
 // PrivyProvider is mounted here, not wrapped separately, because EmbeddedWalletPanelInner calls
 // Privy's hooks unconditionally -- those throw if rendered without a real, ready PrivyProvider
 // ancestor, so the provider must never render its children until pubConfig has actually resolved.
-export default function EmbeddedWalletPanel(props: { me: any; reload: () => Promise<void> }) {
+export default function EmbeddedWalletPanel(props: { me: any; reload: () => Promise<void>; openReceiveSignal?: number }) {
   const [pubConfig, setPubConfig] = useState<any>(undefined);
   useEffect(() => {
     let live = true;
@@ -51,7 +51,7 @@ export default function EmbeddedWalletPanel(props: { me: any; reload: () => Prom
 // separate Phantom wallet. The backend independently re-verifies every claim this component makes
 // (see verifyPrivyDelegation in apps/api/src/server.ts) before ever marking the wallet trading-
 // enabled, so nothing here is trusted blindly server-side.
-function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: () => Promise<void>; pubConfig: any }) {
+function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: { me: any; reload: () => Promise<void>; pubConfig: any; openReceiveSignal?: number }) {
   const { ready, authenticated, logout } = usePrivy();
   const { user, refreshUser } = useUser();
   const { sendCode, loginWithCode, state: emailState } = useLoginWithEmail();
@@ -65,6 +65,15 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig }: { me: any; reload: 
 
   const embeddedWallet = (me?.wallets || []).find((w: any) => w.chain === "SOLANA" && w.tradingEnabled && w.permissionRef);
   const [detailOpen, setDetailOpen] = useState(false);
+  // Real gap found by forensic audit (M-35): "Add Funds" from Home landed on the Account tab and
+  // left the user to find and tap "Send / Receive / History" themselves -- not the one-tap flow
+  // the spec calls for. openReceiveSignal is a changing number (not a boolean) so tapping Fund
+  // again while already on this screen still reopens the sheet, even though the wallet itself
+  // hasn't changed.
+  useEffect(() => {
+    if (openReceiveSignal && embeddedWallet) setDetailOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openReceiveSignal]);
 
   async function afterAuthenticated() {
     setErr("");

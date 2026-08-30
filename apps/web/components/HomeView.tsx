@@ -5,7 +5,7 @@ import {money} from "../lib/api";
 import {timeAgo,feedLine,eventLine,whaleCount,lifecycleLabel} from "../lib/format";
 import {TokenAvatar} from "./TokenAvatar";
 
-export default function HomeView({d,activity,brain,brainDegraded,setView,openToken}:{d:any;activity:any;brain:any[];brainDegraded:boolean;setView:(v:any)=>void;openToken:(s:{chain:string;mint:string})=>void}){
+export default function HomeView({d,activity,brain,brainDegraded,setView,openToken,onFund}:{d:any;activity:any;brain:any[];brainDegraded:boolean;setView:(v:any)=>void;openToken:(s:{chain:string;mint:string})=>void;onFund:()=>void}){
  const s=d?.summary||{};
  const feed=useMemo(()=>{
   const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain}));
@@ -36,7 +36,7 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
    <div><span>Total P&amp;L</span><b className={(s.netPnlUsd||0)>=0?"positive":"negative"}>{(s.netPnlUsd||0)>=0?"+":""}{money(s.netPnlUsd)}</b></div>
   </div>
   <div className="quick-actions-row">
-   <button onClick={()=>setView("profile")}><ArrowDownToLine size={18}/><span>Fund</span></button>
+   <button onClick={onFund}><ArrowDownToLine size={18}/><span>Fund</span></button>
    <button onClick={()=>setView("trade")}><Zap size={18}/><span>Trade</span></button>
    <button onClick={()=>setView("discover")}><TrendingUp size={18}/><span>Discover</span></button>
    <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Portfolio</span></button>
