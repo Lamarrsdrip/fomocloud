@@ -47,12 +47,13 @@ export default function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:stri
    <div><span>Whales buying</span><b>{o?whaleCount(o):0}</b></div>
    <div><span>Smart wallets entered</span><b>{o?.evidence?.convergentCount??0}</b></div>
    <div><span>Volume acceleration</span><b>{o?.volumeAcceleration1m?`${o.volumeAcceleration1m.toFixed(1)}x`:"Unknown"}</b></div>
-   <div><span>MemeCloud confidence</span><b>{o?.score!=null?`${Math.round(o.score)}%`:"Unknown"}</b></div>
+   <div><span>Opportunity quality</span><b>{o?.score!=null?`${Math.round(o.score)}/100`:"Unknown"}</b></div>
+   <div><span>Current decision</span><b>{o?.action?.replaceAll("_"," ")||"WATCH"}</b></div>
   </div>
   {/* MemeCloud Verdict: the same evidence as "MemeCloud confidence" above, broken into named
       dimensions instead of one opaque number -- computed by packages/brain's evaluateOpportunity,
       never client-guessed. Purely explanatory; it cannot itself change any trading decision. */}
-  {o?.evidence?.breakdown&&<section className="app-card"><div className="card-title"><div><span>MEMECLOUD VERDICT</span><h2>Why the confidence score is what it is</h2></div></div>
+  {o?.evidence?.breakdown&&<section className="app-card verdict-card"><div className="card-title"><div><span>MEMECLOUD VERDICT</span><h2>Why this opportunity matters</h2></div><span className="status-badge">{o?.action?.replaceAll("_"," ")||"WATCH"}</span></div>
    <div className="review-grid">
     <div><span>Momentum</span><b>{o.evidence.breakdown.momentum}</b></div>
     <div><span>Smart money</span><b>{o.evidence.breakdown.smartMoney}</b></div>

@@ -840,6 +840,26 @@ enum CandidateStage {
   PAUSED
 }
 
+// A chain log is evidence before it is a parsed swap.  Keeping its lifecycle separately from
+// ChainFlowObservation prevents a provider/backpressure incident from making an observed
+// signature disappear without an auditable retry or terminal-failure record.
+enum ChainIngestionStatus {
+  SEEN
+  QUEUED
+  PROCESSING
+  PARSED
+  PERSISTED
+  RETRYING
+  TERMINAL_FAILURE
+}
+
+enum ForwardObservationStatus {
+  OK
+  LATE
+  MISSING
+  INVALID
+}
+
 model SmartWalletCandidate {
   id                 String         @id @default(auto()) @map("_id") @db.ObjectId
   // Real gap found by forensic audit (M-12/M-13/PC-D): there was no way for admin to WATCH a wallet
@@ -967,6 +987,10 @@ model SourceSignalObservation {
   chain            Chain
   mint             String
   horizonSeconds   Int
+  status           ForwardObservationStatus @default(OK)
+  targetAt         DateTime?
+  maxToleranceMs   Int?
+  delayMs          Int?
   sourcePriceUsd   Float?
   observedPriceUsd Float?
   returnPct        Float?
@@ -1128,6 +1152,31 @@ model ChainFlowObservation {
   @@unique([chain, txHash, walletAddress, mint])
   @@index([chain, mint, observedAt])
   @@index([chain, walletAddress, observedAt])
+}
+
+model ChainIngestionEvent {
+  id             String               @id @default(auto()) @map("_id") @db.ObjectId
+  chain          Chain
+  signature      String
+  source         String
+  status         ChainIngestionStatus @default(SEEN)
+  priority       Int                  @default(4)
+  attemptCount   Int                  @default(0)
+  receivedCount  Int                  @default(1)
+  lastError      String?
+  receivedAt     DateTime             @default(now())
+  queuedAt       DateTime?
+  processingAt   DateTime?
+  parsedAt       DateTime?
+  persistedAt    DateTime?
+  terminalAt     DateTime?
+  metadata       Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([chain, signature, source])
+  @@index([status, priority, receivedAt])
+  @@index([chain, receivedAt])
 }
 
 model GlobalBrainOpportunity {

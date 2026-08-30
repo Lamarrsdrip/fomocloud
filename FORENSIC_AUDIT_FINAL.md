@@ -100,7 +100,7 @@ M-23 and M-62 rather than carry forward an assumption.
 | M-19 | Opportunity lifecycle, no time-based re-entry | IMPLEMENTED | didStateUpgrade()'s ratchet-up-only logic (packages/brain, tested, now BrainState-typed per fix #50) is the general mechanism the earlier 30s-repeat patch (1ad91f4) was a specific instance of | Not LIVE VERIFIED |
 | M-20 | Multi-chain capability safety | DONE | Fix #6 | |
 | M-21 | EVM hardening (reconnect, watchdog, failover, rate limit, reorg, cursor/replay, stale detection, dynamic pricing) | PARTIAL | Reconnect/watchdog (fix #9), capability registry (fix #6), and the BUY/SELL classification itself is now real and tested (fix #41) | Reorg handling, cursor/replay durability, and dynamic native-token pricing beyond config reload not individually verified; EVM ingestion remains dormant in production (no RPC configured) |
-| M-22 | Raw chain ingestion — no silent event loss, durable lifecycle | PARTIAL, DELIBERATE | Fork E: real 90s watchdog reconnect exists; dropped-under-backoff events are a documented, reasoned load-shedding choice | No requeue/dead-letter/durable cursor -- a dropped signature is genuinely unrecovered, not silently miscounted. Not fixed this session |
+| M-22 | Raw chain ingestion — no silent event loss, durable lifecycle | PARTIAL | Solana flow scanner now persists `ChainIngestionEvent` before provider work and recovers queued/retrying/stale-processing events; explicit `TERMINAL_FAILURE` replaces silent drops (current pass) | Watched-wallet listener and EVM ingestion still need the same durable lifecycle; not LIVE VERIFIED. |
 | M-23 | Market data truth — no fake $0 price | VERIFIED (code) | Fresh grep this session for `priceUsd ?? 0` / fabricated-zero-price patterns: **none found**, repo-wide | Not LIVE VERIFIED |
 | M-24 | Market-worker priorities P0(live positions)..P5(backfill) enforced | PENDING AUDIT | Commit 438e31d claims this — not freshly re-verified this session | |
 | M-25 | RPC resilience — health check validates required methods, not just getHealth | DONE | Fix #5 (probeIndexedMethod against getTokenSupply) | Chaos-tested failover/failback still not performed (see M-52) |
@@ -156,7 +156,7 @@ literally the same underlying requirement.
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
 | C-1 | EVM hardening completion | PARTIAL | = M-21 |
-| C-2 | Durable flow ingestion / no silent drops | PARTIAL, DELIBERATE | = M-22 |
+| C-2 | Durable flow ingestion / no silent drops | PARTIAL | = M-22; chain-wide Solana scanner fixed this pass, watched-wallet/EVM paths remain. |
 | C-3 | Smart-wallet discovery skill-centric (not wealth-gated) | DONE | = M-7/M-8 |
 | C-4 | Forward-proof smart-wallet promotion (objective thresholds, not admin button) | DONE | = M-9/M-13 |
 | C-5 | New Token Radar dedicated path | DONE | Same fix as M-5/M-42/PC-J (fix #13) — a structurally separate array, not a lower tier of the main feed |
@@ -212,6 +212,70 @@ trace (not an assumption) done specifically to verify this line.
 All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixes land. Listed in full in M-67 reference; not duplicated here to keep this file maintainable — see original prompt text for exact wording, answered inline in the "Final Product Questions" section to be added after Pass 1.
 
 ---
+
+## ED — Experienced-Degen Intelligence Upgrade (added 2026-08-30)
+
+This table retains every numbered requirement from the Experienced-Degen prompt. `PENDING AUDIT`
+means it has not been independently re-verified in this pass; it is never a claim of completion.
+The existing M/C/PC rows remain authoritative for overlapping work.
+
+| ID | Requirement | Status | Current evidence / next proof |
+|---|---|---|---|
+| ED-1 | Separate opportunity, entry and position/thesis decisions | PENDING AUDIT | Existing Brain has opportunity/action only; must not infer the split. |
+| ED-2 | Experienced-degen end-to-end decision flow | PENDING AUDIT | Requires cross-worker trace. |
+| ED-3 | Wallet skill classes separate from wealth tiers | PARTIAL | Candidate stages exist; ELITE/HIGH_EDGE class is not yet verified. |
+| ED-4 | Quality-weighted convergence changes Brain decisions | PARTIAL | Existing weighted convergence is verified; full current-form/independence weighting remains audit scope. |
+| ED-5 | Wallet cluster / independent actor intelligence | PENDING AUDIT | No completed cluster proof recorded. |
+| ED-6 | Autonomous wallet-first hunting | IMPLEMENTED | `scanWalletFirst()` is recorded under M-7; live proof remains VPS-blocked. |
+| ED-7 | Early-entry edge outcomes at all horizons | PARTIAL | Source forward outcomes now have bounded timing; full MFE/MAE/copyability model is unverified. |
+| ED-8 | Inspectable degen wallet evidence profile | PARTIAL | Existing profile metrics are surfaced; full listed profile still needs field audit. |
+| ED-9 | 7D current form / 30D / 90D durability states | PARTIAL | 7D and 30D exist; 90D/form-state model not verified. |
+| ED-10 | Objective PROVEN promotion | IMPLEMENTED | Mature closed-paper evidence and server-side gate are recorded under M-9/M-13. |
+| ED-11 | Explicit VERIFIED/PARTIAL/UNKNOWN/STALE/FAILED evidence states | PARTIAL | UNKNOWN-risk fix exists; complete producer-state audit remains open. |
+| ED-12 | No fabricated token age | PENDING AUDIT | Must re-check all market-worker fallback producers. |
+| ED-13 | Durable chain-wide event ingestion lifecycle | PARTIAL, IMPLEMENTED + TESTED | New `ChainIngestionEvent` records SEEN→QUEUED→PROCESSING→PARSED→PERSISTED/RETRYING/TERMINAL_FAILURE with queue recovery; watched-listener path still needs the same treatment. |
+| ED-14 | P0–P6 event prioritization | PENDING AUDIT | Flow scanner now uses P4; cross-system queue priority ordering remains unverified. |
+| ED-15 | Durable watched-wallet listener / replay / health | PARTIAL | Reconnect and replay helpers exist; durable queued listener lifecycle is still open. |
+| ED-16 | Bounded forward-horizon evidence | IMPLEMENTED + TESTED | Forward worker records target/tolerance/delay/status; scorer uses only `OK` one-hour evidence. |
+| ED-17 | Entry Quality authority / good token ≠ good entry | PENDING AUDIT | Must be implemented as an explicit authority, not a score label. |
+| ED-18 | Contextual chase rather than universal ceiling | PENDING AUDIT | Requires entry-authority audit. |
+| ED-19 | Test/add/accumulate/trim/distribution classification | PENDING AUDIT | Requires flow behavior model. |
+| ED-20 | Temporal convergence velocity | PENDING AUDIT | Requires Brain evidence audit/implementation. |
+| ED-21 | Immutable entry-thesis snapshot | PENDING AUDIT | Requires schema and execution trace. |
+| ED-22 | Thesis-aware position management | PENDING AUDIT | Requires exits/position trace. |
+| ED-23 | Peak-price drawdown semantics everywhere | PENDING AUDIT | Must re-check paper/exits/analytics/UI. |
+| ED-24 | Uncapped runner behavior | PARTIAL | Existing runner accounting tests exist; 1,000%–10,000% thesis-aware cases are not verified. |
+| ED-25 | Meme-culture / memetic-strength intelligence | PENDING AUDIT | No utility-bias claim without code proof. |
+| ED-26 | Narrative rotation engine | PENDING AUDIT | Requires NarrativeCluster model and flow trace. |
+| ED-27 | Launch mechanics evidence | PENDING AUDIT | Fields/providers/consumers need audit. |
+| ED-28 | Deployer history intelligence | PENDING AUDIT | Requires deployer profile model/consumer trace. |
+| ED-29 | Organic-flow / wash-trading detection | PENDING AUDIT | Requires cluster/economic-actor evidence. |
+| ED-30 | Flow acceleration / second-order acceleration | PARTIAL | Market aggregation provides acceleration; full second-order audit remains open. |
+| ED-31 | Persisted degen token state machine | PARTIAL | BrainState is persisted; richer semantic state machine not yet verified. |
+| ED-32 | Re-entry/add-on lifecycle and idempotency | PARTIAL | State-upgrade idempotency exists; explicit add-on states remain audit scope. |
+| ED-33 | Evidence-based position sizing | PENDING AUDIT | Requires strategy/executor trace. |
+| ED-34 | Risk matrix modifies rather than blanket-blocks memes | PENDING AUDIT | Requires Brain/strategy audit. |
+| ED-35 | Risk warnings have decision authority | PENDING AUDIT | Requires producer→consumer audit. |
+| ED-36 | Complete MarketSnapshot/BrainEvidence field audit | PENDING AUDIT | Dedicated traceability matrix still needed. |
+| ED-37 | Market-data priority protects live positions | PENDING AUDIT | Existing claim M-24 requires direct verification. |
+| ED-38 | Thesis memory for passed trades | PENDING AUDIT | Requires schema/analytics implementation. |
+| ED-39 | Intelligence-funnel analytics | PENDING AUDIT | Requires aggregated funnel metrics. |
+| ED-40 | Cheap-filter-first cost tiers | PENDING AUDIT | Requires discovery pipeline audit. |
+| ED-41 | Reawaken previously quiet tokens | PENDING AUDIT | Requires lifecycle transition test. |
+| ED-42 | Evidence-defined Money Rush | PARTIAL | Persisted state/reasons exist; semantic acceptance test still required. |
+| ED-43 | User-facing degen explanation | IMPLEMENTED + PARTIAL | New Hunt terminal exposes real Money Rush, wallet/flow and decision evidence; full entry-quality explanation waits on ED-17. |
+| ED-44 | After-entry thesis UI | PENDING AUDIT | Depends on ED-21/22 data model. |
+| ED-45 | Admin Degen Intelligence Desk | PARTIAL | Existing Smart Money/admin desks exist; full clusters/narratives/deployers/missed-opportunities desks remain open. |
+| ED-46 | Observation-only live acceptance test | BLOCKED | VPS unavailable. |
+| ED-47 | Deterministic historical degen scenarios | PENDING AUDIT | Test suite expansion required. |
+| ED-48 | Remove traditional utility bias | PENDING AUDIT | Repository/comment/prompt sweep required. |
+| ED-49 | No single-signal overfitting | PENDING AUDIT | Requires model/test audit. |
+| ED-50 | Cross-subsystem audit discipline | ONGOING PRACTICE | This batch traced flow→DB→queue→scoring and frontend consumers. |
+| ED-51 | Full targeted test requirement | PARTIAL | Added durable-ingestion and horizon tests; broad scenario suite remains open. |
+| ED-52 | Chaos testing | BLOCKED | Requires controllable Redis/Mongo/provider environment; VPS unavailable. |
+| ED-53 | Capacity/performance measurements | BLOCKED | Requires live provider/VPS observation. |
+| ED-54 | Final acceptance questions | PENDING AUDIT | Must be answered individually after ED-1..53 work. |
+| ED-55 | Final experienced-degen definition | ONGOING | Governing product objective; cannot be marked complete until ED acceptance is evidenced. |
 
 ## Fixes applied so far
 | # | Fix | Commit | Requirement(s) closed |
@@ -276,6 +340,9 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 58 | M-49 first real route-domain split: signup/login/refresh/logout/verify-email/forgot+reset-password/wallet-auth (12 routes) extracted into apps/api/src/authRoutes.ts as an actual Express Router (not just a helper-file extraction), mounted at the exact original registration point with identical middleware order. server.ts now 1832 lines (was 2050 at session start, 2443 originally) | 479bf97 | M-49 (partial) |
 | 59 | M-49 second route-domain split: wallet management (enable/disable-automation, embedded wallet creation, balances, export audit trail, transaction history, real on-chain send) -- 7 routes -- extracted into apps/api/src/walletRoutes.ts. Also extracted the shared Redis+BullMQ queues into queues.ts so this new file and server.ts share one notificationQueue instance instead of each opening a separate one. server.ts now 1553 lines (was 2443 originally) | c6d4efd | M-49 (partial) |
 | 60 | M-49 third and largest route-domain split: the entire admin subsystem (30 routes: bootstrap, overview, users, traders, brain, discovery, positions, alerts, config, push/email test, broadcasts, audit, health, live-trading) extracted into apps/api/src/adminRoutes.ts, deliberately leaving the 4 interleaved PUBLIC brain/smart-wallets routes in server.ts since they carry no admin auth. server.ts is now 979 lines (was 2443 at session start) -- a 60% reduction | acc4583 | M-49 (partial) |
+| 61 | Durable Solana chain-flow ingestion: every received signature is persisted in `ChainIngestionEvent` and queued before RPC parsing; queue/retry/lease-recovery state is explicit (`SEEN`, `QUEUED`, `PROCESSING`, `PARSED`, `PERSISTED`, `RETRYING`, `TERMINAL_FAILURE`), P4 remains background priority, and heartbeat reports backlog/oldest/terminal/recovery metrics. Three focused lifecycle tests added. | Current uncommitted pass | M-22, C-2, ED-13 |
+| 62 | Corrected watched-wallet forward outcomes: source-signal observation now persists `targetAt`, tolerance, actual delay and `OK/LATE/MISSING/INVALID`; it queries only bounded historical prices and scoring accepts only timely `OK` one-hour evidence. Three focused horizon tests replace the former no-op test script. | Current uncommitted pass | ED-7, ED-16 |
+| 63 | Advanced user-facing Hunt terminal: original high-contrast live-flow visual system, Money Rush/top-flow/whale/acceleration filters, visible wallet/flow aggregation, a first-class Smart Money nav destination, and truthful Opportunity Quality/current-decision language in token detail. It deliberately does not fabricate an Entry Quality value until ED-17 is implemented. | Current uncommitted pass | M-42, M-43, ED-43 |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).

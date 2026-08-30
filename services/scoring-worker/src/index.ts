@@ -59,7 +59,10 @@ async function tick(){
         // failure here must never break the real 30d-driven scoring pass below.
         const raw7d=await b.walletPnlSummary(c.address,"7d","solana").catch(()=>null);
         const p7d=raw7d?b.normalizeWalletPnl(raw7d):null;
-        const obs=await db.sourceSignalObservation.findMany({where:{sourceWallet:c.address,horizonSeconds:3600,returnPct:{not:null}},orderBy:{observedAt:"desc"},take:100});
+        // Forward proof is usable only when the market mark genuinely landed inside the requested
+        // one-hour horizon. A delayed worker's bounded historical observation remains inspectable
+        // as LATE, but cannot promote a wallet to PROVEN as if it were timely evidence.
+        const obs=await db.sourceSignalObservation.findMany({where:{sourceWallet:c.address,horizonSeconds:3600,status:"OK",returnPct:{not:null}},orderBy:{observedAt:"desc"},take:100});
         const paper=await db.paperCopyTrade.findMany({where:{sourceWallet:c.address,status:{in:["OPEN","PARTIAL","CLOSED"]}},orderBy:{createdAt:"desc"},take:100});
         const userChases=await db.copyDecision.findMany({where:{signal:{sourceWallet:c.address},walletChasePct:{not:null}},select:{walletChasePct:true},take:100,orderBy:{createdAt:"desc"}});
         const paperChases=paper.filter(x=>x.walletChasePct!=null).map(x=>Number(x.walletChasePct));

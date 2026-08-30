@@ -1,7 +1,7 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
 import {
-  Home,WalletCards,Bell,Settings2,TrendingUp,Zap,Play,Pause
+  Home,WalletCards,Bell,Settings2,TrendingUp,Zap,Play,Pause,Search
 } from "lucide-react";
 import {apiFetch,logout,plainError} from "../../lib/api";
 import {initials} from "../../lib/format";
@@ -19,8 +19,10 @@ import TradersView from "../../components/TradersView";
 import ProfileView from "../../components/ProfileView";
 
 type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"social"|"activity"|"smart-wallets";
-const nav:[View,string,any][]=[["home","Home",Home],["discover","Discover",TrendingUp],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
-const mobileNav=nav;
+const nav:[View,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["smart-wallets","Smart Money",Search],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+// A mobile dock needs decisive actions, not every destination. Smart Money remains one tap from
+// Hunt while account settings stay reachable from the avatar/Account route.
+const mobileNav=nav.filter(([id])=>id!=="smart-wallets");
 
 function initialView():View{
   if(typeof window==="undefined") return "home";
@@ -126,7 +128,7 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Discover":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Wallets":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -149,6 +151,5 @@ export default function AppPage(){
     <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
   </main>
 }
-
 
 
