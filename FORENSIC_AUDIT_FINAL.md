@@ -226,6 +226,8 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 21 | Architecture map document (chain->ingestion->discovery->brain->execution->portfolio graph, wallet->deposit->balance->cash->execution-authority graph, capability registry table) | caec32f | M-1 |
 | 22 | Status-language translation: CopyDecision.action codes (WAIT_PULLBACK etc.) + additional trading-specific error codes translated to plain language | 064c452 | C-21 |
 | 23 | packages/flow-worker: extracted ownerDeltas (pure balance-delta parsing) to a side-effect-free module + 6 real tests, replacing no-op script | ec3a96d | M-51 (partial) |
+| 24 | Home: real MemeCloud Pulse (Heating Up/Strong/Money Rush/Whale counts), Auto Trade status card, Hot Right Now, expanded account hero (Total Value/Available/In Trades/Today P&L) -- all from already-fetched data | bc41bb0 | M-41 (partial) |
+| 25 | Wallet: exposed real on-chain USDC/SOL balances (WalletAssetBalance had been synced since commit 8eae454 but never read by any route) via new GET /v1/me/wallets/:id/balances + display in WalletDetailSheet, with honest Unknown/Delayed states | 54a3064 | M-33 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
