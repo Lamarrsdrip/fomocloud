@@ -242,7 +242,23 @@ function DiscoverView({brain,newTokenRadar,brainDegraded,setView,openToken}:{bra
  </>
 }
 
-const STAGE_LABELS:Record<string,string>={DISCOVERED:"Discovered",ANALYZING:"Analyzing",PAPER_TRACKING:"Paper tracking",PROVEN:"Proven",PAUSED:"Paused"};
+const STAGE_LABELS:Record<string,string>={DISCOVERED:"Discovered",ANALYZING:"Analyzing",PAPER_TRACKING:"Being Verified",PROVEN:"Proven Smart Wallet",PAUSED:"Paused"};
+// Real gap found by forensic audit (C-21): CopyDecision.action codes were rendered raw in the
+// decision history ("WAIT_PULLBACK", "WAIT_ROUTE", ...) -- exactly the internal-code leakage the
+// spec calls out by name ("WAIT_PULLBACK -> Waiting for a Better Entry"). Keep raw codes available
+// in Advanced Details/admin only; this is the plain-language translation for normal users.
+const DECISION_ACTION_LABELS:Record<string,string>={
+ BUY:"Bought",WAIT:"Waiting",SKIP:"Skipped",WATCH:"Watching",
+ WAIT_PULLBACK:"Waiting for a Better Entry",
+ WAIT_SIGNER:"Waiting on Wallet Setup",
+ WAIT_SOURCE_EXIT_CONTEXT:"Waiting to Verify Exit",
+ WAIT_MARKET_DATA:"Waiting for Fresh Price Data",
+ WAIT_ROUTE:"No Executable Route Yet",
+ WAIT_DATA:"Waiting for Data",
+ WAIT_RECONCILIATION:"Reconciling Previous Attempt",
+ SOURCE_SELL_MIRROR:"Mirrored Trader's Sell",
+};
+function decisionActionLabel(action:string){return DECISION_ACTION_LABELS[action]||action.replaceAll("_"," ")}
 function SmartWalletsView(){
  const[wallets,setWallets]=useState<any[]|null>(null);
  const[degraded,setDegraded]=useState(false);
@@ -499,7 +515,7 @@ function ActivityView({activity,trades}:{activity:any;trades:any[]}){
    {items.length?<div className="list">{items.map((e:any)=><div className="list-row" key={e.id}><div><b>{e.title}</b><small>{e.body||e.type}</small></div><span>{e.type.replaceAll("_"," ")}</span><span>{timeAgo(e.createdAt)}</span><strong>›</strong></div>)}</div>:<Empty icon={Activity} title="Nothing has happened yet" body="Source signals, copies, skips, pullback waits and profit events will appear here for this account only."/>}
   </section>
   <section className="app-card"><div className="card-title"><div><span>DECISION HISTORY</span><h2>Why we copied or waited</h2></div></div>
-   {decisions.length?<div className="list">{decisions.map((d:any)=><div className="decision-history" key={d.id}><div><b>{d.signal?.trader?.displayName||"Trader signal"} · {d.signal?.action}</b><small>{d.explanation||d.plainReason||d.reason||"Decision recorded"}</small></div><div className="decision-facts"><span>{d.action}</span>{d.walletChasePct!=null&&<span>Wallet chase {Number(d.walletChasePct).toFixed(1)}%</span>}<span>{timeAgo(d.createdAt)}</span></div></div>)}</div>:<Empty icon={ShieldCheck} title="No decisions yet" body="Every source signal creates a decision for your account only after your own settings are applied."/>}
+   {decisions.length?<div className="list">{decisions.map((d:any)=><div className="decision-history" key={d.id}><div><b>{d.signal?.trader?.displayName||"Trader signal"} · {d.signal?.action}</b><small>{d.explanation||d.plainReason||d.reason||"Decision recorded"}</small></div><div className="decision-facts"><span>{decisionActionLabel(d.action)}</span>{d.walletChasePct!=null&&<span>Wallet chase {Number(d.walletChasePct).toFixed(1)}%</span>}<span>{timeAgo(d.createdAt)}</span></div></div>)}</div>:<Empty icon={ShieldCheck} title="No decisions yet" body="Every source signal creates a decision for your account only after your own settings are applied."/>}
   </section>
  </div>
  <section className="app-card" style={{marginTop:12}}><div className="card-title"><div><span>TRADE HISTORY</span><h2>Your orders and confirmations</h2></div></div>

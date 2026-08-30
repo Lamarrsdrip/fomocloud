@@ -113,7 +113,18 @@ export function plainError(e:any){
     EXECUTION_ADAPTER_NOT_CONFIGURED:"That network is prepared but does not yet have a verified execution route.",
     INVALID_USERNAME:"Username must be 3–24 characters and use only lowercase letters, numbers or underscore.",
     USERNAME_UNAVAILABLE:"That username is already taken. Try another.",
-    SESSION_COULD_NOT_BE_ESTABLISHED:"Your session could not be established. Please try again."
+    SESSION_COULD_NOT_BE_ESTABLISHED:"Your session could not be established. Please try again.",
+    // Real gap found by forensic audit (C-21): these trading-specific codes fell through to the
+    // generic humanized fallback below instead of the spec's own named translations
+    // (e.g. "NO_EXECUTABLE_SELL_ROUTE -> Cannot Safely Exit This Token").
+    NO_EXECUTABLE_SELL_ROUTE:"Cannot Safely Exit This Token right now — no executable sell route was found.",
+    TRADING_PERMISSION_REQUIRED:"This wallet doesn't have an active trading permission yet.",
+    MAX_CONCURRENT_POSITIONS:"You've reached your own open-position limit.",
+    ADDITIONAL_BUY_DISABLED:"You've turned off additional buys for this trader.",
+    INSUFFICIENT_EVIDENCE_FOR_PROVEN:"This wallet doesn't yet have enough verified evidence to be marked Proven.",
+    AMBIGUOUS_PRIOR_BUY_ATTEMPT:"A previous attempt for this trade hasn't been confirmed yet and won't be resubmitted automatically.",
+    AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION:"A previous exit attempt is still being verified and won't be resubmitted automatically.",
+    LIVE_EXIT_INFRASTRUCTURE_NOT_CONFIGURED:"Live trading isn't fully configured for this chain yet.",
   };
   return map[code]??code.replaceAll("_"," ").toLowerCase();
 }
