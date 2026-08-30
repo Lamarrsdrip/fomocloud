@@ -14,6 +14,9 @@ import {AdminPositions} from "../../components/admin/AdminPositions";
 import {FailedTrades} from "../../components/admin/FailedTrades";
 import {Tokens} from "../../components/admin/Tokens";
 import {Whales} from "../../components/admin/Whales";
+import {Broadcasts} from "../../components/admin/Broadcasts";
+import {Audit} from "../../components/admin/Audit";
+import {Health} from "../../components/admin/Health";
 
 const sections=[
  ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["tokens","Tokens",Coins],["whales","Whales",Fish],["users","Users",Users],["traders","Wallets",Radio],["signals","Decisions",Activity],
@@ -502,48 +505,3 @@ function SecretField({label,value,hint,removed,mode,onChange,onReplace,onCancel,
   {hint&&<button type="button" className="soft-action" style={{marginTop:4,alignSelf:"flex-start"}} onClick={onCancel}>Cancel</button>}
  </label>;
 }
-function Broadcasts({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){const[title,setTitle]=useState("");const[body,setBody]=useState("");const[channel,setChannel]=useState("PUSH");const[audience,setAudience]=useState("ALL");const[msg,setMsg]=useState("");
- async function send(){try{await apiFetch("/v1/admin/broadcast",{method:"POST",body:JSON.stringify({title,body,channel,audience})});setTitle("");setBody("");setMsg("Broadcast queued.");reload()}catch(e){setMsg(plainError(e))}}
- return <div className="admin-section-grid"><section className="app-card"><div className="card-title"><div><span>NEW BROADCAST</span><h2>Message users</h2></div></div><div className="admin-form"><label className="field"><span>Title</span><input value={title} onChange={e=>setTitle(e.target.value)}/></label><label className="field"><span>Message</span><textarea value={body} onChange={e=>setBody(e.target.value)}/></label><label className="field"><span>Channel</span><select value={channel} onChange={e=>setChannel(e.target.value)}><option>PUSH</option><option>EMAIL</option><option>BOTH</option></select></label><label className="field"><span>Audience</span><select value={audience} onChange={e=>setAudience(e.target.value)}><option>ALL</option><option>AUTO_COPY</option></select></label>{msg&&<div className="notice">{msg}</div>}<button className="action-primary" disabled={!admin||!title||!body} onClick={send} style={{height:42,borderRadius:12}}>Queue broadcast</button></div></section>
- <section className="app-card"><div className="card-title"><div><span>HISTORY</span><h2>Delivery progress</h2></div></div><div className="list">{(d.broadcasts||[]).map((b:any)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={b.id}><div><b>{b.title}</b><small>{b.channel} · {b.audience} · {b.sentCount}/{b.targetCount||"?"} sent · {b.failedCount} failed · {b.skippedCount||0} skipped</small></div><span className={`status-badge ${b.status==="FAILED"?"watch":""}`}>{b.status}</span></div>)}</div></section></div>}
-function Audit({d}:{d:any}){return <section className="app-card admin-table-wrap"><div className="card-title"><div><span>IMMUTABLE EVENT HISTORY</span><h2>Administrative audit log</h2></div></div><table className="admin-table"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Context</th></tr></thead><tbody>{(d.logs||[]).map((log:any)=><tr key={log.id}><td>{new Date(log.createdAt).toLocaleString()}</td><td>{log.user?.displayName||log.user?.email||log.actor}</td><td><b>{log.action}</b></td><td>{log.target||"—"}</td><td>{log.hasMetadata?"Recorded":"—"}</td></tr>)}{!(d.logs||[]).length&&<tr><td colSpan={5}>No audit events recorded.</td></tr>}</tbody></table></section>}
-// Every field here already exists in the real heartbeat.detail written by each worker this
-// session (flow-worker, balance-worker, social-worker) -- this only surfaces what's already true,
-// nothing new is computed or estimated. No historical time-series exists (that would need its own
-// metrics pipeline, not built) -- this is real-time current state, which is what actually would
-// have surfaced the 1M-credit Helius burn while it was happening instead of only after.
-const RPC_WORKERS=["solana-flow-scanner","solana-listener","market-worker","balance-worker","social-hype"];
-function RpcUsage({services}:{services:any[]}){
- const rows=services.filter(s=>RPC_WORKERS.includes(s.name));
- if(!rows.length)return null;
- return <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>RPC / PROVIDER USAGE</span><h2>Real-time request state by worker</h2></div></div>
-  <table className="admin-table"><thead><tr><th>Worker</th><th>State</th><th>Rate limited</th><th>Errors / Dropped</th><th>Request budget</th><th>Shared account budget</th><th>Last event</th></tr></thead><tbody>
-   {rows.map(s=>{const dt=s.detail||{};const rateLimited=Boolean(dt.rateLimited);const lastRl=dt.lastRateLimitAgoSec??dt.lastRateLimitAt;
-    return <tr key={s.name}>
-     <td><b>{s.name}</b></td>
-     <td><span className={`status-badge ${s.healthy?"":"watch"}`}>{s.healthy?"Process healthy":"Process stale"}</span></td>
-     <td>{rateLimited?<span className="status-badge watch">Rate limited now</span>:lastRl!=null?<small>Clear · last 429 {typeof lastRl==="number"?`${lastRl}s ago`:"recorded"}</small>:<small>No 429s recorded</small>}</td>
-     <td>{dt.errors??0}{dt.dropped!=null?` / ${dt.dropped} dropped`:""}{dt.fallbackSkippedForRateLimit?` (${dt.fallbackSkippedForRateLimit} fallback skipped)`:""}</td>
-     <td>{dt.maxRequestsPerSec?`${dt.maxRequestsPerSec}/sec cap`:dt.tickIntervalMs?`1 batch / ${Math.round(dt.tickIntervalMs/1000)}s`:"—"}</td>
-     <td>{dt.sharedRpcBudgetPriority?<small>{dt.sharedRpcBudgetPriority} · {dt.sharedRpcBudgetDenied??0} denied{dt.lastSharedRpcBudgetDenyAgoSec!=null?` · last ${dt.lastSharedRpcBudgetDenyAgoSec}s ago`:""}</small>:<small>Not wired in</small>}</td>
-     <td><small>{dt.lastSuccessfulRpcAgoSec!=null?`RPC OK ${dt.lastSuccessfulRpcAgoSec}s ago`:dt.lastDbWriteAgoSec!=null?`Last write ${dt.lastDbWriteAgoSec}s ago`:"—"}</small></td>
-    </tr>;})}
-  </tbody></table>
-  <p style={{fontSize:10,color:"#7b8190",margin:"10px 2px 0"}}>No historical requests/min/hour/day graph exists yet -- this table is live current state only, refreshed on demand. "Shared account budget" is a cross-process Redis-backed token bucket (P0=highest priority, P5=lowest) protecting the account-wide Helius/Solana RPC limit -- background/bulk consumers back off first when it gets scarce.</p>
- </section>;
-}
-// Real gap found by forensic audit (M-47/48): every worker's real work metrics (scans,
-// candidates, errors, backlog, reconnects, watchlist alerts, etc.) have always been stored in
-// WorkerHeartbeat.detail and returned by this same API response -- "a heartbeat alone does not
-// mean a system is healthy" was already true here, just never rendered. A worker reporting
-// healthy=true while its own detail shows e.g. 0 candidates for hours looked identical to one
-// doing real work. Surfacing the raw detail fields (compact, since each worker's shape differs)
-// is what actually lets an operator catch "alive but useless."
-function healthDetailLine(detail:any){
- if(!detail||typeof detail!=="object")return null;
- const skip=new Set(["running"]);
- const entries=Object.entries(detail).filter(([k])=>!skip.has(k)).slice(0,6);
- if(!entries.length)return null;
- return entries.map(([k,v])=>`${k}: ${typeof v==="object"?JSON.stringify(v):String(v)}`).join(" · ");
-}
-function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small>{healthDetailLine(h.detail)&&<small style={{display:"block",marginTop:2,color:"#8a8fa0",fontSize:10}}>{healthDetailLine(h.detail)}</small>}</div>)}</div></section><RpcUsage services={d.services||[]}/></>}
