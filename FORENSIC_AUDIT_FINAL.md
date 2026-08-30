@@ -244,6 +244,7 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 39 | services/analytics-worker: extracted computeAccountSnapshot (proportional cost-basis on partial closes, div-by-zero guard, malformed-raw fallback) into snapshot.ts + 6 real tests | cee1dff | M-51 (partial) |
 | 40 | services/social-worker: extracted computePulseMetrics (sentiment/velocity/spamRatio feature extraction feeding Brain's social scoring) into metrics.ts + 10 real tests | 22863dc | M-51 (partial) |
 | 41 | services/evm-flow-worker: extracted isQuote/classifySwapSide/quoteAmountUsd (BUY/SELL classification, previously deemed "too entangled" -- on closer look it wasn't) into classify.ts + 12 real tests | ebd5d5a | M-51 |
+| 42 | M-50 (increment 1): extracted every pure display/label helper (timeAgo, feedLine/eventLine, all *_LABELS maps, positionMath, deviceLabel, etc. -- zero JSX) from apps/web/app/app/page.tsx into apps/web/lib/format.ts. Page now 736 lines (was 800) | b4a23ca | M-50 (partial) |
 
 ## Security re-verification (this round, no new bugs -- documenting what was checked)
 - Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
