@@ -1,0 +1,1 @@
+export function Empty({icon:Icon,title,body,action,onClick}:{icon:any;title:string;body:string;action?:string;onClick?:()=>void}){return <div className="empty"><Icon size={21}/><b>{title}</b><p>{body}</p>{action&&<button onClick={onClick}>{action}</button>}</div>}

@@ -1,0 +1,3 @@
+import {money} from "../../lib/api";
+
+export function Signals({d}:{d:any}){return <section className="app-card"><table className="admin-table"><thead><tr><th>Trader</th><th>Chain</th><th>Action</th><th>Token</th><th>Source price</th><th>Copies</th><th>Detected</th></tr></thead><tbody>{(d.signals||[]).map((s:any)=><tr key={s.id}><td>{s.trader?.displayName}</td><td>{s.chain}</td><td>{s.action}</td><td>{s.action==="BUY"?s.outputMint.slice(0,10):s.inputMint.slice(0,10)}…</td><td>{s.sourcePriceUsd?money(s.sourcePriceUsd):"Awaiting enrichment"}</td><td>{s._count?.copyDecisions||0}</td><td>{new Date(s.observedAt).toLocaleString()}</td></tr>)}</tbody></table></section>}

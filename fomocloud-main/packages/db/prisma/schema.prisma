@@ -1,0 +1,1274 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Chain {
+  SOLANA
+  BASE
+  ETHEREUM
+  BNB
+  ARBITRUM
+  AVALANCHE
+  SUI
+  HYPERLIQUID
+}
+
+enum UserRole {
+  USER
+  OWNER
+  ADMIN
+  SUPPORT
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum VerificationStatus {
+  VERIFIED
+  COMMUNITY_VERIFIED
+  UNVERIFIED
+}
+
+enum TraderKind {
+  PLATFORM
+  CUSTOM
+}
+
+enum FollowMode {
+  FOLLOW_ONLY
+  WATCH_ONLY
+  AUTO_COPY
+  PAUSED
+}
+
+enum SignalAction {
+  BUY
+  SELL
+}
+
+enum SignalStatus {
+  DETECTED
+  VALIDATING
+  APPROVED
+  SKIPPED
+  EXECUTING
+  COMPLETED
+  FAILED
+}
+
+enum OrderStatus {
+  QUOTED
+  SIGNING
+  SUBMITTED
+  CONFIRMING
+  CONFIRMED
+  FAILED
+}
+
+enum PositionStatus {
+  OPEN
+  PARTIALLY_CLOSED
+  CLOSED
+  FAILED
+}
+
+enum ExecutionMode {
+  SIMULATION
+  LIVE
+}
+
+model User {
+  id                    String                  @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  email                 String?
+  passwordHash          String?
+  emailVerifiedAt       DateTime?
+  displayName           String?
+  username              String?
+  avatarUrl             String?
+  publicProfileEnabled  Boolean                 @default(false)
+  role                  UserRole                @default(USER)
+  status                AccountStatus           @default(ACTIVE)
+  lastLoginAt           DateTime?
+  onboardingCompletedAt DateTime?
+  wallets               Wallet[]
+  walletAssetBalances   WalletAssetBalance[]
+  deposits              Deposit[]
+  ledgerEntries         LedgerEntry[]
+  follows               UserFollow[]
+  positions             Position[]
+  orders                Order[]
+  copyDecisions         CopyDecision[]
+  notifications         Notification[]
+  pushSubscriptions     PushSubscription[]
+  notificationPrefs     NotificationPreference?
+  auditLogs             AuditLog[]
+  cashAllocations       TradingCashAllocation[]
+  tradingSettings       GlobalTradingSettings?
+  refreshSessions       RefreshSession[]
+  activityEvents        UserActivityEvent[]
+  pnlSnapshots          PnLSnapshot[]
+  linkedSocialAccounts  LinkedSocialAccount[]
+  emailIdentity         EmailIdentity?
+  userHandle            UserHandle?
+  customTraders         Trader[]                @relation("CustomTraderOwner")
+  followers             UserSocialFollow[]      @relation("FollowingUser")
+  following             UserSocialFollow[]      @relation("FollowerUser")
+
+  @@index([createdAt])
+  @@index([role, status])
+}
+
+model EmailIdentity {
+  id              String @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String @unique @db.ObjectId
+  emailNormalized String @unique
+  user            User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserHandle {
+  id                 String @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String @unique @db.ObjectId
+  usernameNormalized String @unique
+  user               User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshSession {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String    @db.ObjectId
+  tokenHash  String    @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model VerificationToken {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  purpose   String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, purpose, expiresAt])
+}
+
+model WalletChallenge {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain      Chain
+  address    String
+  message    String
+  purpose    String    @default("LOGIN")
+  userId     String?   @db.ObjectId
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([chain, address, expiresAt])
+}
+
+model Wallet {
+  id               String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String               @db.ObjectId
+  chain            Chain
+  address          String
+  label            String?
+  custodyType      String?
+  isPrimary        Boolean              @default(false)
+  tradingEnabled   Boolean              @default(false)
+  permissionRef    String?
+  permissionExpiry DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetBalances    WalletAssetBalance[]
+  deposits         Deposit[]
+  syncState        WalletSyncState?
+
+  @@unique([chain, address])
+  @@index([userId])
+}
+
+enum DepositStatus {
+  CONFIRMED
+  FINALIZED
+}
+
+// Real gap found by forensic audit: no append-only accounting trail existed anywhere. Every
+// money-affecting write (Deposit, Position.costUsd/realizedPnlUsd, PositionExit.proceedsUsd,
+// TradingCashAllocation) happened independently with nothing to reconcile against if a balance
+// ever looked wrong. LedgerEntry does not replace those fields as the source of truth for CURRENT
+// state (TradingCashAllocation is still resynced from real on-chain balance -- that discipline,
+// verified correct by audit, stays as-is); it is the audit trail: an immutable, append-only record
+// of every real-money event, written atomically alongside the state change it documents. Entries
+// are created only, never updated or deleted -- that discipline is enforced at the application
+// layer (no .update()/.delete() call should ever target this model).
+enum LedgerEntryType {
+  DEPOSIT
+  WITHDRAWAL
+  BUY_SPEND
+  SELL_PROCEEDS
+  NETWORK_FEE
+  PLATFORM_FEE
+  ADJUSTMENT
+  REVERSAL
+}
+
+model LedgerEntry {
+  id              String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String          @db.ObjectId
+  type            LedgerEntryType
+  // Integer micro-USD (1_000_000 = $1.00), not Float -- Prisma's MongoDB connector does not support
+  // the `Decimal` scalar (verified: hard error from `prisma generate`), so BigInt micro-units is the
+  // spec's other approved authoritative-money representation, applied here from the start since this
+  // model has zero existing consumers to risk. Positive = money entering the user's trading cash
+  // (deposit, sell proceeds); negative = leaving it (buy spend, fees, withdrawal). USD-only for now
+  // (this platform's real-money execution is USDC-denominated) -- never fabricated from a price this
+  // code doesn't actually have.
+  amountUsdMicros BigInt
+  chain           Chain
+  asset           String
+  // Points at the authoritative record this entry documents (Deposit, Order, PositionExit, ...) --
+  // never the entry's own reason for existing without something concrete backing it.
+  referenceType   String
+  referenceId     String          @db.ObjectId
+  note            String?
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+// Exact on-chain wallet balances. Raw integer amounts are authoritative; display conversion is
+// performed only at the API/UI boundary so large token quantities never lose precision in Mongo.
+model WalletAssetBalance {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  walletId     String   @db.ObjectId
+  userId       String   @db.ObjectId
+  chain        Chain
+  assetMint    String
+  symbol       String?
+  decimals     Int
+  rawBalance   String
+  supported    Boolean  @default(false)
+  source       String
+  lastSyncedAt DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  wallet       Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([walletId, assetMint])
+  @@index([userId, chain])
+}
+
+// A positive, externally-originated on-chain delta for one asset. The compound unique key and
+// idempotencyKey make retries, overlapping worker cycles and restarts unable to credit/notify the
+// same transfer twice. TradingCashAllocation is reconciled from the full current USDC balance,
+// never incremented from this event, which prevents event + polling double-credit.
+model Deposit {
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey  String        @unique
+  userId          String        @db.ObjectId
+  walletId        String        @db.ObjectId
+  chain           Chain
+  walletAddress   String
+  txHash          String
+  slot            BigInt?
+  blockTime       DateTime?
+  assetMint       String
+  symbol          String?
+  decimals        Int
+  amountRaw       String
+  supported       Boolean       @default(false)
+  status          DepositStatus @default(CONFIRMED)
+  confirmations   Int           @default(1)
+  firstDetectedAt DateTime      @default(now())
+  confirmedAt     DateTime      @default(now())
+  finalizedAt     DateTime?
+  lastCheckedAt   DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet          Wallet        @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, txHash, walletAddress, assetMint])
+  @@index([userId, createdAt])
+  @@index([walletId, status, createdAt])
+}
+
+model WalletSyncState {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  walletId             String    @unique @db.ObjectId
+  lastScannedSignature String?
+  lastScannedSlot      BigInt?
+  lastSuccessfulAt     DateTime?
+  lastError            String?
+  lastErrorAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  wallet               Wallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
+model GlobalTradingSettings {
+  id                      String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId                  String   @unique @db.ObjectId
+  autoCopyEnabled         Boolean  @default(false)
+  globalBrainEnabled      Boolean  @default(true)
+  sizingMode              String   @default("PERCENT")
+  percentBalance          Float    @default(2)
+  defaultAmountUsd        Float    @default(100)
+  maxAmountPerTradeUsd    Float    @default(0) // 0 = user chose no platform cap
+  maxTotalExposureUsd     Float    @default(0) // 0 = user chose no platform cap
+  maxConcurrentPositions  Int      @default(0) // 0 = unlimited by platform
+  adaptiveChase           Boolean  @default(false) // evidence only unless user sets a chase ceiling
+  capitalRecoveryEnabled  Boolean  @default(true)
+  capitalRecoveryMultiple Float    @default(3)
+  freshMemeMode           Boolean  @default(true)
+  runnerMode              Boolean  @default(true)
+  allowedChains           Chain[]  @default([SOLANA])
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationPreference {
+  id                      String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId                  String  @unique @db.ObjectId
+  pushEnabled             Boolean @default(true)
+  emailEnabled            Boolean @default(true)
+  traderBought            Boolean @default(true)
+  tradeCopied             Boolean @default(true)
+  skippedTrade            Boolean @default(true)
+  profitTaken             Boolean @default(true)
+  positionClosed          Boolean @default(true)
+  securityAlerts          Boolean @default(true)
+  platformBroadcast       Boolean @default(true)
+  // Global Brain discovery notifications -- deliberately independent of trading wallets/Live
+  // Trading. A user with zero wallets and auto-copy off must still be able to get these; the old
+  // notifyUsers() path was gated behind autoCopyEnabled+globalBrainEnabled, contradicting that.
+  // Off-by-default for the noisier/lower-severity tiers so the default experience isn't a spam
+  // firehose; on-by-default for genuinely strong signals.
+  discoveryNewToken       Boolean @default(false)
+  discoverySmartWallet    Boolean @default(true)
+  discoveryWhaleActivity  Boolean @default(true)
+  discoveryHeatingUp      Boolean @default(false)
+  discoveryStrong         Boolean @default(true)
+  discoveryHighConviction Boolean @default(true)
+  user                    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TradingCashAllocation {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String    @db.ObjectId
+  chain        Chain
+  asset        String    @default("USDC")
+  usdcRaw            String    @default("0")
+  // M-30: BigInt micro-USD, see Position's schema comment for full rationale (Decimal unavailable
+  // on Prisma+MongoDB; renamed, not just retyped, so a missed call site fails loudly).
+  availableUsdMicros BigInt    @default(0)
+  inTradesUsdMicros  BigInt    @default(0)
+  lastSyncedAt DateTime?
+  source       String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, chain])
+  @@index([userId])
+}
+
+model Trader {
+  id              String             @id @default(auto()) @map("_id") @db.ObjectId
+  handle          String             @unique
+  displayName     String
+  xHandle         String?
+  avatarUrl       String?
+  bio             String?
+  category        String?
+  verification    VerificationStatus @default(UNVERIFIED)
+  kind            TraderKind         @default(PLATFORM)
+  ownerUserId     String?            @db.ObjectId
+  enabled         Boolean            @default(true)
+  featured        Boolean            @default(false)
+  recommended     Boolean            @default(false)
+  defaultSelected Boolean            @default(false)
+  trackingStatus  String             @default("TRACKING")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  wallets         TraderWallet[]
+  follows         UserFollow[]
+  signals         Signal[]
+  positions       Position[]
+  owner           User?              @relation("CustomTraderOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([kind, enabled, featured])
+  @@index([ownerUserId])
+}
+
+model TraderWallet {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  traderId           String    @db.ObjectId
+  chain              Chain
+  address            String
+  verified           Boolean   @default(false)
+  source             String?
+  createdAt          DateTime  @default(now())
+  verificationMethod String?
+  evidenceNote       String?
+  verifiedAt         DateTime?
+  monitoringStatus   String    @default("ACTIVE")
+  trader             Trader    @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  @@unique([chain, address])
+  @@index([traderId])
+}
+
+model UserFollow {
+  id                  String     @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String     @db.ObjectId
+  traderId            String     @db.ObjectId
+  mode                FollowMode @default(FOLLOW_ONLY)
+  fixedAmountUsd      Float      @default(100)
+  takeProfitPct       Float      @default(200)
+  stopLossPct         Float?
+  maxChasePct         Float      @default(0) // 0 = no user chase ceiling
+  maxSlippageBps      Int        @default(1500)
+  maxPositionUsd      Float      @default(0) // 0 = unlimited
+  maxTotalExposureUsd Float      @default(0) // 0 = unlimited
+  minLiquidityUsd     Float      @default(0)
+  exitMode            String     @default("ADAPTIVE")
+  copyAdditionalBuys  Boolean    @default(true)
+  copyReentries       Boolean    @default(true)
+  customLabel         String?
+  customXHandle       String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trader              Trader     @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, traderId])
+  @@index([traderId, mode])
+  @@index([userId, mode])
+}
+
+model SourceTransaction {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain         Chain
+  txHash        String
+  walletAddress String
+  slot          BigInt?
+  blockTime     DateTime?
+  rawJson       Json
+  createdAt     DateTime  @default(now())
+
+  @@unique([chain, txHash, walletAddress])
+}
+
+model Signal {
+  id                          String         @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey              String         @unique
+  chain                       Chain
+  traderId                    String         @db.ObjectId
+  sourceWallet                String
+  sourceTx                    String
+  action                      SignalAction
+  inputMint                   String
+  outputMint                  String
+  inputRaw                    String
+  outputRaw                   String
+  sourcePriceUsd              Float?
+  sourcePriceMethod           String?
+  sourceMarketCapUsd          Float?
+  sourceTokenBalanceBeforeRaw String?
+  sourceTokenBalanceAfterRaw  String?
+  sourceSoldPct               Float?
+  dailyMovePct                Float?
+  status                      SignalStatus   @default(DETECTED)
+  observedAt                  DateTime
+  createdAt                   DateTime       @default(now())
+  trader                      Trader         @relation(fields: [traderId], references: [id], onDelete: Cascade)
+  copyDecisions               CopyDecision[]
+
+  @@index([traderId, observedAt])
+  @@index([chain, observedAt])
+}
+
+model CopyDecision {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  signalId           String   @db.ObjectId
+  userId             String   @db.ObjectId
+  allowed            Boolean
+  action             String   @default("SKIP")
+  reason             String?
+  explanation        String?
+  amountUsd          Float?
+  sourcePriceUsd     Float?
+  executablePriceUsd Float?
+  walletChasePct     Float?
+  confidence         Int?
+  createdAt          DateTime @default(now())
+  signal             Signal   @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders             Order[]
+
+  @@unique([signalId, userId])
+  @@index([userId, createdAt])
+}
+
+model Order {
+  id                String        @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey    String        @unique
+  decisionId        String        @db.ObjectId
+  userId            String        @db.ObjectId
+  chain             Chain
+  mode              ExecutionMode
+  side              SignalAction
+  inputMint         String
+  outputMint        String
+  requestedInputRaw String
+  expectedOutputRaw String?
+  minOutputRaw      String?
+  actualInputRaw    String?
+  actualOutputRaw   String?
+  txHash            String?
+  venue             String?
+  feeUsd            Float?
+  status            OrderStatus   @default(QUOTED)
+  errorCode         String?
+  quoteJson         Json?
+  submittedAt       DateTime?
+  confirmedAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  decision          CopyDecision  @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([chain, txHash])
+  @@index([userId, createdAt])
+}
+
+model Position {
+  id                String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String         @db.ObjectId
+  sourceTraderId    String         @db.ObjectId
+  chain             Chain
+  mode              ExecutionMode  @default(SIMULATION)
+  mint              String
+  quoteMint         String
+  // Deliberately NOT @unique in the schema: Prisma's MongoDB connector does not make a bare
+  // @unique on a nullable field sparse (verified empirically — two null values collided under a
+  // plain unique index). The real uniqueness guarantee is a hand-created sparse index; see
+  // packages/db/scripts/ensure-indexes.mjs. Declaring it here too would fight `prisma db push`,
+  // which does not understand sparse indexes and would keep trying to "fix" it to non-sparse.
+  entryTxHash       String?
+  entryInputRaw     String
+  entryTokenRaw     String
+  remainingTokenRaw String
+  // M-30: Prisma's MongoDB connector does NOT support the `Decimal` scalar at all (verified:
+  // `prisma generate` hard-errors "The current connector does not support the Decimal type") -- a
+  // genuine external tooling limitation. Integer micro-USD (BigInt, 1_000_000 = $1.00) is the
+  // spec's other approved authoritative-money representation, same pattern already applied to
+  // LedgerEntry. Fields are renamed (not just retyped) specifically so a missed call site fails
+  // loudly -- most Position rows flow through this codebase typed `any`, so keeping the old names
+  // would let a stale read site silently return `undefined` instead of erroring. Every write site
+  // goes through Prisma's generated (non-`any`) input types and is therefore compiler-verified;
+  // every read site was manually, exhaustively audited (see FORENSIC_AUDIT_FINAL.md) since `any`
+  // typing means the compiler cannot be trusted for those. usdToMicros/microsToUsd (packages/shared)
+  // are the only sanctioned conversion points -- application arithmetic itself is unchanged, still
+  // plain JS numbers in dollars, exactly as already proven correct by packages/shared's
+  // accounting.test.ts; only the immediate read/write boundary changed.
+  costUsdMicros           BigInt
+  avgEntryPriceUsdMicros  BigInt?
+  currentPriceUsdMicros   BigInt?
+  peakPriceUsdMicros      BigInt?
+  realizedPnlUsdMicros    BigInt         @default(0)
+  unrealizedPnlUsdMicros  BigInt         @default(0)
+  profitTakenUsdMicros    BigInt         @default(0)
+  takeProfitPct     Float
+  stopLossPct       Float?
+  status            PositionStatus @default(OPEN)
+  openedAt          DateTime       @default(now())
+  lastMarkedAt      DateTime?
+  closedAt          DateTime?
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceTrader      Trader         @relation(fields: [sourceTraderId], references: [id], onDelete: Restrict)
+  exits             PositionExit[]
+
+  @@index([userId, status])
+  @@index([mint, status])
+  @@index([sourceTraderId, openedAt])
+}
+
+model PositionExit {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  positionId  String   @db.ObjectId
+  reason      String
+  tokenRaw    String
+  proceedsUsdMicros BigInt?
+  pnlUsdMicros      BigInt?
+  txHash      String?
+  createdAt   DateTime @default(now())
+  position    Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+}
+
+model UserActivityEvent {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  type      String
+  title     String
+  body      String?
+  status    String?
+  data      Json?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PnLSnapshot {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @db.ObjectId
+  accountValueUsd  Float
+  realizedPnlUsd   Float
+  unrealizedPnlUsd Float
+  netPnlUsd        Float
+  createdAt        DateTime @default(now())
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Notification {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String    @db.ObjectId
+  deliveryKey String    @unique
+  type        String
+  title       String
+  body        String
+  data        Json?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PushSubscription {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model LinkedSocialAccount {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String    @db.ObjectId
+  provider        String
+  providerUserId  String
+  username        String?
+  displayName     String?
+  avatarUrl       String?
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+}
+
+model OAuthState {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  provider    String
+  stateHash   String   @unique
+  verifierEnc String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId, provider, expiresAt])
+}
+
+model UserSocialFollow {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  followerId  String   @db.ObjectId
+  followingId String   @db.ObjectId
+  createdAt   DateTime @default(now())
+  follower    User     @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?  @db.ObjectId
+  actor     String
+  action    String
+  target    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+model AppConfig {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  key            String   @unique
+  valueJson      Json?
+  encryptedValue String?
+  isSecret       Boolean  @default(false)
+  updatedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  // Non-secret masked hints for secret fields, e.g. {"jupiterApiKey":"****7F2A"}. Never full values.
+  secretHints    Json?
+  // Last real provider-test outcome per sub-provider, e.g. {"jupiter":{"ok":true,"httpStatus":200,"latencyMs":132,"checkedAt":"...","message":"..."}}.
+  testResults    Json?
+  // True from the moment a restart-required key is saved until an admin explicitly acknowledges
+  // the worker/service was restarted (POST /v1/admin/config/:key/ack-restart). Never auto-cleared —
+  // there is no reliable process-boot-time signal to infer a restart happened.
+  restartPending Boolean  @default(false)
+}
+
+model Broadcast {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  title        String
+  body         String
+  channel      String
+  audience     String
+  linkUrl      String?
+  status       String    @default("DRAFT")
+  createdBy    String?
+  targetCount  Int       @default(0)
+  sentCount    Int       @default(0)
+  failedCount  Int       @default(0)
+  skippedCount Int       @default(0)
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  sentAt       DateTime?
+  error        String?
+
+  @@index([createdAt])
+}
+
+model EmailLog {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String?  @db.ObjectId
+  toEmail    String
+  subject    String
+  status     String
+  providerId String?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model WorkerHeartbeat {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String   @unique
+  status     String
+  detail     Json?
+  lastBeatAt DateTime @default(now())
+  startedAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model MarketPrice {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain        Chain
+  mint         String
+  priceUsd     Float
+  liquidityUsd Float?
+  marketCapUsd Float?
+  source       String
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([chain, mint, observedAt])
+}
+
+// The persisted discovery-stage funnel for GlobalBrainOpportunity (M-4/M-6/PC-F): a real enum,
+// written by brain-worker on every tick from packages/brain's evaluateOpportunity, not a free-text
+// string a caller could set to an arbitrary value. Ranked low to high; see STATE_RANK in
+// packages/brain for the upgrade-only notification logic this backs.
+enum BrainState {
+  SCANNING
+  BUILDING
+  BREAKOUT_FLOW
+  MONEY_RUSH
+}
+
+enum CandidateStage {
+  DISCOVERED
+  ANALYZING
+  PAPER_TRACKING
+  PROVEN
+  REJECTED
+  PAUSED
+}
+
+// A chain log is evidence before it is a parsed swap.  Keeping its lifecycle separately from
+// ChainFlowObservation prevents a provider/backpressure incident from making an observed
+// signature disappear without an auditable retry or terminal-failure record.
+enum ChainIngestionStatus {
+  SEEN
+  QUEUED
+  PROCESSING
+  PARSED
+  PERSISTED
+  RETRYING
+  TERMINAL_FAILURE
+}
+
+enum ForwardObservationStatus {
+  OK
+  LATE
+  MISSING
+  INVALID
+}
+
+model SmartWalletCandidate {
+  id                 String         @id @default(auto()) @map("_id") @db.ObjectId
+  // Real gap found by forensic audit (M-12/M-13/PC-D): there was no way for admin to WATCH a wallet
+  // at all, distinct from the auto-pipeline's PROVEN/PAPER_TRACKING/REJECTED `stage`. A separate
+  // boolean (not a `stage` value) so admin watch/unwatch never fights with or gets silently
+  // overwritten by the objective scoring-worker pipeline -- "WATCH != PROVEN" holds structurally,
+  // not just by convention. Continuous monitoring of a watched wallet requires no open browser tab:
+  // it rides the same chainFlowObservation stream flow-worker/evm-flow-worker already write to
+  // unconditionally (see brain-worker's checkWatchlist()), so detection continues as long as the
+  // ingestion workers are running, independent of any admin session.
+  adminWatched       Boolean        @default(false)
+  adminWatchedAt     DateTime?
+  chain              Chain
+  address            String
+  stage              CandidateStage @default(DISCOVERED)
+  source             String
+  sourceToken        String?
+  label              String?
+  traderId           String?        @db.ObjectId
+  sourceQualityScore Float          @default(50)
+  copyabilityScore   Float          @default(0)
+  riskScore          Float          @default(50)
+  consistencyScore   Float          @default(0)
+  entryQualityScore  Float          @default(0)
+  sampleTrades       Int            @default(0)
+  profitableTrades   Int            @default(0)
+  realizedPnlUsd     Float          @default(0)
+  totalPnlUsd        Float          @default(0)
+  volumeUsd          Float          @default(0)
+  // Real gap found by forensic audit: only a single 30d window was ever fetched anywhere
+  // (realizedPnlUsd/totalPnlUsd/volumeUsd above ARE that 30d window) -- the master spec explicitly
+  // calls for 7D and 30D as separate, independently-visible dimensions (a wallet cooling off in the
+  // last week but still showing a strong 30d number, or vice versa, is real and different evidence).
+  // Additive: does not change what feeds scoreWallet/shouldProve, which stay tied to the 30d window
+  // already proven correct -- these are extra, honestly-labeled evidence for the admin desk.
+  realizedPnl7dUsd   Float?
+  winRate7dPct       Float?
+  sampleTrades7d     Int?
+  averageWinnerPct   Float?
+  averageLoserPct    Float?
+  averageChasePct    Float?
+  rugExposurePct     Float?
+  insiderRiskPct     Float?
+  lastScoredAt       DateTime?
+  paperStartedAt     DateTime?
+  provenAt           DateTime?
+  rejectedReason     String?
+  metadata           Json?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@unique([chain, address])
+  @@index([stage, copyabilityScore])
+  @@index([source, createdAt])
+  @@index([adminWatched])
+}
+
+// Real gap found by forensic audit (M-12/PC-D): "Admin alerts: Wallet x entered TOKEN" had nowhere
+// to live -- AuditLog is for ADMIN actions (who did what), RiskIncident is scoped to trading-risk
+// severity/position context, neither fits a system-generated "here's what a watched wallet just
+// did" notice. A small, dedicated model instead of forcing this into either.
+model AdminAlert {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  type          String
+  chain         Chain
+  mint          String?
+  walletAddress String?
+  message       String
+  metadata      Json?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+}
+
+model DiscoveryToken {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain          Chain
+  mint           String
+  symbol         String?
+  name           String?
+  source         String
+  marketCapUsd   Float?
+  liquidityUsd   Float?
+  volume24hUsd   Float?
+  priceChange1h  Float?
+  priceChange24h Float?
+  tokenAgeMin    Float?
+  discoveredAt   DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  metadata       Json?
+
+  @@unique([chain, mint])
+  @@index([chain, lastSeenAt])
+}
+
+model WalletScoreSnapshot {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain              Chain
+  address            String
+  candidateId        String?  @db.ObjectId
+  sourceQualityScore Float
+  copyabilityScore   Float
+  consistencyScore   Float
+  entryQualityScore  Float
+  riskScore          Float
+  sampleTrades       Int
+  profitableTrades   Int
+  totalPnlUsd        Float?
+  realizedPnlUsd     Float?
+  volumeUsd          Float?
+  metadata           Json?
+  createdAt          DateTime @default(now())
+
+  @@index([chain, address, createdAt])
+  @@index([candidateId, createdAt])
+}
+
+model SourceSignalObservation {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  signalId         String   @db.ObjectId
+  traderId         String   @db.ObjectId
+  sourceWallet     String
+  chain            Chain
+  mint             String
+  horizonSeconds   Int
+  status           ForwardObservationStatus @default(OK)
+  targetAt         DateTime?
+  maxToleranceMs   Int?
+  delayMs          Int?
+  sourcePriceUsd   Float?
+  observedPriceUsd Float?
+  returnPct        Float?
+  marketCapUsd     Float?
+  liquidityUsd     Float?
+  data             Json?
+  observedAt       DateTime
+  createdAt        DateTime @default(now())
+
+  @@unique([signalId, horizonSeconds])
+  @@index([sourceWallet, observedAt])
+  @@index([traderId, observedAt])
+}
+
+model MemeMarketSnapshot {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain                  Chain
+  mint                   String
+  priceUsd               Float
+  marketCapUsd           Float?
+  liquidityUsd           Float
+  exitLiquidityUsd       Float?
+  ageMinutes             Float
+  volume1mUsd            Float
+  volume5mUsd            Float
+  volume15mUsd           Float
+  volumeAcceleration1m   Float
+  volumeAcceleration5m   Float
+  buys1m                 Int
+  sells1m                Int
+  buys5m                 Int
+  sells5m                Int
+  buyVolume5mUsd         Float
+  sellVolume5mUsd        Float
+  uniqueBuyers1m         Int
+  uniqueBuyers5m         Int
+  uniqueSellers5m        Int
+  holderCount            Int?
+  holderGrowth5mPct      Float?
+  top10EffectivePct      Float?
+  bundledSupplyPct       Float?
+  creatorHoldingPct      Float?
+  creatorNetSell5mPct    Float?
+  smartMoneyNetFlow5mUsd Float?
+  liquidityChange5mPct   Float?
+  lpRiskScore            Float?
+  mintAuthorityActive    Boolean?
+  freezeAuthorityActive  Boolean?
+  dangerousExtension     Boolean?
+  socialMentions5m       Int?
+  socialUniqueAuthors5m  Int?
+  socialVelocity         Float?
+  socialSentiment        Float?
+  socialSpamRatio        Float?
+  influencerQualityScore Float?
+  narrativeScore         Float?
+  source                 String
+  provenance             Json?
+  observedAt             DateTime
+  createdAt              DateTime @default(now())
+
+  @@index([chain, mint, observedAt])
+}
+
+model LiveExecutionAttempt {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  idempotencyKey String   @unique
+  userId         String   @db.ObjectId
+  orderId        String?  @db.ObjectId
+  positionId     String?  @db.ObjectId
+  purpose        String
+  chain          Chain
+  walletAddress  String
+  provider       String
+  providerRef    String?
+  txHash         String?
+  status         String
+  requestHash    String?
+  errorCode      String?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([positionId, createdAt])
+}
+
+model RiskIncident {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  severity   String
+  scope      String
+  userId     String?   @db.ObjectId
+  chain      Chain?
+  mint       String?
+  positionId String?   @db.ObjectId
+  code       String
+  detail     Json?
+  resolvedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([severity, createdAt])
+  @@index([userId, createdAt])
+}
+
+model PaperCopyTrade {
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  signalId          String    @unique @db.ObjectId
+  traderId          String    @db.ObjectId
+  sourceWallet      String
+  chain             Chain
+  mint              String
+  sourcePriceUsd    Float
+  entryPriceUsd     Float?
+  walletChasePct    Float?
+  amountUsd         Float     @default(100)
+  tokenRaw          String?
+  remainingTokenRaw String?
+  tokenDecimals     Int?
+  confidence        Int?
+  entryAction       String?
+  entryReason       String?
+  status            String    @default("PENDING")
+  tp1Taken          Boolean   @default(false)
+  tp2Taken          Boolean   @default(false)
+  tp3Taken          Boolean   @default(false)
+  profitTakenUsd    Float     @default(0)
+  peakPriceUsd      Float?
+  peakReturnPct     Float     @default(0)
+  maxDrawdownPct    Float     @default(0)
+  realizedPnlUsd    Float     @default(0)
+  unrealizedPnlUsd  Float     @default(0)
+  exitReason        String?
+  enteredAt         DateTime?
+  closedAt          DateTime?
+  lastMarkedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([sourceWallet, status, createdAt])
+  @@index([traderId, status, createdAt])
+  @@index([status, lastMarkedAt])
+}
+
+model ChainFlowObservation {
+  id               String       @id @default(auto()) @map("_id") @db.ObjectId
+  chain            Chain
+  mint             String
+  walletAddress    String
+  txHash           String
+  side             SignalAction
+  amountUsd        Float?
+  walletBalanceUsd Float?
+  walletTier       String?
+  knownWallet      Boolean      @default(false)
+  source           String
+  observedAt       DateTime
+  createdAt        DateTime     @default(now())
+
+  @@unique([chain, txHash, walletAddress, mint])
+  @@index([chain, mint, observedAt])
+  @@index([chain, walletAddress, observedAt])
+}
+
+model ChainIngestionEvent {
+  id             String               @id @default(auto()) @map("_id") @db.ObjectId
+  chain          Chain
+  signature      String
+  source         String
+  status         ChainIngestionStatus @default(SEEN)
+  priority       Int                  @default(4)
+  attemptCount   Int                  @default(0)
+  receivedCount  Int                  @default(1)
+  lastError      String?
+  receivedAt     DateTime             @default(now())
+  queuedAt       DateTime?
+  processingAt   DateTime?
+  parsedAt       DateTime?
+  persistedAt    DateTime?
+  terminalAt     DateTime?
+  metadata       Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([chain, signature, source])
+  @@index([status, priority, receivedAt])
+  @@index([chain, receivedAt])
+}
+
+model GlobalBrainOpportunity {
+  id                        String    @id @default(auto()) @map("_id") @db.ObjectId
+  chain                     Chain
+  mint                      String
+  symbol                    String?
+  name                      String?
+  state                     BrainState @default(SCANNING)
+  score                     Float     @default(0)
+  action                    String    @default("WATCH")
+  marketCapUsd              Float?
+  liquidityUsd              Float?
+  inflow10sUsd              Float     @default(0)
+  inflow60sUsd              Float     @default(0)
+  buyers10s                 Int       @default(0)
+  buyers60s                 Int       @default(0)
+  whaleBuyers60s            Int       @default(0)
+  knownWhaleBuyers60s       Int       @default(0)
+  smartMoneyNetFlow5mUsd    Float?
+  volumeAcceleration1m      Float?
+  holderGrowth5mPct         Float?
+  socialVelocity            Float?
+  drawdownFromRecentPeakPct Float?
+  survivorScore             Float?
+  reasons                   Json?
+  evidence                  Json?
+  // The highest state a discovery notification has already been sent for. Lets brain-worker fire
+  // exactly once per genuine upgrade (e.g. entering BREAKOUT_FLOW) instead of re-notifying every
+  // 750ms tick a token happens to still be in that state.
+  lastNotifiedState         BrainState?
+  // Real bug found by audit: maybeSignal()'s only dedup was a rolling 30s idempotency bucket, so a
+  // token that stayed BUY_NOW for 5 minutes fired a genuinely new BUY Signal every 30s -- and since
+  // UserFollow.copyAdditionalBuys defaults to true, the executor would not skip these, meaning a
+  // real user would get repeated real buys of the SAME token every 30 seconds for as long as it
+  // stayed hot. Tracks the highest state an entry signal has already fired for, same ratchet-up /
+  // reset-only-on-SCANNING discipline as lastNotifiedState, so one initial entry fires per genuine
+  // qualification and a real re-entry requires an actual cool-down and re-heat, not clock rollover.
+  lastSignaledState         BrainState?
+  // The observedAt of the actual MemeMarketSnapshot this score was computed from -- distinct from
+  // lastEvaluatedAt, which only proves the Brain loop ran, not that it had fresh chain data to
+  // work with. Lets the UI show real evidence age instead of implying every score is live.
+  evidenceObservedAt        DateTime?
+  firstSeenAt               DateTime  @default(now())
+  lastEvaluatedAt           DateTime  @default(now())
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  @@unique([chain, mint])
+  @@index([action, score, lastEvaluatedAt])
+  @@index([chain, lastEvaluatedAt])
+}
+
+// status:"OK" means observedAt genuinely landed within tolerance of targetAt (see delayMs);
+// status:"MISSING" means the horizon passed but no sufficiently fresh price ever arrived within
+// tolerance, so this row exists (and is never retried) purely to record that honestly, with every
+// price/return field left null rather than silently backfilled from a stale, out-of-tolerance
+// price. A 60s horizon must never silently use a price observed 8 minutes later.
+model BrainOutcomeSample {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  opportunityId    String   @db.ObjectId
+  chain            Chain
+  mint             String
+  horizonSeconds   Int
+  status           String   @default("OK")
+  targetAt         DateTime?
+  delayMs          Int?
+  priceSource      String?
+  entryPriceUsd    Float?
+  observedPriceUsd Float?
+  returnPct        Float?
+  maxRunPct        Float?
+  maxDrawdownPct   Float?
+  evidence         Json?
+  observedAt       DateTime
+  createdAt        DateTime @default(now())
+
+  @@unique([opportunityId, horizonSeconds])
+  @@index([chain, mint, observedAt])
+}
+
+model CatalystEvent {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  chain       Chain
+  mint        String
+  type        String
+  source      String
+  title       String?
+  announcedAt DateTime
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([chain, mint, announcedAt])
+  @@index([type, announcedAt])
+}

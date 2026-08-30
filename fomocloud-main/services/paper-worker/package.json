@@ -1,0 +1,6 @@
+{
+  "name":"@memecloud/paper-worker","version":"0.6.0","type":"module",
+  "scripts":{"dev":"tsx watch src/index.ts","start":"node dist/index.js","build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo paper-worker lint","test":"echo paper worker uses shared strategy tests"},
+  "dependencies":{"@memecloud/config":"workspace:*","@memecloud/db":"workspace:*","@memecloud/execution":"workspace:*","@memecloud/ops":"workspace:*","@memecloud/strategy":"workspace:*","@solana/web3.js":"^1.98.4","bullmq":"^5.58.5","ioredis":"^5.7.0"},
+  "devDependencies":{"@types/node":"^22.18.1","tsx":"^4.20.5","typescript":"^5.9.2"}
+}

@@ -1,0 +1,21 @@
+{
+  "name": "memecloud",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "hostinger:build": "pnpm --filter @memecloud/web build",
+    "db:generate": "pnpm --filter @memecloud/db prisma generate",
+    "db:push": "pnpm --filter @memecloud/db prisma db push",
+    "db:seed": "pnpm --filter @memecloud/db seed",
+    "db:migrate:v05": "pnpm --filter @memecloud/db migrate:v05"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6",
+    "typescript": "^5.9.2"
+  }
+}
