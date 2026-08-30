@@ -3,6 +3,7 @@ import { Redis } from "ioredis";
 import { db } from "@memecloud/db";
 import { sendEmail, sendPush } from "@memecloud/notifications";
 import { startHeartbeat, beat } from "@memecloud/ops";
+import { pushAllowed as resolvePushAllowed, emailWorthSending } from "./decisions.js";
 
 const connection=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 let active=0, processed=0;
@@ -76,23 +77,10 @@ const userWorker=new Worker("user-notifications",async job=>{
     create:{userId,deliveryKey,type,title,body,data:data as any},
     update:{}
   });
-  // Real gap found by forensic audit: notificationPreference.securityAlerts existed in the schema
-  // and Settings UI (users could toggle it) but was never actually read anywhere -- exactly the
-  // "wired to nothing" bug already fixed for discoveryWhaleActivity/discoveryNewToken earlier this
-  // session. SECURITY_ALERT was already in the email-worthy list below with nothing to trigger it.
-  const pushAllowed=pref?.pushEnabled!==false && (
-    type==="TRADER_SIGNAL"?pref?.traderBought!==false:
-    type==="TRADE_COPIED"?pref?.tradeCopied!==false:
-    type==="TRADE_SKIPPED"||type==="WAIT_PULLBACK"?pref?.skippedTrade!==false:
-    type==="PROFIT_TAKEN"?pref?.profitTaken!==false:
-    type==="SECURITY_ALERT"?pref?.securityAlerts!==false:
-    type==="POSITION_CLOSED"?pref?.positionClosed!==false:true
-  );
-  if(pushAllowed){
+  if(resolvePushAllowed(type,pref)){
     try{await sendPush(userId,{title,body,url:"/app/",type});}catch(e){console.error("[notification-worker] push",e);}
   }
-  const emailWorthSending=["TRADE_COPIED","PROFIT_TAKEN","POSITION_CLOSED","SECURITY_ALERT"].includes(type);
-  if(emailWorthSending && pref?.emailEnabled!==false){
+  if(emailWorthSending(type) && pref?.emailEnabled!==false){
     const user=await db.user.findUnique({where:{id:userId},select:{email:true}});
     if(user?.email){
       try{await sendEmail(user.email,title,`<p>${String(body).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\n","<br/>")}</p>`,userId)}
