@@ -220,6 +220,13 @@ All PENDING AUDIT. Will be answered with evidence once forks A-E report and fixe
 | 15 | packages/providers: replaced no-op test script with 6 real tests for Birdeye field normalization (pure, bug-prone logic previously untested) | 049a1a8 | M-51 (partial) |
 | 16 | packages/notifications: replaced no-op test script with 8 real tests for email rendering (formatFrom/htmlToPlainFallback/renderEmail) | 2b0c6a2 | M-51 (partial) |
 | 17 | Separate 7D P&L tracking for smart wallets (was: only ever a single 30d window fetched anywhere) | 5fb7dac | Section 8/11 of master spec |
+| 18 | M-30 (retry): LedgerEntry migrated to integer micro-USD (BigInt) after discovering Prisma+MongoDB does not support Decimal at all (verified: hard error). usdToMicros/microsToUsd added to packages/shared with tests proving exactness at the float64 failure boundary | cafc1e7 | M-30 (partial -- LedgerEntry only) |
+| 19 | Admin Smart Money desk: Found Today / Active Now / Watchlist views + Win Rate/Risk columns added to existing candidates table | 2c8cff6 | M-11, PC-C (partial) |
+
+## Security re-verification (this round, no new bugs -- documenting what was checked)
+- Spot-checked the 2 `/v1/me/*` `:id` routes Fork C's report didn't explicitly name (`DELETE /v1/me/sessions/:id`, `PUT /v1/me/traders/:id`) -- both correctly scope by `req.user.sub`. Combined with Fork C's original ~10-route sample, essentially all of apps/api/src/server.ts's parameterized user routes are now checked (confirmed via file count: server.ts is genuinely the only route file in the API -- no other route files exist to have been missed).
+- Verified every single BullMQ `.add()` call across every worker passes an explicit `jobId` for provider-level dedup (answers Q11 "can duplicate queues double-spend?" -- no, and this is defense-in-depth on top of the DB-level idempotency keys already verified in Fork B's execution audit).
+- Grepped for `priceUsd ?? 0` / fabricated-zero-price patterns (M-23's "no price: UNAVAILABLE, not $0" requirement) -- none found.
 
 ## M-51 fake-test audit (full findings)
 Workspace-wide scan of every `package.json` test script found 22 packages/services using `echo ... tests` (a green no-op). Triaged:
@@ -231,13 +238,14 @@ Workspace-wide scan of every `package.json` test script found 22 packages/servic
 ## Still open (not yet fixed, real remaining work)
 | ID | Item | Size | Notes |
 |---|---|---|---|
-| M-30 | Float→Decimal/integer-micro-USD migration for canonical USD fields | LARGE, RISKY | Not an active bug at current trade sizes but architecturally exactly what's flagged; needs careful schema migration + every read/write site updated |
+| M-30 | Float->BigInt-micro-USD migration for Position/PositionExit/TradingCashAllocation | LARGE, RISKY | Decimal confirmed UNAVAILABLE (Prisma+MongoDB limitation, verified). Pattern proven safe on LedgerEntry (fix #18); this remaining piece touches ~14 files of live real-money code (executor, exits, server.ts portfolio aggregation, apps/web rendering) with no live DB/frontend available here to verify against -- genuinely deserves dedicated, carefully-tested follow-up work, not a blind pass |
 | M-1 | Explicit system architecture map + wallet/deposit/execution graph doc | MEDIUM | Descriptive artifact, not yet written as a standalone doc (this file covers it piecemeal) |
 | M-4/M-6/PC-F | Explicit persisted stage-funnel enum (RAW_DISCOVERED..MONEY_RUSH) | MEDIUM | classifyLifecycle() computes a real progression on read; not persisted as named stages |
-| M-11/PC-C | Admin Smart Money Desk (Found Today/Active Now/Watchlist/Paper/Proven/Paused/Rejected as a real organized UI) | LARGE | Backend watchlist now real (fix #14); this is the fuller dedicated-desk UI redesign, not started |
+| M-11/PC-C | Full Admin Smart Money Desk (dedicated page/layout, card-based wallet profiles, VIEW ACTIVITY/TRADES drill-in) | LARGE | Found Today/Active Now/Watchlist views + win rate/risk columns now real (fix #19); the fuller dedicated redesign remains open |
 | M-33 through M-43, M-45 through M-48, C-12 through C-23 | Remaining UX/product redesign (Home Pulse, full Wallet redesign, Smart Money nav, Auto Trade UX, empty states, Admin Health 2.0, status-language translation, mobile QA, design system) | VERY LARGE | Token Detail (M-44) partially done (Verdict breakdown, reasons); Discover (M-42) partially done (New Token Radar separation); rest not started |
 | M-49/M-50/C-26 | API + frontend monolith refactor | LARGE | Not started |
-| M-51/M-52/M-53/C-25 | Test-script audit, chaos testing, process-crash testing | LARGE | Not started |
+| M-51 | Remaining fake-test-script audit | MEDIUM | 2 of 22 no-op scripts replaced (fixes #15, #16); see full breakdown above |
+| M-52/M-53/C-25 | Chaos testing, process-crash testing | LARGE | Not started (no live environment available here to induce real failures against) |
 | M-54/M-55/M-57/PC-L | Live observation-window funnel tests | BLOCKED | Requires the VPS, currently down |
 | M-59 | Real-money live execution verification | BLOCKED | Requires owner-approved funded test |
 | M-60/C-22 | Full mobile/viewport UX QA | LARGE | Not started |
