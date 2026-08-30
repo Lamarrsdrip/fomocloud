@@ -2,8 +2,8 @@
 import {useEffect,useMemo,useState} from "react";
 import dynamic from "next/dynamic";
 import {
-  Home,Users,UserRound,WalletCards,Bell,Power,Plus,Settings2,
-  LogOut,ArrowUpRight,Eye,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
+  Home,Users,WalletCards,Bell,Power,Plus,Settings2,
+  LogOut,ArrowUpRight,Copy,Pause,Play,ChevronRight,Link2,RefreshCw,
   TrendingUp,Flame,Sparkles,CheckCheck,ArrowLeft,Wallet,Zap,ArrowDownToLine,X
 } from "lucide-react";
 import {apiFetch,logout,money,pct,plainError} from "../../lib/api";
@@ -23,6 +23,7 @@ import {TokenAvatar} from "../../components/TokenAvatar";
 import {PerformanceChart} from "../../components/PerformanceChart";
 import TradeView from "../../components/TradeView";
 import ActivityView from "../../components/ActivityView";
+import CopyView from "../../components/CopyView";
 // Privy's SDK is large (full multi-chain support) even though only its Solana slice is used here
 // -- next/dynamic keeps it out of this route's main bundle entirely, fetched only once someone
 // actually opens the wallet panel. See the comment at the top of EmbeddedWalletPanel.tsx.
@@ -421,18 +422,6 @@ function TraderSettingsRow({f,reload}:{f:any;reload:()=>Promise<void>}){
   <div className="switch-row"><div><b>Copy additional buys</b><small>Allow this trader's later scale-ins to be evaluated.</small></div><button className={`switch ${additional?"on":""}`} onClick={()=>setAdditional(!additional)}><i/></button></div><div className="switch-row"><div><b>Copy re-entry</b><small>Allow a later re-entry after the trader exited.</small></div><button className={`switch ${reentry?"on":""}`} onClick={()=>setReentry(!reentry)}><i/></button></div><div className="trader-editor-actions"><button className="action-primary" onClick={save}>Save trader settings</button><button className="soft-action" onClick={remove}>Remove</button>{msg&&<span>{msg}</span>}</div></div>}</section>
 }
 
-function CopyView({follows,setMode,setView}:{follows:any[];setMode:(id:string,m:string)=>void;setView:(v:View)=>void}){
- const auto=follows.filter((f:any)=>f.mode==="AUTO_COPY");
- const watching=follows.filter((f:any)=>f.mode!=="AUTO_COPY");
- return <>
-  <section className="copy-hero"><div><span>AUTO COPY</span><h2>Choose who MemeCloud can follow for you.</h2><p>Pick a trader, set them to Auto Copy, and your own account rules still decide whether each trade is safe to take.</p></div><div style={{display:"flex",gap:8}}><button className="action-primary" onClick={()=>setView("traders")}><Users size={15}/> Find traders</button><button className="soft-action" onClick={()=>setView("social")}><UserRound size={15}/> Community</button></div></section>
-  <div className="app-two">
-   <section className="app-card"><div className="card-title"><div><span>ACTIVE</span><h2>Auto Copy</h2></div><span className="status-badge">{auto.length} active</span></div>{auto.length?<div className="list">{auto.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>@{f.trader?.handle||"tracked"}</small></div><span className="status-badge">Auto Copy</span><button className="soft-action" onClick={()=>setMode(f.traderId,"WATCH_ONLY")}>Pause</button></div>)}</div>:<Empty icon={Copy} title="No Auto Copy traders yet" body="Discover a trader you trust and tap Auto Copy. MemeCloud still applies your personal limits before acting." action="Discover traders" onClick={()=>setView("traders")}/>}</section>
-   <section className="app-card"><div className="card-title"><div><span>WATCHLIST</span><h2>Following & watching</h2></div></div>{watching.length?<div className="list">{watching.map((f:any)=><div className="list-row copy-row" key={f.id}><div><b>{f.trader?.displayName||"Trader"}</b><small>{String(f.mode||"FOLLOW_ONLY").replaceAll("_"," ")}</small></div><button className="soft-action" onClick={()=>setMode(f.traderId,"AUTO_COPY")}>Auto Copy</button></div>)}</div>:<Empty icon={Eye} title="Nothing on your watchlist" body="Follow traders first, then decide who should be watched or copied." action="Discover" onClick={()=>setView("traders")}/>}</section>
-  </div>
-  <section className="app-card copy-explainer"><div className="card-title"><div><span>HOW IT WORKS</span><h2>Simple on the surface. Careful underneath.</h2></div></div><div className="simple-steps"><div><b>1</b><span>Trader buys</span><small>MemeCloud sees the tracked wallet action.</small></div><div><b>2</b><span>Your rules check it</span><small>Price, liquidity, exposure and your settings are checked.</small></div><div><b>3</b><span>Only then act</span><small>Eligible trades can execute; bad entries are skipped or waited on.</small></div></div></section>
- </>;
-}
 
 
 function PositionRow({p}:{p:any}){
