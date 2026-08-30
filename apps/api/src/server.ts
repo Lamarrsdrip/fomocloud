@@ -36,6 +36,7 @@ const accessTtl = process.env.ACCESS_TOKEN_TTL ?? "60m";
 const refreshDays = Number(process.env.REFRESH_TOKEN_DAYS ?? 30);
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: 1 });
 const broadcastQueue = new Queue("broadcasts", { connection: redis });
+const notificationQueue = new Queue("user-notifications", { connection: redis });
 
 const configuredOrigins = (
   process.env.CORS_ALLOWED_ORIGINS ??
@@ -1095,6 +1096,27 @@ app.get("/v1/me/wallets/:id/balances", auth, asyncRoute(async (req:AuthedRequest
   // while" (balance-worker outage) -- never silently show a stale number as if it were live.
   const mostRecentSync=rows.length?rows.reduce((a,r)=>r.lastSyncedAt>a?r.lastSyncedAt:a,rows[0].lastSyncedAt):null;
   res.json({balances,dataFreshnessSec:mostRecentSync?Math.round((Date.now()-mostRecentSync.getTime())/1000):null});
+}));
+// Real gap found by forensic audit: a private-key export is the single most sensitive action a
+// wallet supports, and nothing anywhere recorded that one had happened -- no audit trail, no
+// user-visible record, no security notification. The export itself already goes through Privy's
+// own secure, MemeCloud-inaccessible modal (see SecurityTab in WalletDetailSheet.tsx); this route
+// only records the fact that the user completed it, called from the client immediately after
+// Privy's exportWallet() call resolves. Deliberately does NOT and CANNOT know the key itself.
+app.post("/v1/me/wallets/:id/exported", auth, asyncRoute(async (req:AuthedRequest,res) => {
+  const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub}});
+  if(!wallet)return res.status(404).json({error:"WALLET_NOT_FOUND"});
+  const title="Wallet private key exported";
+  const body=`Your private key for ${wallet.address.slice(0,6)}…${wallet.address.slice(-5)} was exported to an external wallet app. If this wasn't you, your device or account may be compromised -- contact support immediately.`;
+  await audit(req.user.sub,"USER","WALLET_KEY_EXPORTED",wallet.id,{address:wallet.address});
+  await db.userActivityEvent.create({data:{userId:req.user.sub,type:"SECURITY_ALERT",title,body,data:{walletId:wallet.id,address:wallet.address} as any}}).catch(()=>{});
+  // Security notifications are enqueued the same way every other real-time user notification is
+  // (see brain-worker/executor/exits) rather than sent synchronously here, so a transient
+  // push/email provider hiccup can't fail this request or, worse, silently drop the alert with no
+  // retry -- notification-worker's BullMQ attempts/backoff cover that.
+  const deliveryKey=`wallet-export:${wallet.id}:${Date.now()}`;
+  await notificationQueue.add("notify",{userId:req.user.sub,type:"SECURITY_ALERT",title,body,data:{url:"/app/?view=profile"},deliveryKey},{jobId:deliveryKey,removeOnComplete:1000,attempts:3,backoff:{type:"exponential",delay:1000}}).catch(()=>{});
+  res.json({ok:true});
 }));
 app.get("/v1/me/wallets/:id/history", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const wallet=await db.wallet.findFirst({where:{id:routeParam(req.params.id),userId:req.user.sub,chain:"SOLANA"}});

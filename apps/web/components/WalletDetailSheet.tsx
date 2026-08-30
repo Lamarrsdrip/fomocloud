@@ -61,7 +61,7 @@ export function WalletDetailSheet({ wallet, onClose, onSent }: { wallet: { id: s
         {tab === "send" && <SendTab walletId={wallet.id} onSent={onSent} />}
         {tab === "history" && <HistoryTab walletId={wallet.id} />}
         {tab === "access" && <AccessTab walletId={wallet.id} onRevoked={() => { onSent?.(); onClose(); }} />}
-        {tab === "security" && <SecurityTab address={wallet.address} />}
+        {tab === "security" && <SecurityTab address={wallet.address} walletId={wallet.id} />}
       </div>
     </div>
   );
@@ -113,7 +113,7 @@ function AccessTab({ walletId, onRevoked }: { walletId: string; onRevoked: () =>
 // point. This is the real ownership model: the user's key is exportable to any standard wallet
 // (Phantom, Backpack, etc.) at any time -- MemeCloud holds only a revocable, policy-scoped trading
 // permission on top of a wallet the user genuinely owns and can walk away with.
-function SecurityTab({ address }: { address: string }) {
+function SecurityTab({ address, walletId }: { address: string; walletId: string }) {
   const { exportWallet } = useExportWallet();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -123,6 +123,12 @@ function SecurityTab({ address }: { address: string }) {
     setBusy(true); setErr("");
     try {
       await exportWallet({ address });
+      // Real gap found by forensic audit: nothing anywhere recorded that a private-key export ever
+      // happened -- no audit trail, no security notification. This call cannot see or transmit the
+      // key itself (Privy's modal never exposes it to this app); it only logs that the user
+      // completed the flow, so there's a real record and an alert if it wasn't actually them.
+      // Best-effort: a logging failure must never be presented as if the export itself failed.
+      apiFetch(`/v1/me/wallets/${walletId}/exported`, { method: "POST" }).catch(() => {});
     } catch (e: any) {
       setErr(plainError(e));
     } finally {

@@ -76,11 +76,16 @@ const userWorker=new Worker("user-notifications",async job=>{
     create:{userId,deliveryKey,type,title,body,data:data as any},
     update:{}
   });
+  // Real gap found by forensic audit: notificationPreference.securityAlerts existed in the schema
+  // and Settings UI (users could toggle it) but was never actually read anywhere -- exactly the
+  // "wired to nothing" bug already fixed for discoveryWhaleActivity/discoveryNewToken earlier this
+  // session. SECURITY_ALERT was already in the email-worthy list below with nothing to trigger it.
   const pushAllowed=pref?.pushEnabled!==false && (
     type==="TRADER_SIGNAL"?pref?.traderBought!==false:
     type==="TRADE_COPIED"?pref?.tradeCopied!==false:
     type==="TRADE_SKIPPED"||type==="WAIT_PULLBACK"?pref?.skippedTrade!==false:
     type==="PROFIT_TAKEN"?pref?.profitTaken!==false:
+    type==="SECURITY_ALERT"?pref?.securityAlerts!==false:
     type==="POSITION_CLOSED"?pref?.positionClosed!==false:true
   );
   if(pushAllowed){
