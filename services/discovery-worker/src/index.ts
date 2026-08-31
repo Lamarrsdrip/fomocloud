@@ -2,15 +2,17 @@ import {db} from "@memecloud/db";
 import {BirdeyeClient} from "@memecloud/providers";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
+import {Redis} from "ioredis";
 
 let scans=0,candidatesSeen=0,errors=0,lastRun:string|null=null,running=false,mode:"WALLET_FIRST"="WALLET_FIRST";
 let seedWalletScans=0,seedWalletCandidates=0,leaderboardScans=0,leaderboardCandidates=0;
+const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 
 async function getClient(){
   const cfg=await getConfig<any>("marketData");
   const key=cfg?.birdeyeApiKey??process.env.BIRDEYE_API_KEY;
   if(!key) return null;
-  return new BirdeyeClient(key,cfg?.birdeyeBaseUrl);
+  return new BirdeyeClient(key,cfg?.birdeyeBaseUrl,{redis,service:"discovery-worker",priority:"P4"});
 }
 
 function arr(x:any):any[]{return Array.isArray(x)?x:Array.isArray(x?.items)?x.items:Array.isArray(x?.tokens)?x.tokens:Array.isArray(x?.list)?x.list:[]}

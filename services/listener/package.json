@@ -16,7 +16,8 @@
     "bullmq": "^5.58.1",
     "ioredis": "^5.7.0",
     "@memecloud/ops": "workspace:*",
-    "@memecloud/config": "workspace:*"
+    "@memecloud/config": "workspace:*",
+    "@memecloud/shared": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

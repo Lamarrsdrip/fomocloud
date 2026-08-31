@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { didStateUpgrade, isNewConvergence, weightedConvergenceScore } from "./index.js";
+import { classifyWalletConvergence, didStateUpgrade, isNewConvergence, weightedConvergenceScore } from "./index.js";
 
 test("no prior notification and a real state fires an upgrade", () => {
   assert.equal(didStateUpgrade(null, "BUILDING"), true);
@@ -31,7 +31,7 @@ test("a single wallet buying is not convergence", () => {
   assert.equal(isNewConvergence(1, 0), false);
 });
 
-test("two or more tracked wallets is genuine convergence, fired once", () => {
+test("five tracked wallets is genuine convergence, fired once", () => {
   assert.equal(isNewConvergence(5, 0), true);
   assert.equal(isNewConvergence(5, 4), true);
 });
@@ -75,4 +75,18 @@ test("repeat-early discovered wallets contribute only weak pre-proof convergence
 test("convergence alert is about distinct wallets, not score weight",()=>{
   assert.equal(isNewConvergence(4,0),false);
   assert.equal(isNewConvergence(5,0),true);
+});
+
+test("wallet-first product stages use exact 1 / 3 / 5 / 10 distinct-wallet thresholds",()=>{
+  assert.equal(classifyWalletConvergence(0),"NONE");
+  assert.equal(classifyWalletConvergence(1),"OBSERVED");
+  assert.equal(classifyWalletConvergence(3),"RESEARCH_PRIORITY");
+  assert.equal(classifyWalletConvergence(5,5),"SMART_MONEY_CONVERGENCE");
+  assert.equal(classifyWalletConvergence(10,10),"MONEY_RUSH_CANDIDATE");
+});
+
+test("weak wallets cannot manufacture the strong 5/10 tiers",()=>{
+  assert.equal(classifyWalletConvergence(5,2),"RESEARCH_PRIORITY");
+  assert.equal(classifyWalletConvergence(10,9),"SMART_MONEY_CONVERGENCE");
+  assert.notEqual(classifyWalletConvergence(10,9),"MONEY_RUSH_CANDIDATE");
 });

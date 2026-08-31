@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { db, type Chain } from "@memecloud/db";
-import { microsToUsd, tradingCashUsdFields, positionUsdFields } from "@memecloud/shared";
+import { microsToUsd, tradingCashUsdFields, positionUsdFields, readProviderMetrics } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, maskHint, recordProviderResults, fingerprintOf, ackRestart, readExecutionState } from "@memecloud/config";
 import { shouldProve } from "@memecloud/discovery";
 import { sendEmail, sendPush, ensureVapid } from "@memecloud/notifications";
@@ -11,6 +11,17 @@ import { runProviderTests, PROVIDER_FINGERPRINT_FIELDS } from "./providerHealth.
 import { broadcastQueue, redis } from "./queues.js";
 
 export const adminRoutes = Router();
+
+// Provider telemetry is deliberately separate from generic worker health.  A
+// social/X budget issue is visible here as OPTIONAL and cannot make execution
+// look unavailable. Counters are Redis TTL buckets, so the page is honest
+// about what has been observed since this instrumentation was deployed.
+adminRoutes.get("/v1/admin/provider-usage", requireAdmin, asyncRoute(async (_req,res) => {
+  const metrics=await readProviderMetrics(redis,["X_READ","X_WRITE","BIRDEYE","SOLANA_RPC","JUPITER","PRIVY"]);
+  const social=await getConfig<any>("social");
+  const limits={X_READ:{hour:Math.max(0,Number(social?.xMaxReadsPerHour??process.env.X_MAX_READS_PER_HOUR??24)),day:Math.max(0,Number(social?.xMaxReadsPerDay??process.env.X_MAX_READS_PER_DAY??120))}};
+  res.json({metrics,limits,classes:{X_READ:"OPTIONAL",X_WRITE:"OPTIONAL",BIRDEYE:"OPTIONAL",SOLANA_RPC:"CRITICAL",JUPITER:"CRITICAL",PRIVY:"CRITICAL"},thresholds:[50,75,90,95,100],note:"X reads are hard-budgeted. P0/P1 critical execution/RPC requests are never blocked by optional-provider controls."});
+}));
 
 adminRoutes.post("/v1/admin/bootstrap", asyncRoute(async (req,res) => {
   const expected=process.env.ADMIN_BOOTSTRAP_SECRET??"";
@@ -359,7 +370,7 @@ const RESTART_REQUIRED_KEYS=new Set<string>([]);
 const SECRET_FIELDS:Record<string,string[]>={
   execution:["jupiterApiKey","zeroXApiKey"],
   signer:["privyAppSecret","privyAuthorizationPrivateKey"],
-  social:["xBearerToken","xOAuthClientSecret"],
+  social:["xBearerToken","xIntelligenceBearerToken","xOAuthClientSecret"],
   // RPC URLs are treated as secrets too — a paid RPC URL commonly embeds the provider's API key
   // as a query param (as MemeCloud's own Helius auto-derivation does), so returning it in the
   // clear would leak that key right back out through a field that isn't literally named "*Key".

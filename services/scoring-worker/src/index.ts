@@ -3,13 +3,15 @@ import {BirdeyeClient} from "@memecloud/providers";
 import {scoreWallet,shouldPaperTrack,shouldProve} from "@memecloud/discovery";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
+import {Redis} from "ioredis";
 
 let scored=0,promotedPaper=0,promotedProven=0,rejected=0,errors=0,running=false;
+const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 
 async function client(){
   const cfg=await getConfig<any>("marketData");
   const key=cfg?.birdeyeApiKey??process.env.BIRDEYE_API_KEY;
-  return key?new BirdeyeClient(key,cfg?.birdeyeBaseUrl):null;
+  return key?new BirdeyeClient(key,cfg?.birdeyeBaseUrl,{redis,service:"scoring-worker",priority:"P3"}):null;
 }
 
 async function ensurePaperTrader(c:any){
@@ -66,7 +68,7 @@ async function tick(){
         const paper=await db.paperCopyTrade.findMany({where:{sourceWallet:c.address,status:{in:["OPEN","PARTIAL","CLOSED"]}},orderBy:{createdAt:"desc"},take:100});
         const [userChases,recentFlow]=await Promise.all([
           db.copyDecision.findMany({where:{signal:{sourceWallet:c.address},walletChasePct:{not:null}},select:{walletChasePct:true},take:100,orderBy:{createdAt:"desc"}}),
-          db.chainFlowObservation.findMany({where:{chain:c.chain,walletAddress:c.address,observedAt:{gte:new Date(Date.now()-30*24*60*60_000)}},select:{mint:true,observedAt:true,side:true,amountUsd:true,walletTier:true,walletBalanceUsd:true},orderBy:{observedAt:"desc"},take:500})
+          db.chainFlowObservation.findMany({where:{chain:c.chain,walletAddress:c.address,observedAt:{gte:new Date(Date.now()-30*24*60*60_000)}},select:{mint:true,observedAt:true,side:true,amountUsd:true,walletTier:true,walletBalanceUsd:true,source:true},orderBy:{observedAt:"desc"},take:500})
         ]);
         const paperChases=paper.filter(x=>x.walletChasePct!=null).map(x=>Number(x.walletChasePct));
         const chaseValues=[...paperChases,...userChases.map(x=>Number(x.walletChasePct??0))];
@@ -89,26 +91,30 @@ async function tick(){
         // `undefined` so scoreWallet's own UNKNOWN-evidence handling (evidenceCompleteness, a
         // conservative non-zero default penalty) actually applies instead of being short-circuited.
         const insiderRaw=priorMeta?.insiderRiskPct??c.insiderRiskPct;
-        const rugRaw=priorMeta?.rugExposurePct??c.rugExposurePct;
+        // Historical loss rate remains useful risk evidence, but it is never
+        // relabelled as a rug. Only a producer that explicitly recorded a
+        // verified token-structure source can populate verifiedRugExposurePct.
+        const rugRaw=priorMeta?.verifiedRugExposurePct;
         const insider=insiderRaw==null?undefined:Number(insiderRaw);
-        // If no provider risk profile exists, mature forward outcomes still give us objective rug
-        // exposure evidence: repeated -70% or worse outcomes are exactly the behavior a smart-wallet
-        // system must punish. Require at least five mature samples before treating this as known.
-        const derivedRugExposure=forwardReturns.length>=5?forwardReturns.filter(x=>x<=-70).length/forwardReturns.length*100:undefined;
-        const rug=rugRaw==null?derivedRugExposure:Number(rugRaw);
+        const verifiedRugExposure=rugRaw==null?undefined:Number(rugRaw);
+        const catastrophicLossRate=forwardReturns.length>=5?forwardReturns.filter(x=>x<=-70).length/forwardReturns.length*100:undefined;
         const distinctTokens30d=new Set(recentFlow.map(x=>x.mint)).size;
         const lastActivityAt=recentFlow[0]?.observedAt;
         const lastActivityHours=lastActivityAt?Math.max(0,(Date.now()-lastActivityAt.getTime())/3600_000):undefined;
-        const whaleObs=recentFlow.find((x:any)=>String(x.walletTier??"").startsWith("WHALE_"));
-        const whaleTier=whaleObs?.walletTier??priorMeta?.whaleTier;
+        // Existing listener flow only records trade evidence. It does not claim
+        // a whole-wallet USD balance, so it cannot manufacture a whale badge.
+        const whaleObs=recentFlow.find((x:any)=>String(x.source??"").startsWith("WALLET_CAPITAL_SNAPSHOT:")&&String(x.walletTier??"").startsWith("WHALE_"));
+        const priorCapitalSource=String(priorMeta?.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:")?priorMeta.walletBalanceSource:undefined;
+        const whaleTier=whaleObs?.walletTier??(priorCapitalSource?priorMeta?.whaleTier:undefined);
         const walletBalanceUsd=whaleObs?.walletBalanceUsd??priorMeta?.walletBalanceUsd;
         const walletBalanceObservedAt=whaleObs?.walletBalanceUsd!=null
           ? whaleObs.observedAt.toISOString()
-          : priorMeta?.walletBalanceObservedAt;
-        const earlyEntryEdgePct=priorMeta?.earlyEntryEdgePct==null?undefined:Number(priorMeta.earlyEntryEdgePct);
+          : priorCapitalSource?priorMeta?.walletBalanceObservedAt:undefined;
+        const earlyProvenance=priorMeta?.earlyEntryProvenance;
+        const earlyEntryEdgePct=earlyProvenance?.sampleSize>=10&&earlyProvenance?.observedAt&&earlyProvenance?.definition?Number(priorMeta?.earlyEntryEdgePct):undefined;
         const s=scoreWallet({
           totalPnlUsd:p.totalPnlUsd,realizedPnlUsd:p.realizedPnlUsd,volumeUsd:p.volumeUsd,tradeCount:Math.round(p.tradeCount),
-          profitableTrades:Math.round(p.profitableTrades),winRatePct:p.winRate,recentSignalReturnsPct:forwardReturns,averageObservedChasePct:avgChase,insiderRiskPct:insider,rugExposurePct:rug,
+          profitableTrades:Math.round(p.profitableTrades),winRatePct:p.winRate,recentSignalReturnsPct:forwardReturns,averageObservedChasePct:avgChase,insiderRiskPct:insider,rugExposurePct:verifiedRugExposure,catastrophicLossRatePct:catastrophicLossRate,
           realizedPnl7dUsd:p7d?.realizedPnlUsd,winRate7dPct:p7d?.winRate,distinctTokens30d,lastActivityHours,earlyEntryEdgePct,providerEvidenceCompletenessPct:p.evidenceCompletenessPct
         });
         const forwardMean=s.forwardMeanPct;
@@ -136,7 +142,9 @@ async function tick(){
         // read) and clearly, not marginally, fails to qualify, so a wallet oscillating near the
         // paper-tracking bar isn't permanently locked out by one noisy sample.
         else if(stage==="ANALYZING"&&c.lastScoredAt&&p.tradeCount>=15&&s.copyabilityScore<paperMin-15){stage="REJECTED";autoRejected=true;rejected++}
-        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,realizedPnl7dUsd:p7d?p7d.realizedPnlUsd:undefined,winRate7dPct:p7d?.winRate,sampleTrades7d:p7d?Math.round(p7d.tradeCount):undefined,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,forwardSignals:forwardReturns.length,closedPaperTrades:closedPaper.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,riskEvidenceCompleteness:s.riskEvidenceCompleteness,providerEvidenceCompletenessPct:p.evidenceCompletenessPct,derivedRugExposurePct:derivedRugExposure,skillScore:s.skillScore,currentFormScore:s.currentFormScore,activityScore:s.activityScore,forwardHitRatePct:s.forwardHitRatePct,unrealizedReliancePct:s.unrealizedReliancePct,distinctTokens30d,lastObservedTradeAt:lastActivityAt?.toISOString()??priorMeta?.lastObservedTradeAt,whaleTier,walletBalanceUsd,walletBalanceObservedAt,...(demoted?{autoPausedAt:stage==="PAUSED"?new Date().toISOString():priorMeta?.autoPausedAt??null,autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} / evidence ${Math.round(s.evidenceCompleteness)} fell below live-trading floor`}:stage==="PAPER_TRACKING"&&autoPaused?{autoPausedAt:null,autoPausedReason:null}:{})}}});
+        const raw90d=await b.walletPnlSummary(c.address,"90d","solana").catch(()=>null);
+        const p90d=raw90d?b.normalizeWalletPnl(raw90d):null;
+        await db.smartWalletCandidate.update({where:{id:c.id},data:{stage,sourceQualityScore:s.sourceQualityScore,copyabilityScore:s.copyabilityScore,riskScore:s.riskScore,consistencyScore:s.consistencyScore,entryQualityScore:s.entryQualityScore,sampleTrades:Math.round(p.tradeCount),profitableTrades:Math.round(p.profitableTrades),realizedPnlUsd:p.realizedPnlUsd,totalPnlUsd:p.totalPnlUsd,volumeUsd:p.volumeUsd,realizedPnl7dUsd:p7d?p7d.realizedPnlUsd:undefined,winRate7dPct:p7d?.winRate,sampleTrades7d:p7d?Math.round(p7d.tradeCount):undefined,averageChasePct:avgChase,lastScoredAt:new Date(),provenAt:stage==="PROVEN"?(c.provenAt??new Date()):undefined,rejectedReason:autoRejected?`AUTO_REJECTED: copyability ${Math.round(s.copyabilityScore)} below floor after ${Math.round(p.tradeCount)} trades`:c.rejectedReason,metadata:{...(priorMeta||{}),walletPnl:raw,walletPnl90d:p90d?{realizedPnlUsd:p90d.realizedPnlUsd,winRatePct:p90d.winRate,tradeCount:p90d.tradeCount,evidenceCompletenessPct:p90d.evidenceCompletenessPct,observedAt:new Date().toISOString(),provider:"BIRDEYE_WALLET_PNL_SUMMARY"}:undefined,forwardSignals:forwardReturns.length,closedPaperTrades:closedPaper.length,paperTrades:paper.length,forwardMeanPct:forwardMean,evidenceCompleteness:s.evidenceCompleteness,riskEvidenceCompleteness:s.riskEvidenceCompleteness,providerEvidenceCompletenessPct:p.evidenceCompletenessPct,verifiedRugExposurePct:verifiedRugExposure,catastrophicLossRatePct:catastrophicLossRate,skillScore:s.skillScore,currentFormScore:s.currentFormScore,activityScore:s.activityScore,forwardHitRatePct:s.forwardHitRatePct,unrealizedReliancePct:s.unrealizedReliancePct,distinctTokens30d,lastObservedTradeAt:lastActivityAt?.toISOString()??priorMeta?.lastObservedTradeAt,whaleTier,walletBalanceUsd,walletBalanceObservedAt,walletBalanceSource:whaleObs?String(whaleObs.source):priorCapitalSource,...(demoted?{autoPausedAt:stage==="PAUSED"?new Date().toISOString():priorMeta?.autoPausedAt??null,autoPausedReason:`copyability ${Math.round(s.copyabilityScore)} / risk ${Math.round(s.riskScore)} / evidence ${Math.round(s.evidenceCompleteness)} fell below live-trading floor`}:stage==="PAPER_TRACKING"&&autoPaused?{autoPausedAt:null,autoPausedReason:null}:{})}}});
         if(demoted){
           const traderId=c.traderId??(await db.smartWalletCandidate.findUnique({where:{id:c.id},select:{traderId:true}}))?.traderId;
           if(traderId){

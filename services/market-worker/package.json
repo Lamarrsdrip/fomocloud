@@ -8,7 +8,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo market-worker lint",
-    "test": "node --test dist/aggregate.test.js"
+    "test": "node --test dist/*.test.js"
   },
   "dependencies": {
     "@memecloud/db": "workspace:*",
@@ -17,7 +17,8 @@
     "@solana/web3.js": "^1.98.4",
     "ioredis": "^5.7.0",
     "@memecloud/config": "workspace:*",
-    "@memecloud/providers": "workspace:*"
+    "@memecloud/providers": "workspace:*",
+    "@memecloud/shared": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

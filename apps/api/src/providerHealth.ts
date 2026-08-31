@@ -14,7 +14,7 @@ export const PROVIDER_FINGERPRINT_FIELDS:Record<string,Record<string,string[]>>=
   execution:{jupiter:["jupiterBaseUrl","jupiterApiKey"],zeroX:["zeroXApiKey"]},
   marketData:{rpc:["solanaRpc","heliusRpc","fallbackRpc"],helius:["heliusApiKey"],birdeye:["birdeyeApiKey"]},
   signer:{privy:["privyAppId","privyAppSecret","privyAuthorizationPrivateKey","privySignerId","privyPolicyId"]},
-  social:{x:["xBearerToken"]},
+  social:{x:["xIntelligenceBearerToken","xBearerToken"]},
   brain:{bnb:["bnbWs"],eth:["ethWs"]},
   push:{push:["vapidPublicKey","vapidPrivateKey","subject"]},
   email:{smtp:["host","port","secure","user","pass","from"]}
@@ -120,8 +120,9 @@ async function testHelius(cfg:any):Promise<TestResult>{
   return result(state,stateMessage(state,"Helius",r!.status),{httpStatus:r!.status,latencyMs});
 }
 async function testX(cfg:any):Promise<TestResult>{
-  if(!cfg?.xBearerToken) return result("NOT_CONFIGURED","No X bearer token is saved yet.");
-  const {r,latencyMs,error}=await timedFetch("https://api.x.com/2/tweets/search/recent?query=test&max_results=10",{headers:{authorization:`Bearer ${cfg.xBearerToken}`}});
+  const bearer=cfg?.xIntelligenceBearerToken||cfg?.xBearerToken;
+  if(!bearer) return result("NOT_CONFIGURED","No X intelligence bearer token is saved yet.");
+  const {r,latencyMs,error}=await timedFetch("https://api.x.com/2/tweets/search/recent?query=test&max_results=10",{headers:{authorization:`Bearer ${bearer}`}});
   if(error) return result(classifyError(error),stateMessage(classifyError(error),"X API",undefined,error.message),{latencyMs});
   if(r!.ok) return result("CONNECTED","X API accepted the bearer token.",{httpStatus:r!.status,latencyMs});
   // X's free/basic search tier has an extremely tight rate limit -- 429 here is routine and must

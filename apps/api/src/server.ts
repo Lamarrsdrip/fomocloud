@@ -880,7 +880,15 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
     db.chainFlowObservation.findMany({where:{chain,mint},orderBy:{observedAt:"desc"},take:40}),
     db.catalystEvent.findFirst({where:{chain,mint},orderBy:{announcedAt:"desc"}})
   ]);
-  res.json({opportunity,flows,catalyst});
+  const addresses=[...new Set(flows.map(f=>f.walletAddress))];
+  const [candidates,signals,tokens]=await Promise.all([
+    addresses.length?db.smartWalletCandidate.findMany({where:{chain,address:{in:addresses}},take:200}):Promise.resolve([]),
+    addresses.length?db.signal.findMany({where:{chain,sourceWallet:{in:addresses},OR:[{outputMint:mint},{inputMint:mint}]},orderBy:{observedAt:"desc"},take:300}):Promise.resolve([]),
+    db.discoveryToken.findMany({where:{chain,mint},take:1})
+  ]);
+  const relationships=relationshipRows(flows,signals,new Map(candidates.map((c:any)=>[c.address,c])),new Map(tokens.map((t:any)=>[t.mint,t])));
+  const summary={distinctTrackedWallets:new Set(relationships.map(r=>r.walletAddress)).size,memeCloudPicks:relationships.filter(r=>r.source==="MemeCloud Pick").length,elite:relationships.filter(r=>r.stage==="PROVEN"&&Number(r.skillScore??0)>=90).length,proven:relationships.filter(r=>r.stage==="PROVEN").length,whales:relationships.filter(r=>r.isWhale).length,trackedBuyFlowUsd:relationships.reduce((n,r)=>n+r.boughtUsd,0),trackedSellFlowUsd:relationships.reduce((n,r)=>n+r.soldUsd,0),netTrackedInflowUsd:relationships.reduce((n,r)=>n+r.netFlowUsd,0),lastObservedHolding:relationships.filter(r=>r.state==="LAST_OBSERVED_HOLDING").length,partialExits:relationships.filter(r=>["TRIMMED","MOSTLY_EXITED"].includes(r.state)).length,fullExits:relationships.filter(r=>r.state==="EXITED").length};
+  res.json({opportunity,flows,catalyst,smartMoney:{relationships,summary}});
 }));
 
 // ------------------------ SMART WALLETS (public) ------------------------
@@ -896,7 +904,9 @@ function smartWalletSummary(c:any){
   const balanceObservedAt=meta.walletBalanceObservedAt??null;
   const balanceFresh=balanceObservedAt&&Date.now()-new Date(balanceObservedAt).getTime()<=7*24*60*60_000;
   const whaleTier=balanceFresh?meta.whaleTier??null:null;
-  const isWhale=Boolean(whaleTier&&meta.walletBalanceUsd!=null);
+  // A capital snapshot must explicitly identify its producer. Historical flow
+  // rows and a trade amount are not a wallet balance and cannot earn this badge.
+  const isWhale=Boolean(whaleTier&&meta.walletBalanceUsd!=null&&String(meta.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:"));
   const lastObservedTradeAt=meta.lastObservedTradeAt??null;
   return {
     id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
@@ -910,12 +920,43 @@ function smartWalletSummary(c:any){
     realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
     realizedPnl7dUsd:c.realizedPnl7dUsd??null,winRate7dPct:c.winRate7dPct??null,
     averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
-    rugExposurePct:c.rugExposurePct??meta.derivedRugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
-    source:c.source,sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
+    verifiedRugExposurePct:meta.verifiedRugExposurePct??null,catastrophicLossRatePct:meta.catastrophicLossRatePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
+    performance90d:meta.walletPnl90d?.tradeCount>=10?meta.walletPnl90d:null,earlyEntry:meta.earlyEntryProvenance?.sampleSize>=10?{edgePct:meta.earlyEntryEdgePct,provenance:meta.earlyEntryProvenance}:null,
+    source:c.source,sourceLabel:smartWalletSourceLabel(c,meta),sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
     // Never use a database update/scoring timestamp as blockchain activity.
     firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt,
     paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
   };
+}
+function smartWalletSourceLabel(c:any,meta:any){
+  if(meta?.curatedByPlatform||c.source==="MEMECLOUD_CURATED")return "MemeCloud Pick";
+  if(c.source==="PLATFORM_ADDED")return "Platform Added";
+  if(c.source==="TRADER_LEADERBOARD")return "Highly Followed Trader";
+  if(c.source==="TRUSTED_WALLET_NEIGHBORHOOD")return "Platform Tracked";
+  if(c.source==="PUMPFUN_HIGH_EARNER")return "Pump.fun High Earner";
+  return "Platform Tracked";
+}
+function rawBalanceState(raw:any){
+  if(raw==null||raw==="")return null;
+  try{return BigInt(String(raw))===0n?"EXITED":"LAST_OBSERVED_HOLDING"}catch{return null}
+}
+// A transaction balance is only an observed-at-that-transaction balance. It is
+// intentionally never presented as a current holding without a later balance
+// verification. This keeps wallet activity useful without inventing custody.
+function relationshipRows(flows:any[],signals:any[],candidateByAddress:Map<string,any>,tokens=new Map<string,any>()){
+  const grouped=new Map<string,any[]>();for(const f of flows){const k=`${f.walletAddress}:${f.mint}`;const a=grouped.get(k)??[];a.push(f);grouped.set(k,a);}
+  const byTx=new Map(signals.map((s:any)=>[`${s.sourceWallet}:${s.sourceTx}:${s.action}`,s]));
+  return [...grouped.values()].map(rows=>{
+    const ordered=[...rows].sort((a,b)=>a.observedAt.getTime()-b.observedAt.getTime()),last=ordered.at(-1)!;
+    const candidate=candidateByAddress.get(last.walletAddress),meta=candidate?.metadata??{};
+    const signal=byTx.get(`${last.walletAddress}:${last.txHash}:${last.side}`);
+    const balanceState=rawBalanceState(signal?.sourceTokenBalanceAfterRaw);
+    const buys=ordered.filter(x=>x.side==="BUY"),sells=ordered.filter(x=>x.side==="SELL");
+    const soldPct=signal?.sourceSoldPct==null?null:Number(signal.sourceSoldPct);
+    const state=balanceState??(last.side==="BUY"?(buys.length>1?"ADDED":"BOUGHT"):(soldPct!=null&&soldPct>=95?"EXITED":soldPct!=null&&soldPct>=75?"MOSTLY_EXITED":"TRIMMED"));
+    const boughtUsd=buys.reduce((n,x)=>n+Number(x.amountUsd??0),0),soldUsd=sells.reduce((n,x)=>n+Number(x.amountUsd??0),0);
+    return {chain:last.chain,mint:last.mint,token:tokens.get(last.mint)??null,walletAddress:last.walletAddress,label:candidate?.label??null,source:candidate?smartWalletSourceLabel(candidate,meta):"Tracked wallet",stage:candidate?.stage??"UNVERIFIED",skillScore:candidate?Number(meta.skillScore??candidate.copyabilityScore??0):null,isWhale:candidate?smartWalletSummary(candidate).isWhale:false,firstBuyAt:buys[0]?.observedAt??null,latestBuyAt:buys.at(-1)?.observedAt??null,latestActivityAt:last.observedAt,latestSide:last.side,latestTxHash:last.txHash,latestTrimOrSellAt:sells.at(-1)?.observedAt??null,boughtUsd,soldUsd,netFlowUsd:boughtUsd-soldUsd,eventCount:ordered.length,state,remainingPct:soldPct==null?null:Math.max(0,100-soldPct),lastObservedBalanceRaw:signal?.sourceTokenBalanceAfterRaw??null,balanceObservedAt:signal?.sourceTokenBalanceAfterRaw!=null?signal.observedAt:null,holdingVerification:balanceState?"LAST_OBSERVED_TRANSACTION_BALANCE":"PENDING_CURRENT_BALANCE_VERIFICATION",transactionUrl:last.chain==="SOLANA"?`https://solscan.io/tx/${last.txHash}`:null};
+  }).sort((a,b)=>b.latestActivityAt.getTime()-a.latestActivityAt.getTime());
 }
 app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
   const stageParam=String(req.query.stage??"").toUpperCase();
@@ -942,13 +983,14 @@ app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
 app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
   const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});
   if(!candidate)return res.status(404).json({error:"SMART_WALLET_NOT_FOUND"});
-  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:60});
+  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:120});
   const uniqueMints=[...new Set(recentFlow.map(f=>f.mint))].slice(0,20);
   const tokenRows=uniqueMints.length?await db.discoveryToken.findMany({where:{chain:candidate.chain,mint:{in:uniqueMints}},select:{mint:true,symbol:true,name:true,marketCapUsd:true,liquidityUsd:true}}):[];
   const tokenMap=new Map<string,any>(tokenRows.map((t:any)=>[t.mint,t]));
-  const currentTokens=[...new Map<string,any>(recentFlow.map((f:any)=>[f.mint,f])).values()].slice(0,10).map(f=>({mint:f.mint,chain:f.chain,side:f.side,amountUsd:f.amountUsd,lastSeenAt:f.observedAt,...(tokenMap.get(f.mint)||{})}));
+  const signals=await db.signal.findMany({where:{chain:candidate.chain,sourceWallet:candidate.address},orderBy:{observedAt:"desc"},take:150});
+  const relationships=relationshipRows(recentFlow,signals,new Map([[candidate.address,candidate]]),tokenMap);
   const recentActivity=recentFlow.map(f=>({...f,token:tokenMap.get(f.mint)||null}));
-  res.json({wallet:smartWalletSummary(candidate),recentActivity,currentTokens});
+  res.json({wallet:smartWalletSummary(candidate),recentActivity,relationships,currentTokens:relationships});
 }));
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   if(err?.message==="CORS_ORIGIN_DENIED") return res.status(403).json({error:"CORS_ORIGIN_DENIED"});

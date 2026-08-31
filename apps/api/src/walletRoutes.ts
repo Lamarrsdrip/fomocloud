@@ -1,7 +1,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferInstruction } from "@solana/spl-token";
+import {associatedTokenAddress,createAssociatedTokenAccountInstruction,createTokenTransferInstruction} from "./solanaToken.js";
 import { db } from "@memecloud/db";
 import { solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 import { getConfig } from "@memecloud/config";
@@ -226,8 +226,8 @@ walletRoutes.post("/v1/me/wallets/:id/send", auth, tradeLimiter, asyncRoute(asyn
     }else{
       const amountRaw=BigInt(Math.round(amount*1_000_000));
       const mint=new PublicKey(usdcMint);
-      const sourceAta=await getAssociatedTokenAddress(mint,fromPubkey);
-      const destAta=await getAssociatedTokenAddress(mint,toPubkey);
+      const sourceAta=associatedTokenAddress(mint,fromPubkey);
+      const destAta=associatedTokenAddress(mint,toPubkey);
       // Real bug found by a full-platform audit: catching every failure here as null (-> treated
       // as a genuine $0 balance) conflated two very different facts -- "this wallet's USDC token
       // account has never been created, so it really does hold zero" (legitimate, common, safe to
@@ -258,7 +258,7 @@ walletRoutes.post("/v1/me/wallets/:id/send", auth, tradeLimiter, asyncRoute(asyn
         if(solBalance<3_000_000)return res.status(409).json({error:"INSUFFICIENT_SOL_FOR_ATA",message:"The recipient has no USDC account yet and this wallet needs a small amount of SOL to create one."});
         instructions.push(createAssociatedTokenAccountInstruction(fromPubkey,destAta,toPubkey,mint));
       }
-      instructions.push(createTransferInstruction(sourceAta,destAta,fromPubkey,amountRaw));
+      instructions.push(createTokenTransferInstruction(sourceAta,destAta,fromPubkey,amountRaw));
     }
 
     const {blockhash}=await conn.getLatestBlockhash("confirmed");

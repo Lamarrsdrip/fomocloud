@@ -36,7 +36,13 @@ export default function SmartWalletsView(){
  const rows=useMemo(()=>{
   const now=Date.now();
   if(filter==="whales")return ranked.filter(w=>w.isWhale);
+  if(filter==="picks")return ranked.filter(w=>w.source==="MEMECLOUD_CURATED"||w.sourceLabel==="MemeCloud Pick");
+  if(filter==="elite")return ranked.filter(w=>w.intelligenceTier==="ELITE");
   if(filter==="proven")return ranked.filter(w=>w.stage==="PROVEN");
+  if(filter==="copyable")return ranked.filter(w=>w.copyEligible);
+  if(filter==="platform")return ranked.filter(w=>w.source==="PLATFORM_ADDED"||w.sourceLabel==="Platform Added");
+  if(filter==="verifying")return ranked.filter(w=>w.stage==="PAPER_TRACKING"||w.stage==="ANALYZING");
+  if(filter==="cooling")return ranked.filter(w=>w.lastActivityAt&&now-new Date(w.lastActivityAt).getTime()>=7*24*3600_000);
   if(filter==="new")return ranked.filter(w=>now-new Date(w.firstDiscoveredAt).getTime()<24*3600_000);
   if(filter==="hot")return ranked.filter(w=>w.lastActivityAt&&now-new Date(w.lastActivityAt).getTime()<24*3600_000&&(n(w.currentFormScore)>=55||n(w.copyabilityScore)>=65));
   return ranked;
@@ -55,7 +61,7 @@ export default function SmartWalletsView(){
   {wallets===null?<div className="loading" style={{minHeight:180}}>Loading…</div>:rows.length?<div className="token-list">{rows.map(w=>
    <div className="token-row" key={w.id} onClick={()=>open(w.id)}>
     <TokenAvatar symbol={w.address.slice(0,2)}/>
-    <div className="token-row-main"><b style={{wordBreak:"break-all"}}>{w.address}</b><small>{evidenceLabel(w)} · {activityLabel(w)}{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")||"Whale"}`:""}</small><small>{n(w.sampleTrades)} trades · {n(w.distinctTokens30d)} tokens tracked{w.realizedPnl7dUsd!=null?` · 7D ${money(w.realizedPnl7dUsd)}`:""}</small></div>
+    <div className="token-row-main"><b style={{wordBreak:"break-all"}}>{w.address}</b><small>{w.sourceLabel||"Platform Tracked"} · {evidenceLabel(w)} · {activityLabel(w)}{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")||"Whale"}`:""}</small><small>{n(w.sampleTrades)} trades · {n(w.distinctTokens30d)} tokens tracked{w.realizedPnl7dUsd!=null?` · 7D ${money(w.realizedPnl7dUsd)}`:""}</small></div>
     <div className="token-row-side"><span className={`status-badge ${w.stage==="PROVEN"?"":"watch"}`}>{w.winRatePct!=null?`${Math.round(w.winRatePct)}% win`:evidenceLabel(w)}</span><small>{w.stage==="PROVEN"?`Skill ${Math.round(n(w.skillScore,w.copyabilityScore))}`:`Evidence ${Math.round(n(w.evidenceCompleteness))}%`}</small></div>
    </div>)}</div>:<Empty icon={Users} title={degraded?"Wallet intelligence is delayed":"No qualified smart wallets yet"} body={degraded?"Scoring will resume automatically when providers recover.":"MemeCloud is hunting repeat profitable meme traders and whales from real chain activity. It does not manufacture a smart-wallet list from one lucky trade."}/>} 
   {(detail||detailBusy)&&<div className="wallet-chooser-wrap" onClick={()=>setDetail(null)}><div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
@@ -68,6 +74,7 @@ export default function SmartWalletsView(){
      <div><span>7D realized</span><b className={detail.wallet.realizedPnl7dUsd==null?"":n(detail.wallet.realizedPnl7dUsd)>=0?"positive":"negative"}>{detail.wallet.realizedPnl7dUsd==null?"Collecting data":money(detail.wallet.realizedPnl7dUsd)}</b></div>
      <div><span>Win rate</span><b>{detail.wallet.winRatePct!=null?`${Math.round(detail.wallet.winRatePct)}%`:"Collecting data"}</b></div>
      <div><span>Current form</span><b>{Math.round(n(detail.wallet.currentFormScore))}/100</b></div>
+     <div><span>90D realized</span><b className={detail.wallet.performance90d?"":""}>{detail.wallet.performance90d?money(detail.wallet.performance90d.realizedPnlUsd):"Not enough 90D history"}</b></div>
     </div>
     <div className="control-list" style={{marginBottom:12}}>
      <div><span><TrendingUp size={13}/> Skill score</span><b>{Math.round(n(detail.wallet.skillScore,detail.wallet.copyabilityScore))}/100</b></div>
@@ -81,7 +88,7 @@ export default function SmartWalletsView(){
      <div><span>Risk evidence</span><b>{Math.round(n(detail.wallet.riskEvidenceCompleteness))}%</b></div>
     </div>
     {detail.wallet.discoveryReason&&<div className="notice" style={{marginBottom:12}}><b>Why MemeCloud found this wallet</b><div style={{fontSize:11,marginTop:5}}>{detail.wallet.discoveryReason}</div></div>}
-    {detail.currentTokens?.length>0&&<><b style={{fontSize:11}}>Recent on-chain activity</b><div className="list" style={{margin:"8px 0 14px"}}>{detail.currentTokens.slice(0,8).map((t:any,i:number)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={i}><div><b>{t.symbol||t.name||`${t.mint.slice(0,8)}…`}</b><small>{t.side} · {t.amountUsd?money(t.amountUsd):"amount pending"} · {timeAgo(t.lastSeenAt)}</small></div><div style={{textAlign:"right"}}><small>{t.marketCapUsd?`MC ${money(t.marketCapUsd)}`:""}</small><small>{t.liquidityUsd?`Liq ${money(t.liquidityUsd)}`:""}</small></div></div>)}</div></>}
+    {detail.relationships?.length>0&&<><b style={{fontSize:11}}>Wallet-token relationships</b><div className="list" style={{margin:"8px 0 14px"}}>{detail.relationships.slice(0,8).map((t:any,i:number)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={i}><div><b>{t.token?.symbol||t.token?.name||`${t.mint.slice(0,8)}…`}</b><small>{t.state.replaceAll("_"," ")} · {t.netFlowUsd?money(t.netFlowUsd):"amount pending"} · {timeAgo(t.latestActivityAt)}</small><small>{t.holdingVerification==="LAST_OBSERVED_TRANSACTION_BALANCE"?`Last observed balance at ${timeAgo(t.balanceObservedAt)}`:"Current holding verification pending"}</small></div><div style={{textAlign:"right"}}><small>{t.remainingPct!=null?`${t.remainingPct.toFixed(0)}% after last sell`:""}</small><small>{t.token?.liquidityUsd?`Liq ${money(t.token.liquidityUsd)}`:""}</small></div></div>)}</div></>}
     <div style={{display:"flex",gap:8,marginTop:8}}>
      <button className="soft-action" style={{flex:1}} disabled={Boolean(actionBusy)} onClick={()=>setMode("WATCH_ONLY")}><Eye size={14}/> {actionBusy==="WATCH_ONLY"?"Adding…":"Watch"}</button>
      <button className="action-primary" style={{flex:1}} disabled={Boolean(actionBusy)||!detail.wallet.copyEligible} onClick={()=>setMode("AUTO_COPY")}><Zap size={14}/> {detail.wallet.copyEligible?(actionBusy==="AUTO_COPY"?"Enabling…":"Auto Copy"):"Copy after proven"}</button>

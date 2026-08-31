@@ -65,8 +65,8 @@ export function decisionActionLabel(action:string){return DECISION_ACTION_LABELS
 // Following" is deliberately NOT added -- it would need a genuine user-level wallet-follow
 // relationship that doesn't exist yet (distinct from Trader follows), a real backend feature, not
 // a client-side filter over data that isn't there. Flagged as remaining work, not faked here.
-export const SMART_MONEY_FILTERS=["all","hot","proven","new","whales"] as const;
-export function smartMoneyFilterLabel(f:string){return f==="hot"?"Hot Now":f==="new"?"Newly Found":f==="proven"?"Proven":f==="whales"?"Whales":"All"}
+export const SMART_MONEY_FILTERS=["all","hot","picks","elite","proven","copyable","platform","whales","new","verifying","cooling"] as const;
+export function smartMoneyFilterLabel(f:string){return f==="hot"?"Hot Now":f==="picks"?"MemeCloud Picks":f==="elite"?"Elite":f==="proven"?"Proven":f==="copyable"?"Copyable":f==="platform"?"Platform Added":f==="whales"?"Whales":f==="new"?"Newly Discovered":f==="verifying"?"Being Verified":f==="cooling"?"Cooling":"All"}
 
 export function positionMath(p:any){try{const original=BigInt(p.entryTokenRaw||"0"),remaining=BigInt(p.remainingTokenRaw||"0");const fraction=original>BigInt(0)?Number((remaining*BigInt(1000000))/original)/1_000_000:0;const remainingCost=Number(p.costUsd||0)*fraction;const currentValue=remainingCost+Number(p.unrealizedPnlUsd||0);const pnlPct=remainingCost>0?Number(p.unrealizedPnlUsd||0)/remainingCost*100:0;return{fraction,remainingCost,currentValue,pnlPct}}catch{return{fraction:0,remainingCost:0,currentValue:Number(p.unrealizedPnlUsd||0),pnlPct:0}}}
 

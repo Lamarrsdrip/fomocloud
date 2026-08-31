@@ -5,8 +5,9 @@ import {JupiterExecution} from "@memecloud/execution";
 import {BirdeyeClient} from "@memecloud/providers";
 import {startHeartbeat} from "@memecloud/ops";
 import {getConfig} from "@memecloud/config";
-import {cachedTokenDecimals,RpcBudget,solanaRpcCandidates,pickHealthyRpc} from "@memecloud/shared";
+import {cachedTokenDecimals,RpcBudget,solanaRpcCandidates,pickHealthyRpc,recordProviderMetric} from "@memecloud/shared";
 import {aggregateChainFlow} from "./aggregate.js";
+import {shouldRefreshMarketMint} from "./plan.js";
 
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const quoteUsd=Math.max(1,Number(process.env.MARKET_QUOTE_USD??10));
@@ -23,6 +24,7 @@ const sharedRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{
 });
 let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null;
 let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false;
+let jupiterRequests=0,rpcRequests=0,birdeyeRequests=0,quietTickExternalRequests=0,quietTickCacheHits=0,dbReads=0,redisReads=0;
 
 // Previously read once at process startup and cached forever — an Admin change to the RPC URL,
 // Jupiter API key, or Birdeye key silently had no effect until someone manually restarted this
@@ -34,7 +36,7 @@ async function reloadConfig(){
   conn=new Connection(rpc,"confirmed");
   jupiter=new JupiterExecution(execCfg?.jupiterBaseUrl||process.env.JUPITER_API_BASE,execCfg?.jupiterApiKey||process.env.JUPITER_API_KEY);
   const birdeyeKey=marketCfg?.birdeyeApiKey||process.env.BIRDEYE_API_KEY;
-  birdeye=birdeyeKey?new BirdeyeClient(birdeyeKey,marketCfg?.birdeyeBaseUrl):null;
+  birdeye=birdeyeKey?new BirdeyeClient(birdeyeKey,marketCfg?.birdeyeBaseUrl,{redis,service:"market-worker",priority:"P2"}):null;
 }
 await reloadConfig();
 
@@ -45,7 +47,10 @@ async function tokenMeta(mint:string){
     sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();
     throw Object.assign(new Error("SHARED_RPC_BUDGET_EXCEEDED"),{code:"SHARED_RPC_BUDGET_EXCEEDED"});
   }
+  const rpcStarted=Date.now();rpcRequests++;
+  await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenSupply",service:"market-worker",priority:"P2",providerClass:"CRITICAL",event:"request"});
   const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
+  await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenSupply",service:"market-worker",priority:"P2",providerClass:"CRITICAL",event:"success",latencyMs:Date.now()-rpcStarted});
   const v={decimals:supply.value.decimals,supply:Number(supply.value.uiAmountString??0),at:Date.now()};
   decimalsCache.set(mint,v);
   // Supply is mutable so this call must always stay fresh, but the decimals half never
@@ -71,12 +76,14 @@ async function trackedMints(){
   // loop is neither event-driven nor useful, and was the primary source of
   // avoidable Jupiter/Birdeye spend.
   const since=new Date(Date.now()-2*60*60_000);
+  dbReads+=3;
   const [positions,qualityWallets,signals]=await Promise.all([
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
     db.smartWalletCandidate.findMany({where:{OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true}]},select:{address:true},take:1000}),
     db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"},take:1500})
   ]);
   const addresses=[...new Set(qualityWallets.map(w=>w.address))];
+  if(addresses.length)dbReads++;
   const flows=addresses.length?await db.chainFlowObservation.findMany({
     where:{chain:"SOLANA",side:"BUY",walletAddress:{in:addresses},observedAt:{gte:since}},
     select:{mint:true,amountUsd:true,observedAt:true},orderBy:{observedAt:"desc"},take:2500
@@ -89,13 +96,16 @@ async function trackedMints(){
   // P2: their source signals. Raw discoveryToken rows are deliberately NOT a pricing source anymore.
   const unique=[...new Set([...positionMints,...walletMints,...signalMints])].filter(m=>!excluded.has(m));
   const maxTracked=Math.max(positionMints.length,Math.max(25,Number(process.env.WALLET_FIRST_MARKET_MINT_LIMIT??80)));
-  return unique.slice(0,maxTracked);
+  return {mints:unique.slice(0,maxTracked),openPositionMints:new Set(positionMints)};
 }
 
 async function jupiterMark(mint:string){
   const meta=await tokenMeta(mint);
   const amountRaw=String(Math.round(quoteUsd*1_000_000));
+  const started=Date.now();jupiterRequests++;
+  await recordProviderMetric(redis,{provider:"JUPITER",endpoint:"quote",service:"market-worker",priority:"P2",providerClass:"CRITICAL",event:"request"});
   const q=await jupiter.quote({inputMint:usdc,outputMint:mint,amountRaw,slippageBps:1500});
+  await recordProviderMetric(redis,{provider:"JUPITER",endpoint:"quote",service:"market-worker",priority:"P2",providerClass:"CRITICAL",event:"success",latencyMs:Date.now()-started});
   const tokens=Number(q.outAmount)/(10**meta.decimals);
   if(!Number.isFinite(tokens)||tokens<=0)throw new Error("INVALID_JUPITER_MARK");
   const priceUsd=quoteUsd/tokens,marketCapUsd=meta.supply>0?meta.supply*priceUsd:undefined;
@@ -134,13 +144,14 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
   // executable Jupiter price and observed wallet flow without spending four
   // additional Birdeye calls.
   const richKey=`market:rich:SOLANA:${mint}`;
-  if(await redis.get(richKey))return null;
+  redisReads++;if(await redis.get(richKey))return null;
   const [m,t,h,l]=await Promise.all([
     birdeye.marketData(mint),
     birdeye.tradeData(mint),
     birdeye.holderProfile(mint),
     birdeye.exitLiquidity(mint)
   ]);
+  birdeyeRequests+=4;
   const x=birdeye.normalizeMarket(m,t,h,l);
   const tokenInfo=birdeye.normalizeToken(m);
   // Jupiter's actual executable mark is preferred for price. Birdeye provides the deeper context.
@@ -163,7 +174,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
   return snap;
 }
 
-async function updateMint(mint:string){
+async function updateMint(mint:string,priority:"P0"|"P2"){
   try{
     const j=await jupiterMark(mint);
     const observedAt=new Date();
@@ -174,7 +185,11 @@ async function updateMint(mint:string){
       else await basicSnapshot(mint,j);
     }catch(e){enrichmentErrors++;console.error("[market-worker] enrichment",mint,e);await basicSnapshot(mint,j).catch(()=>{})}
     await db.marketPrice.create({data:{chain:"SOLANA",mint,priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:birdeye?"JUPITER_EXECUTABLE+BIRDEYE":"JUPITER_EXECUTABLE_QUOTE",observedAt}});
-    await redis.set(`price:SOLANA:${mint}`,JSON.stringify({priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt:observedAt.toISOString()}),"EX",90);
+    await redis.set(`price:SOLANA:${mint}`,JSON.stringify({priceUsd:j.priceUsd,marketCapUsd:j.marketCapUsd,liquidityUsd,source:"JUPITER_EXECUTABLE_QUOTE",observedAt:observedAt.toISOString()}),"EX",priority==="P0"?60:300);
+    // An open position is deliberately repriced every tick for stop/exit safety.
+    // A wallet-discovered research mint is due at most every five minutes unless a
+    // new on-chain event clears this key. This is the quiet-day guarantee.
+    if(priority!=="P0")await redis.set(`market:due:SOLANA:${mint}`,"1","EX",300);
     updates++;
     const old=await db.marketPrice.findMany({where:{chain:"SOLANA",mint},orderBy:{observedAt:"desc"},skip:1440,take:500,select:{id:true}});
     if(old.length)await db.marketPrice.deleteMany({where:{id:{in:old.map(x=>x.id)}}});
@@ -200,19 +215,32 @@ async function tick(){
   if(running)return;running=true;
   try{
     await reloadConfig().catch(e=>console.error("[market-worker] config reload failed, keeping previous clients",e));
-    const mints=await trackedMints();tracked=mints.length;
+    const plan=await trackedMints();const mints=plan.mints;tracked=mints.length;
+    const before={jupiter:jupiterRequests,rpc:rpcRequests,birdeye:birdeyeRequests};
+    let cacheHits=0;
     const errorsBefore=quoteErrors;
     // Avoid bursting provider limits. Admin can run more workers later if the paid plan supports it.
     const batch=Math.max(1,Math.min(8,Number(process.env.MARKET_BATCH_SIZE??4)));
     for(let i=0;i<mints.length;i+=batch){
-      await Promise.all(mints.slice(i,i+batch).map(updateMint));
+      await Promise.all(mints.slice(i,i+batch).map(async mint=>{
+        const priority=plan.openPositionMints.has(mint)?"P0":"P2";
+        if(priority!=="P0"){
+          redisReads++;
+          const dueCachePresent=Boolean(await redis.get(`market:due:SOLANA:${mint}`));
+          if(!shouldRefreshMarketMint(false,dueCachePresent)){cacheHits++;return;}
+        }
+        await updateMint(mint,priority);
+      }));
       await new Promise(r=>setTimeout(r,adaptiveDelayMs));
     }
+    quietTickCacheHits=cacheHits;
+    quietTickExternalRequests=(jupiterRequests-before.jupiter)+(rpcRequests-before.rpc)+(birdeyeRequests-before.birdeye);
     if(quoteErrors>errorsBefore)adaptiveDelayMs=Math.min(maxDelayMs,Math.round(adaptiveDelayMs*1.6));
     else adaptiveDelayMs=Math.max(baseDelayMs,Math.round(adaptiveDelayMs*0.85));
   }finally{running=false}
 }
 startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enrichmentErrors,adaptiveDelayMs,richProvider:birdeye?"BIRDEYE":"NOT_CONFIGURED",running,
+  jupiterRequests,rpcRequests,birdeyeRequests,quietTickExternalRequests,quietTickCacheHits,dbReads,redisReads,
   sharedRpcBudgetPriority:"P2",sharedRpcBudgetDenied:sharedBudgetDenied,
   lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null
 }));

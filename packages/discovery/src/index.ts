@@ -14,6 +14,7 @@ export type CandidateMetrics={
   distinctTokens30d?:number;
   lastActivityHours?:number;
   earlyEntryEdgePct?:number;
+  catastrophicLossRatePct?:number;
   providerEvidenceCompletenessPct?:number;
 };
 const clamp=(n:number,a=0,b=100)=>Math.min(b,Math.max(a,n));
@@ -83,7 +84,10 @@ export function scoreWallet(m:CandidateMetrics){
   // assumed-zero risk field. Provider completeness, risk provenance, observed behavior and forward
   // outcomes all contribute. Unknown stays unknown and can never look fully verified.
   const evidenceCompleteness=clamp(providerEvidence*.35+riskEvidence*.25+behaviorEvidence*.20+forwardEvidence*.20);
-  const riskScore=clamp(insiderPenalty+rugPenalty+Math.max(0,48-winRate)*.34+Math.max(0,unrealizedReliance-70)*.12);
+  // A -70% outcome is catastrophic performance evidence, not proof of a rug.
+  // Only a separately verified token-structure signal may enter rugExposurePct.
+  const catastrophicPenalty=clamp((m.catastrophicLossRatePct??0)*.25,0,20);
+  const riskScore=clamp(insiderPenalty+rugPenalty+catastrophicPenalty+Math.max(0,48-winRate)*.34+Math.max(0,unrealizedReliance-70)*.12);
 
   const entryQuality=clamp(52+forward*.78+(earlyEdge-50)*.22-chasePenalty);
   const skillScore=clamp(
@@ -162,4 +166,3 @@ export function shouldProve(
     (s.entryQualityScore??60)>=58&&(s.currentFormScore??55)>=50&&(s.activityScore??50)>=40&&
     (s.forwardHitRatePct??55)>=55;
 }
-

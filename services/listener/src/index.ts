@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { db } from "@memecloud/db";
 import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
-import { solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
+import { solanaRpcCandidates, pickHealthyRpc, RpcBudget, recordProviderMetric } from "@memecloud/shared";
 import { classifySwap } from "./parsing.js";
 
 const marketCfg=await getConfig<any>("marketData");
@@ -14,12 +14,36 @@ const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[listener]");
 // without a manual restart — this was previously read once at process startup and cached forever.
 let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
+const capitalRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))});
+const USDC_MINT=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const queue=new Queue("signals",{connection:redis});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
 const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
 const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
+let capitalSnapshots=0,capitalSnapshotErrors=0,lastCapitalSnapshotAt=0;
+
+function conservativeWhaleTier(usdcLowerBound:number){
+  if(usdcLowerBound>=10_000_000)return "WHALE_10M";if(usdcLowerBound>=2_000_000)return "WHALE_2M";if(usdcLowerBound>=1_000_000)return "WHALE_1M";if(usdcLowerBound>=100_000)return "WHALE_100K";if(usdcLowerBound>=50_000)return "WHALE_50K";return null;
+}
+async function refreshOneCapitalSnapshot(){
+  if(Date.now()-lastCapitalSnapshotAt<60_000)return;
+  const staleBefore=new Date(Date.now()-6*3600_000).toISOString();
+  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",OR:[{adminWatched:true},{stage:"PROVEN"}]},orderBy:{updatedAt:"asc"},take:200});
+  const candidate=candidates.find(c=>{const m=(c.metadata??{}) as any;return !m.walletBalanceObservedAt||m.walletBalanceObservedAt<staleBefore});
+  if(!candidate)return;
+  const granted=await capitalRpcBudget.tryAcquire("P1");if(!granted.granted)return;
+  lastCapitalSnapshotAt=Date.now();const started=Date.now();
+  try{
+    await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"request"});
+    const accounts=await conn.getParsedTokenAccountsByOwner(new PublicKey(candidate.address),{mint:USDC_MINT},"confirmed");
+    const usdcLowerBound=accounts.value.reduce((sum,a)=>sum+Number((a.account.data as any)?.parsed?.info?.tokenAmount?.uiAmountString??0),0);
+    await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"success",latencyMs:Date.now()-started});
+    const prior=(candidate.metadata??{}) as any,observedAt=new Date().toISOString();
+    await db.smartWalletCandidate.update({where:{id:candidate.id},data:{metadata:{...prior,walletBalanceUsd:usdcLowerBound,walletBalanceObservedAt:observedAt,walletBalanceSource:"WALLET_CAPITAL_SNAPSHOT:SOLANA_USDC_LOWER_BOUND",walletCapitalSnapshotScope:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",whaleTier:conservativeWhaleTier(usdcLowerBound)}}});capitalSnapshots++;
+  }catch(e){capitalSnapshotErrors++;await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"error"}).catch(()=>{});console.error("[listener] capital snapshot",candidate.address,e)}
+}
 
 // tokenDeltas/ownerMintBalanceRaw/classifySwap moved to ./parsing.ts so they're testable without
 // triggering this file's top-level side effects (config fetch, RPC connection, Redis/BullMQ
@@ -55,7 +79,13 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   // the old chain-wide all-logs firehose for normal production, while preserving the exact flow rows
   // Brain/market/scoring already consume.
   const observedAt=tx.blockTime?new Date(tx.blockTime*1000):new Date();
-  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
+  const capitalCandidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}},select:{metadata:true}}).catch(()=>null);
+  const capital=(capitalCandidate?.metadata??{}) as any;
+  const capitalFresh=capital.walletBalanceObservedAt&&Date.now()-new Date(capital.walletBalanceObservedAt).getTime()<7*24*3600_000&&String(capital.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:");
+  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",walletBalanceUsd:capitalFresh?Number(capital.walletBalanceUsd??0):undefined,walletTier:capitalFresh?capital.whaleTier??undefined:undefined,observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
+  // A new monitored-wallet transaction is the event that makes this mint due
+  // immediately. The market worker otherwise keeps its five-minute quiet cache.
+  await redis.del(`market:due:SOLANA:${tokenMint}`).catch(()=>{});
   // A token record exists only because a monitored wallet touched it. This is metadata for the
   // wallet-triggered research pipeline, not a resurrection of broad New Token Radar scanning.
   await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:tokenMint}},update:{lastSeenAt:observedAt},create:{chain:"SOLANA",mint:tokenMint,source:"WALLET_TRIGGERED",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{firstSourceWallet:wallet,firstSourceTx:signature}}}).catch(()=>{});
@@ -157,8 +187,9 @@ async function refreshWatchlist(){
       console.log("[listener] watching",tw.trader.handle,tw.address);
     }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
   }
+  await refreshOneCapitalSnapshot();
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,capitalSnapshots,capitalSnapshotErrors,capitalSnapshotMethod:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND"}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 console.log("[listener] running");

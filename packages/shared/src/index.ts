@@ -367,6 +367,16 @@ export {
   type TokenBucketState,
   type TokenBucketResult,
 } from "./rpcBudget.js";
+export {
+  cachedProviderRequest,
+  readProviderMetrics,
+  recordProviderMetric,
+  reserveProviderBudget,
+  type ProviderRedis,
+  type ProviderMetric,
+  type ProviderPriority,
+  type ProviderClass,
+} from "./providerControl.js";
 
 // Real bug found by audit: every Solana-RPC-consuming service (market-worker, exits, balance-
 // worker, listener, paper-worker, executor, apps/api) independently did `heliusRpc||solanaRpc||

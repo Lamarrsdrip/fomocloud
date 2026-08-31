@@ -15,7 +15,8 @@
     "@memecloud/providers": "workspace:*",
     "@memecloud/discovery": "workspace:*",
     "@memecloud/config": "workspace:*",
-    "@memecloud/ops": "workspace:*"
+    "@memecloud/ops": "workspace:*",
+    "ioredis":"^5.7.0"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

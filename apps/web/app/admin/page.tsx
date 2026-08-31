@@ -1,7 +1,7 @@
 "use client";
 import {useEffect,useState} from "react";
 import {apiFetch,plainError} from "../../lib/api";
-import {Users,Radio,WalletCards,Settings2,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Gauge,SlidersHorizontal,Home,Coins,Fish,AlertTriangle,Layers} from "lucide-react";
+import {Users,Radio,WalletCards,Settings2,Send,Activity,ShieldCheck,BarChart3,RefreshCw,Gauge,SlidersHorizontal,Home,Coins,Fish,AlertTriangle,Layers,ChartNoAxesCombined} from "lucide-react";
 import {BrandGlyph} from "../../components/BrandGlyph";
 import {Overview} from "../../components/admin/Overview";
 import {BrainAdmin} from "../../components/admin/BrainAdmin";
@@ -17,10 +17,11 @@ import {Broadcasts} from "../../components/admin/Broadcasts";
 import {Audit} from "../../components/admin/Audit";
 import {Health} from "../../components/admin/Health";
 import {Config} from "../../components/admin/Config";
+import {ProviderUsage} from "../../components/admin/ProviderUsage";
 
 const sections=[
  ["overview","Control",Gauge],["brain","Global Brain",BarChart3],["tokens","Tokens",Coins],["whales","Whales",Fish],["users","Users",Users],["traders","Wallets",Radio],["signals","Decisions",Activity],
- ["trades","Live Trades",WalletCards],["positions","Positions",Layers],["failed","Failed Trades",AlertTriangle],["config","Settings",SlidersHorizontal],["broadcasts","Messages",Send],["audit","Audit",ShieldCheck],["health","Health",Activity]
+ ["trades","Live Trades",WalletCards],["positions","Positions",Layers],["failed","Failed Trades",AlertTriangle],["usage","API Usage",ChartNoAxesCombined],["config","Settings",SlidersHorizontal],["broadcasts","Messages",Send],["audit","Audit",ShieldCheck],["health","Health",Activity]
 ] as const;
 const navGroups=[
  ["OVERVIEW",["overview"]],
@@ -29,7 +30,7 @@ const navGroups=[
  ["TRADING",["trades","positions","signals","failed"]],
  ["USERS",["users"]],
  ["CONFIGURATION",["config"]],
- ["SYSTEM",["broadcasts","audit","health"]]
+ ["SYSTEM",["usage","broadcasts","audit","health"]]
 ] as const;
 
 export default function Admin(){
@@ -59,6 +60,7 @@ export default function Admin(){
   if(which==="broadcasts")r=await apiFetch("/v1/admin/broadcasts");
   if(which==="audit")r=await apiFetch("/v1/admin/audit");
   if(which==="health")r=await apiFetch("/v1/admin/health");
+  if(which==="usage")r=await apiFetch("/v1/admin/provider-usage");
   setData(r);
  }catch(e:any){
   if(e?.status===401){if(opts.background){setErr(plainError(e))}else{window.location.replace("/login/")};return}
@@ -85,9 +87,9 @@ export default function Admin(){
     {tab==="broadcasts"&&<Broadcasts d={data} reload={()=>load("broadcasts",{background:true})} admin={me?.role==="OWNER"}/>}
     {tab==="audit"&&<Audit d={data}/>}
     {tab==="health"&&<Health d={data}/>}
+    {tab==="usage"&&<ProviderUsage d={data}/>}
    </>}
   </section>
   <nav className="admin-mobile-nav">{sections.slice(0,6).map(([id,label,Icon])=><button key={id} className={tab===id?"active":""} onClick={()=>change(id)}><Icon size={18}/><span>{label}</span></button>)}</nav>
  </main>
 }
-

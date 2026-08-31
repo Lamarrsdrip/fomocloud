@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import {cachedProviderRequest,type ProviderRedis,type ProviderPriority} from "@memecloud/shared";
 
 export type ChainName = "solana"|"base"|"ethereum"|"bsc"|"arbitrum"|"avalanche";
 
@@ -23,10 +24,18 @@ function str(x:any,...paths:string[]):string|undefined{
 }
 
 export class BirdeyeClient{
-  constructor(private apiKey:string,private base="https://public-api.birdeye.so"){}
+  constructor(private apiKey:string,private base="https://public-api.birdeye.so",private control?:{redis?:ProviderRedis;service?:string;priority?:ProviderPriority}){}
   private headers(chain:ChainName="solana"){return {"accept":"application/json","X-API-KEY":this.apiKey,"x-chain":chain}}
   private async get(path:string,params:Record<string,any>,chain:ChainName="solana"){
-    return jsonFetch(`${this.base}${path}?${qs(params)}`,{headers:this.headers(chain)});
+    // Provider data is shared by endpoint + chain + canonical parameters across
+    // workers.  Fast market data gets a short TTL; structure/profile endpoints
+    // intentionally live longer.  Errors are negatively cached briefly.
+    const kind=path.includes("holder-profile")||path.includes("exit-liquidity")?"structure":path.includes("market-data")||path.includes("trade-data")?"market":"wallet";
+    const ttlMs=kind==="market"?30_000:kind==="structure"?15*60_000:5*60_000;
+    const canonical=Object.entries(params).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join("&");
+    return cachedProviderRequest(this.control?.redis,`birdeye:${chain}:${path}:${canonical}`,{
+      provider:"BIRDEYE",endpoint:path,service:this.control?.service??"unknown",priority:this.control?.priority??"P3",providerClass:"OPTIONAL",ttlMs,negativeTtlMs:45_000
+    },()=>jsonFetch(`${this.base}${path}?${qs(params)}`,{headers:this.headers(chain)}));
   }
   async topTraders(token:string,timeFrame="30d",limit=50){
     // Real bug found by audit: Birdeye's own top_traders endpoint hard-caps limit at 1-10 --

@@ -160,6 +160,18 @@ export function didStateUpgrade(priorNotifiedState:BrainState|null|undefined,new
 }
 export function isNewConvergence(convergentCount:number,priorConvergentCount:number):boolean{return convergentCount>=5&&convergentCount>priorConvergentCount;}
 
+export type WalletConvergenceStage="NONE"|"OBSERVED"|"RESEARCH_PRIORITY"|"SMART_MONEY_CONVERGENCE"|"MONEY_RUSH_CANDIDATE";
+/** Product thresholds are based on distinct wallets; repeated buys never increase this count. */
+export function classifyWalletConvergence(distinctQualifiedWallets:number,strongIndependentWallets=distinctQualifiedWallets):WalletConvergenceStage{
+  const distinct=Math.max(0,Math.floor(distinctQualifiedWallets));
+  const strong=Math.max(0,Math.min(distinct,Math.floor(strongIndependentWallets)));
+  if(distinct>=10&&strong>=10)return "MONEY_RUSH_CANDIDATE";
+  if(distinct>=5&&strong>=5)return "SMART_MONEY_CONVERGENCE";
+  if(distinct>=3)return "RESEARCH_PRIORITY";
+  if(distinct>=1)return "OBSERVED";
+  return "NONE";
+}
+
 const CONVERGENCE_WEIGHT:Record<string,number>={PROVEN:2.5,PAPER_TRACKING:1,ANALYZING:.35,DISCOVERED:.2};
 export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?:number|null;currentFormScore?:number|null;earlyRepeatHits?:number|null}[]):number{
   return Number(wallets.reduce((sum,w)=>{
