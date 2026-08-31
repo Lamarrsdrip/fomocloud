@@ -2,10 +2,11 @@
 import {useEffect,useMemo,useState} from "react";
 import dynamic from "next/dynamic";
 import {
-  Home,WalletCards,Bell,Settings2,TrendingUp,Zap,Play,Pause,Search
+  Home,WalletCards,Bell,TrendingUp,Zap,Play,Pause,Search,Menu
 } from "lucide-react";
 import {apiFetch,logout,plainError} from "../../lib/api";
 import {initials} from "../../lib/format";
+import {MOBILE_NAV_IDS,normalizeAppView,type AppView} from "../../lib/appNavigation";
 import {BrandGlyph} from "../../components/BrandGlyph";
 import CommunityView from "../../components/CommunityView";
 import TradeView from "../../components/TradeView";
@@ -18,21 +19,20 @@ import HomeView from "../../components/HomeView";
 import DiscoverView from "../../components/DiscoverView";
 import TradersView from "../../components/TradersView";
 import ProfileView from "../../components/ProfileView";
+import MoreView from "../../components/MoreView";
 const EmbeddedWalletPanel=dynamic(()=>import("../../components/EmbeddedWalletPanel"),{ssr:false});
 
-type View="home"|"discover"|"trade"|"positions"|"wallet"|"profile"|"traders"|"community"|"social"|"activity"|"smart-wallets";
-const nav:[View,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["smart-wallets","Smart Money",Search],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["wallet","Wallet",WalletCards],["profile","Account",Settings2]];
-// A mobile dock needs decisive actions, not every destination. Smart Money remains one tap from
-// Hunt while account settings stay reachable from the avatar/Account route.
-const mobileNav=nav.filter(([id])=>id!=="smart-wallets");
+const nav:[AppView,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["trade","Trade",Zap],["positions","Wallet",WalletCards],["smart-wallets","Smart Money",Search],["more","More",Menu]];
+const navById=new Map(nav.map(item=>[item[0],item]));
+const mobileNav=MOBILE_NAV_IDS.map(id=>navById.get(id)!);
 
-function initialView():View{
+function initialView():AppView{
   if(typeof window==="undefined") return "home";
-  const q=new URLSearchParams(location.search).get("view") as View|null;
-  return nav.some(x=>x[0]===q)?q!:"home";
+  return normalizeAppView(new URLSearchParams(location.search).get("view"),location.pathname);
 }
 export default function AppPage(){
-  const[view,setViewState]=useState<View>("home");
+  const[view,setViewState]=useState<AppView>("home");
+  const[focusSection,setFocusSection]=useState<"notifications"|"security"|null>(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState("");
   const[me,setMe]=useState<any>(null);
@@ -54,11 +54,16 @@ export default function AppPage(){
   const[newTokenRadar,setNewTokenRadar]=useState<any[]>([]);
   const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
-  // Fund opens money management, never profile/security settings.
+  // Funding is an overlay action. It must never mutate the current destination.
   const[fundSignal,setFundSignal]=useState(0);
 
-  function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
-  function openFund(){setSelectedMint(null);setView("wallet");setFundSignal(x=>x+1)}
+  function navigate(v:AppView,anchor?:"notifications"|"security"){
+    setSelectedMint(null);setViewState(v);setFocusSection(anchor||null);
+    const params=new URLSearchParams({view:v});if(anchor)params.set("section",anchor);
+    history.pushState(null,"",`/app/?${params}`);
+  }
+  function setView(v:AppView){navigate(v)}
+  function openFund(){setFundSignal(x=>x+1)}
   async function load(){
     setLoading(true);setError("");
     try{
@@ -80,7 +85,14 @@ export default function AppPage(){
       setError(plainError(e));
     }finally{setLoading(false)}
   }
-  useEffect(()=>{setViewState(initialView());void load()},[]);
+  useEffect(()=>{
+    setViewState(initialView());
+    const initialSection=new URLSearchParams(location.search).get("section");
+    if(initialSection==="notifications"||initialSection==="security")setFocusSection(initialSection);
+    const onPop=()=>{setSelectedMint(null);setViewState(initialView());const section=new URLSearchParams(location.search).get("section");setFocusSection(section==="notifications"||section==="security"?section:null)};
+    addEventListener("popstate",onPop);void load();return()=>removeEventListener("popstate",onPop);
+  },[]);
+  useEffect(()=>{if(view==="profile"&&focusSection)setTimeout(()=>document.getElementById(`profile-${focusSection}`)?.scrollIntoView({behavior:"smooth",block:"start"}),0)},[view,focusSection]);
   useEffect(()=>{
     let stopped=false;
     const refreshLive=async()=>{
@@ -119,7 +131,7 @@ export default function AppPage(){
     <div className="app-layout">
       <aside className="app-sidebar">
         <a className="brand" href="/"><span className="brandmark small"><BrandGlyph size={18}/></span><b>MemeCloud</b></a>
-        <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={16}/>{label}</button>)}</nav>
+        <nav className="app-nav">{nav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id||id==="more"&&!MOBILE_NAV_IDS.includes(view)?"active":""}><Icon size={16}/>{label}</button>)}</nav>
         <div className="sidebar-bottom">
           <div className="user-mini"><div className="avatar">{initials(me?.displayName||me?.email)}</div><div><b>{me?.displayName||"Your account"}</b><small>{me?.email||me?.wallets?.[0]?.address?.slice(0,10)||"Wallet account"}</small></div></div>
         </div>
@@ -128,13 +140,14 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="wallet"?"Wallet":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Wallet":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":view==="more"?"More":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
-            <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
+            <button className="icon-btn notification-button" onClick={()=>navigate("profile","notifications")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
           </div>
         </div>
         {error&&<div className="auth-error" style={{marginBottom:12}}>{error}</div>}
+        <EmbeddedWalletPanel me={me} reload={load} openReceiveSignal={fundSignal} showCard={view==="positions"}/>
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint} onFund={openFund}/>}
         {view==="discover"&&<DiscoverView brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="smart-wallets"&&<SmartWalletsView/>}
@@ -143,12 +156,12 @@ export default function AppPage(){
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="social"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
-        {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard} me={me} reload={load}/>}
-        {view==="wallet"&&<section className="app-card"><div className="card-title"><div><span>MONEY</span><h2>Receive, fund, and manage your wallet</h2></div></div><EmbeddedWalletPanel me={me} reload={load} openReceiveSignal={fundSignal}/></section>}
+        {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard}/>}
+        {view==="more"&&<MoreView navigate={navigate}/>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView} openReceiveSignal={fundSignal}/>}
         </>}
       </section>
     </div>
-    <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
+    <nav className="mobile-app-nav" aria-label="Primary">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>setView(id)} className={view===id||id==="more"&&!MOBILE_NAV_IDS.includes(view)?"active":""}><Icon size={19}/><span>{label}</span></button>)}</nav>
   </main>
 }

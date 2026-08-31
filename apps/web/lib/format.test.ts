@@ -82,7 +82,7 @@ test("decisionActionLabel: known actions map to plain language, unknown falls ba
 
 test("smartMoneyFilterLabel: maps each filter id to its display label, defaulting to All", () => {
   assert.equal(smartMoneyFilterLabel("hot"), "Hot Now");
-  assert.equal(smartMoneyFilterLabel("new"), "Newly Found");
+  assert.equal(smartMoneyFilterLabel("new"), "Newly Discovered");
   assert.equal(smartMoneyFilterLabel("proven"), "Proven");
   assert.equal(smartMoneyFilterLabel("whales"), "Whales");
   assert.equal(smartMoneyFilterLabel("all"), "All");

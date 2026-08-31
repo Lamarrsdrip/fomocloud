@@ -38,7 +38,7 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
    <button onClick={onFund}><ArrowDownToLine size={18}/><span>Fund</span></button>
    <button onClick={()=>setView("trade")}><Zap size={18}/><span>Trade</span></button>
    <button onClick={()=>setView("discover")}><TrendingUp size={18}/><span>Discover</span></button>
-   <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Portfolio</span></button>
+   <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Wallet</span></button>
   </div>
   <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div>{brainDegraded&&<span className="status-badge watch">Degraded</span>}</div>
    {brainDegraded?<p style={{fontSize:11,color:"#8a8fa0",margin:0}}>The market data provider is rate-limited right now, so these counts aren't updating. Not a sign the market is quiet -- existing counts just aren't live.</p>:

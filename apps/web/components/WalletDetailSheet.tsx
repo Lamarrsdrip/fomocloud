@@ -29,8 +29,9 @@ function BalanceHeader({ walletId }: { walletId: string }) {
     <small style={{color:stale?"#f7b95f":"#8a8fa0"}}>{data.loading?"Reading your wallet from Solana…":data.fetchError?<button className="soft-action" style={{padding:"3px 8px"}} onClick={data.reload}>Retry balance</button>:stale?"Balance update delayed":`SOL ${sol?Number(sol.amount).toLocaleString(undefined,{maximumFractionDigits:4}):"0"}`}</small>
   </div>;
 }
-export function WalletDetailSheet({ wallet, onClose, onSent }: { wallet: { id: string; address: string }; onClose: () => void; onSent?: () => void }) {
-  const [tab, setTab] = useState<Tab>("home");
+export function WalletDetailSheet({ wallet, onClose, onSent, initialTab="home" }: { wallet: { id: string; address: string }; onClose: () => void; onSent?: () => void; initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  useEffect(()=>setTab(initialTab),[initialTab]);
   const content=tab==="receive"?<ReceiveTab address={wallet.address}/>:tab==="send"?<SendTab walletId={wallet.id} onSent={onSent}/>:tab==="history"?<HistoryTab walletId={wallet.id}/>:tab==="security"?<><AccessTab walletId={wallet.id} onRevoked={onClose}/><div style={{height:12}}/><SecurityTab address={wallet.address} walletId={wallet.id}/></>:null;
   return <div className="wallet-chooser-wrap" onClick={onClose}>
     <div className="wallet-chooser-sheet" onClick={(e)=>e.stopPropagation()}>

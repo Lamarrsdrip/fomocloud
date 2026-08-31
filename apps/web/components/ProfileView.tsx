@@ -67,7 +67,7 @@ export default function ProfileView({me,setMe,settings,notifications,sessions,se
     {me?.role==="OWNER"&&<div className="switch-row"><div><b>Admin Command Center</b><small>Owner platform controls</small></div><a className="soft-action" href="/admin/">Open Admin</a></div>}
    </section>
 
-   <section className="settings-block"><h3>Notifications</h3>
+   <section className="settings-block" id="profile-notifications"><h3>Notifications</h3>
     <div className="switch-row"><div><b>MemeCloud alerts</b><small>{
      !masterNotifications?"Paused — no push alerts will be sent.":
      pushState==="on"?"On — smart-wallet trades, whales, alpha discoveries, trades and security alerts are included automatically.":
@@ -82,7 +82,7 @@ export default function ProfileView({me,setMe,settings,notifications,sessions,se
     <div className="switch-row"><div><b>Notification inbox</b><small>{unread?`${unread} unread alert${unread===1?"":"s"}`:"You're caught up"}</small></div>{unread?<button className="soft-action" onClick={markNotificationsRead}>Mark read</button>:<span className="status-badge">Clear</span>}</div>
    </section>
 
-   <section className="settings-block"><h3>Security</h3>
+   <section className="settings-block" id="profile-security"><h3>Security</h3>
     <div className="switch-row"><div><b>Signed-in devices</b><small>{sessions?.length||0} active session{sessions?.length===1?"":"s"}</small></div><button className="soft-action" onClick={()=>setSessionsOpen(true)}>Manage</button></div>
     <SessionsSheet open={sessionsOpen} sessions={sessions} onClose={()=>setSessionsOpen(false)} onRevoke={revokeSession} onRevokeOthers={async()=>{await apiFetch("/v1/me/sessions",{method:"DELETE"});await reload()}}/>
     <button className="soft-action" style={{width:"100%",marginTop:12}} onClick={signOut}><LogOut size={13}/> Sign out</button>

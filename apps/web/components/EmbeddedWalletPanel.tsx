@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PrivyProvider, usePrivy, useLoginWithEmail, useSigners, useUser } from "@privy-io/react-auth";
 import { useWallets, useCreateWallet } from "@privy-io/react-auth/solana";
 import { apiFetch, plainError } from "../lib/api";
-import { Wallet as WalletIcon, Copy } from "lucide-react";
+import { Wallet as WalletIcon, Copy, X } from "lucide-react";
 import { WalletDetailSheet } from "./WalletDetailSheet";
 
 type Step = "idle" | "email" | "code" | "creating" | "delegating" | "registering" | "done";
@@ -18,7 +18,7 @@ type Step = "idle" | "email" | "code" | "creating" | "delegating" | "registering
 // PrivyProvider is mounted here, not wrapped separately, because EmbeddedWalletPanelInner calls
 // Privy's hooks unconditionally -- those throw if rendered without a real, ready PrivyProvider
 // ancestor, so the provider must never render its children until pubConfig has actually resolved.
-export default function EmbeddedWalletPanel(props: { me: any; reload: () => Promise<void>; openReceiveSignal?: number }) {
+export default function EmbeddedWalletPanel(props: { me: any; reload: () => Promise<void>; openReceiveSignal?: number; showCard?: boolean }) {
   const [pubConfig, setPubConfig] = useState<any>(undefined);
   useEffect(() => {
     let live = true;
@@ -51,7 +51,7 @@ export default function EmbeddedWalletPanel(props: { me: any; reload: () => Prom
 // separate Phantom wallet. The backend independently re-verifies every claim this component makes
 // (see verifyPrivyDelegation in apps/api/src/server.ts) before ever marking the wallet trading-
 // enabled, so nothing here is trusted blindly server-side.
-function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: { me: any; reload: () => Promise<void>; pubConfig: any; openReceiveSignal?: number }) {
+function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal, showCard=false }: { me: any; reload: () => Promise<void>; pubConfig: any; openReceiveSignal?: number; showCard?: boolean }) {
   const { ready, authenticated, logout } = usePrivy();
   const { user, refreshUser } = useUser();
   const { sendCode, loginWithCode, state: emailState } = useLoginWithEmail();
@@ -65,15 +65,20 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: 
 
   const embeddedWallet = (me?.wallets || []).find((w: any) => w.chain === "SOLANA" && w.tradingEnabled && w.permissionRef);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState<"home"|"receive">("home");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const handledReceiveSignal = useRef(0);
   // Real gap found by forensic audit (M-35): "Add Funds" from Home landed on the Account tab and
   // left the user to find and tap "Send / Receive / History" themselves -- not the one-tap flow
   // the spec calls for. openReceiveSignal is a changing number (not a boolean) so tapping Fund
   // again while already on this screen still reopens the sheet, even though the wallet itself
   // hasn't changed.
   useEffect(() => {
-    if (openReceiveSignal && embeddedWallet) setDetailOpen(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openReceiveSignal]);
+    if (!openReceiveSignal || handledReceiveSignal.current===openReceiveSignal) return;
+    handledReceiveSignal.current=openReceiveSignal;
+    if (embeddedWallet) { setDetailTab("receive"); setDetailOpen(true); }
+    else setSetupOpen(true);
+  }, [openReceiveSignal, embeddedWallet]);
 
   async function afterAuthenticated() {
     setErr("");
@@ -165,16 +170,19 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: 
 
   if (embeddedWallet) {
     return <>
-      <div className="wallet-line">
-        <div><b>{embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
-          <small>Your single MemeCloud wallet for deposits, trades and withdrawals.</small></div>
-        <button className="action-primary" onClick={() => setDetailOpen(true)}><WalletIcon size={12} /> Open wallet</button>
-      </div>
-      {detailOpen && <WalletDetailSheet wallet={embeddedWallet} onClose={() => setDetailOpen(false)} onSent={reload} />}
+      {showCard&&<section className="app-card wallet-overview-card">
+        <div className="card-title"><div><span>YOUR MEMECLOUD WALLET</span><h2>One wallet. One balance.</h2></div></div>
+        <div className="wallet-line">
+          <div><b>{embeddedWallet.address.slice(0, 7)}…{embeddedWallet.address.slice(-5)}</b>
+            <small>Your single MemeCloud wallet for deposits, trades and withdrawals.</small></div>
+          <button className="action-primary" onClick={() => {setDetailTab("home");setDetailOpen(true)}}><WalletIcon size={12} /> Open wallet</button>
+        </div>
+      </section>}
+      {detailOpen && <WalletDetailSheet wallet={embeddedWallet} initialTab={detailTab} onClose={() => setDetailOpen(false)} onSent={reload} />}
     </>;
   }
 
-  return <div className="switch-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+  const setup=<div className="switch-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
       <div><b>Create your MemeCloud wallet</b><small>One Solana wallet for funding, trading and withdrawals. No separate wallet app required.</small></div>
       {step === "idle" && <button className="soft-action" disabled={!ready} onClick={start}><WalletIcon size={12} /> Create my wallet</button>}
@@ -191,4 +199,14 @@ function EmbeddedWalletPanelInner({ me, reload, pubConfig, openReceiveSignal }: 
       <div className="notice">{step === "creating" ? "Creating your wallet…" : step === "delegating" ? "Granting MemeCloud limited trading access…" : "Finishing setup…"}</div>}
     {err && <div className="auth-error">{err}</div>}
   </div>;
+  return <>
+    {showCard&&<section className="app-card wallet-overview-card"><div className="card-title"><div><span>YOUR MEMECLOUD WALLET</span><h2>One wallet. One balance.</h2></div></div>{setup}</section>}
+    {!showCard&&setupOpen&&<div className="wallet-chooser-wrap" onClick={()=>setSetupOpen(false)}>
+      <div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
+        <div className="wallet-chooser-handle"/>
+        <div className="wallet-chooser-head"><div><b>Set up your MemeCloud wallet</b><small style={{display:"block",marginTop:3}}>Securely powered by Privy</small></div><button type="button" className="wallet-chooser-close" onClick={()=>setSetupOpen(false)} aria-label="Close"><X size={16}/></button></div>
+        {setup}
+      </div>
+    </div>}
+  </>;
 }
