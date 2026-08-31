@@ -66,7 +66,11 @@ async function tokenMeta(mint:string){
 // explicit recency ordering to signals/discoveries, which previously had none -- "most recent N"
 // wasn't actually guaranteed to mean recent without it.
 async function trackedMints(){
-  const since=new Date(Date.now()-24*60*60_000);
+  // A wallet-first market mark exists to support a live position or a recent
+  // qualified-wallet event.  Repricing a wallet's yesterday-old token on every
+  // loop is neither event-driven nor useful, and was the primary source of
+  // avoidable Jupiter/Birdeye spend.
+  const since=new Date(Date.now()-2*60*60_000);
   const [positions,qualityWallets,signals]=await Promise.all([
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
     db.smartWalletCandidate.findMany({where:{OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true}]},select:{address:true},take:1000}),
@@ -84,7 +88,7 @@ async function trackedMints(){
   // P0: real positions can never be dropped. P1: tokens just bought by objectively tracked wallets.
   // P2: their source signals. Raw discoveryToken rows are deliberately NOT a pricing source anymore.
   const unique=[...new Set([...positionMints,...walletMints,...signalMints])].filter(m=>!excluded.has(m));
-  const maxTracked=Math.max(positionMints.length,Math.max(50,Number(process.env.WALLET_FIRST_MARKET_MINT_LIMIT??220)));
+  const maxTracked=Math.max(positionMints.length,Math.max(25,Number(process.env.WALLET_FIRST_MARKET_MINT_LIMIT??80)));
   return unique.slice(0,maxTracked);
 }
 
@@ -125,6 +129,12 @@ async function basicSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number
 
 async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;priceImpactPct:number}){
   if(!birdeye)return null;
+  // Deep structure is not price data.  Cache one complete Birdeye enrichment
+  // across all workers for fifteen minutes; intermediate marks still use the
+  // executable Jupiter price and observed wallet flow without spending four
+  // additional Birdeye calls.
+  const richKey=`market:rich:SOLANA:${mint}`;
+  if(await redis.get(richKey))return null;
   const [m,t,h,l]=await Promise.all([
     birdeye.marketData(mint),
     birdeye.tradeData(mint),
@@ -147,6 +157,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
     source:"JUPITER+BIRDEYE",provenance:{jupiter:{priceImpactPct:j.priceImpactPct},birdeye:{marketData:true,tradeData:true,holderProfile:true,exitLiquidity:true}},observedAt
   }});
   await redis.set(`meme:SOLANA:${mint}`,JSON.stringify(snap),"EX",45);
+  await redis.set(richKey,"1","EX",15*60);
   await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint}},update:{symbol:tokenInfo.symbol,name:tokenInfo.name,marketCapUsd:x.marketCapUsd??j.marketCapUsd,liquidityUsd:Number(x.liquidityUsd??0),tokenAgeMin:Number(x.ageMinutes??-1),lastSeenAt:observedAt},create:{chain:"SOLANA",mint,symbol:tokenInfo.symbol,name:tokenInfo.name,source:"WALLET_TRIGGERED",marketCapUsd:x.marketCapUsd??j.marketCapUsd,liquidityUsd:Number(x.liquidityUsd??0),tokenAgeMin:Number(x.ageMinutes??-1),discoveredAt:observedAt,lastSeenAt:observedAt}}).catch(()=>{});
   richUpdates++;
   return snap;
@@ -205,6 +216,8 @@ startHeartbeat("market-worker",()=>({tracked,updates,richUpdates,quoteErrors,enr
   sharedRpcBudgetPriority:"P2",sharedRpcBudgetDenied:sharedBudgetDenied,
   lastSharedRpcBudgetDenyAgoSec:lastSharedBudgetDenyAt?Math.round((Date.now()-lastSharedBudgetDenyAt)/1000):null
 }));
-setInterval(()=>void tick(),Math.max(3000,Number(process.env.MARKET_INTERVAL_MS??7000)));
+// This is a bounded position/wallet freshness loop, not a token-discovery
+// sweep.  New mints enter only through watched-wallet observations above.
+setInterval(()=>void tick(),Math.max(30_000,Number(process.env.MARKET_INTERVAL_MS??30_000)));
 void tick();
 console.log("[market-worker] running");

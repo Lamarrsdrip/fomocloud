@@ -1,5 +1,6 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
+import dynamic from "next/dynamic";
 import {
   Home,WalletCards,Bell,Settings2,TrendingUp,Zap,Play,Pause,Search
 } from "lucide-react";
@@ -17,9 +18,10 @@ import HomeView from "../../components/HomeView";
 import DiscoverView from "../../components/DiscoverView";
 import TradersView from "../../components/TradersView";
 import ProfileView from "../../components/ProfileView";
+const EmbeddedWalletPanel=dynamic(()=>import("../../components/EmbeddedWalletPanel"),{ssr:false});
 
-type View="home"|"discover"|"trade"|"positions"|"profile"|"traders"|"community"|"social"|"activity"|"smart-wallets";
-const nav:[View,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["smart-wallets","Smart Money",Search],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["profile","Account",Settings2]];
+type View="home"|"discover"|"trade"|"positions"|"wallet"|"profile"|"traders"|"community"|"social"|"activity"|"smart-wallets";
+const nav:[View,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["smart-wallets","Smart Money",Search],["trade","Trade",Zap],["positions","Portfolio",WalletCards],["wallet","Wallet",WalletCards],["profile","Account",Settings2]];
 // A mobile dock needs decisive actions, not every destination. Smart Money remains one tap from
 // Hunt while account settings stay reachable from the avatar/Account route.
 const mobileNav=nav.filter(([id])=>id!=="smart-wallets");
@@ -52,13 +54,11 @@ export default function AppPage(){
   const[newTokenRadar,setNewTokenRadar]=useState<any[]>([]);
   const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
-  // Real gap found by forensic audit (M-35): "Fund" from Home landed on Account and left the user
-  // to find "Send / Receive / History" themselves. A changing number (not a boolean) so tapping
-  // Fund again while already on Profile still reopens the sheet.
+  // Fund opens money management, never profile/security settings.
   const[fundSignal,setFundSignal]=useState(0);
 
   function setView(v:View){setViewState(v);history.replaceState(null,"",`/app/?view=${v}`)}
-  function openFund(){setSelectedMint(null);setView("profile");setFundSignal(x=>x+1)}
+  function openFund(){setSelectedMint(null);setView("wallet");setFundSignal(x=>x+1)}
   async function load(){
     setLoading(true);setError("");
     try{
@@ -128,7 +128,7 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Portfolio":view==="wallet"?"Wallet":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>setView("profile")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -144,6 +144,7 @@ export default function AppPage(){
         {view==="social"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}
         {view==="positions"&&<PositionsView positions={positions} degraded={positionsDegraded} d={dashboard} me={me} reload={load}/>}
+        {view==="wallet"&&<section className="app-card"><div className="card-title"><div><span>MONEY</span><h2>Receive, fund, and manage your wallet</h2></div></div><EmbeddedWalletPanel me={me} reload={load} openReceiveSignal={fundSignal}/></section>}
         {view==="profile"&&<ProfileView me={me} setMe={setMe} settings={settings} notifications={notifications} sessions={sessions} setSettings={setSettings} reload={load} signOut={signOut} setView={setView} openReceiveSignal={fundSignal}/>}
         </>}
       </section>
@@ -151,5 +152,3 @@ export default function AppPage(){
     <nav className="mobile-app-nav">{mobileNav.map(([id,label,Icon])=><button key={id} onClick={()=>{setSelectedMint(null);setView(id)}} className={view===id?"active":""}><Icon size={19}/>{label}</button>)}</nav>
   </main>
 }
-
-

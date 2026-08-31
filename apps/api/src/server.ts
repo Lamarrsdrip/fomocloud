@@ -891,14 +891,18 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
 function smartWalletSummary(c:any){
   const winRatePct=c.sampleTrades>0?Math.round((c.profitableTrades/c.sampleTrades)*1000)/10:null;
   const meta=(c.metadata??{}) as any;
-  const whaleTier=meta.whaleTier??(String(c.label??"").startsWith("WHALE_")?c.label:null);
-  const isWhale=Boolean(whaleTier);
+  // A label or a stale historical observation is not whale evidence.  Only a
+  // fresh, timestamped balance observation may render a whale badge.
+  const balanceObservedAt=meta.walletBalanceObservedAt??null;
+  const balanceFresh=balanceObservedAt&&Date.now()-new Date(balanceObservedAt).getTime()<=7*24*60*60_000;
+  const whaleTier=balanceFresh?meta.whaleTier??null:null;
+  const isWhale=Boolean(whaleTier&&meta.walletBalanceUsd!=null);
   const lastObservedTradeAt=meta.lastObservedTradeAt??null;
   return {
     id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
     intelligenceTier:c.stage==="PROVEN"&&Number(meta.skillScore??c.copyabilityScore)>=90&&Number(c.riskScore)<=30&&Number(meta.evidenceCompleteness??0)>=85&&Number(meta.currentFormScore??0)>=60?"ELITE":c.stage==="PROVEN"?"PROVEN":c.stage==="PAPER_TRACKING"?"WATCHING":"CANDIDATE",
     copyEligible:c.stage==="PROVEN"&&Boolean(c.traderId),
-    isWhale,whaleTier:isWhale?whaleTier:null,walletBalanceUsd:meta.walletBalanceUsd??null,
+    isWhale,whaleTier:isWhale?whaleTier:null,walletBalanceUsd:isWhale?meta.walletBalanceUsd:null,walletBalanceObservedAt:isWhale?balanceObservedAt:null,
     copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
     skillScore:meta.skillScore??null,currentFormScore:meta.currentFormScore??null,activityScore:meta.activityScore??null,forwardHitRatePct:meta.forwardHitRatePct??null,forwardMeanPct:meta.forwardMeanPct??null,distinctTokens30d:meta.distinctTokens30d??null,
     sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
@@ -908,7 +912,8 @@ function smartWalletSummary(c:any){
     averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
     rugExposurePct:c.rugExposurePct??meta.derivedRugExposurePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
     source:c.source,sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
-    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt??c.updatedAt,
+    // Never use a database update/scoring timestamp as blockchain activity.
+    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt,
     paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
   };
 }
@@ -956,7 +961,9 @@ app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
 // needing to click Test Connection. Deliberately excludes push/email: those "tests" send a real
 // push notification / real email to a real recipient, so running them automatically would spam
 // users rather than just check health — only a manual Test/Send from the admin covers those.
-const BACKGROUND_HEALTH_KEYS=["marketData","execution","social","signer","brain"];
+// X social research is optional and explicitly event-only.  A periodic health probe would itself
+// consume read quota, so X may be tested manually from Admin but is never background-polled.
+const BACKGROUND_HEALTH_KEYS=["marketData","execution","signer","brain"];
 async function runBackgroundHealthChecks(){
   for(const key of BACKGROUND_HEALTH_KEYS){
     try{

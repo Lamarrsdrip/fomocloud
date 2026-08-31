@@ -53,7 +53,7 @@ export function Whales({d,reload,admin}:{d:any;reload:()=>void;admin:boolean}){
  const rows=(d.candidates||[]).filter((c:any)=>{
   if(stage==="ALL")return true;
   if(stage==="FOUND_TODAY")return now-new Date(c.createdAt).getTime()<24*3600_000;
-  if(stage==="ACTIVE_NOW")return c.lastScoredAt&&now-new Date(c.lastScoredAt).getTime()<3600_000;
+  if(stage==="ACTIVE_NOW"){const observed=c.metadata?.lastObservedTradeAt;return observed&&now-new Date(observed).getTime()<3600_000;}
   if(stage==="WATCHLIST")return Boolean(c.adminWatched);
   return c.stage===stage;
  });

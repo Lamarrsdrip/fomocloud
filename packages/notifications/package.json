@@ -16,15 +16,15 @@
     "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@memecloud/db": "workspace:*",
     "@memecloud/config": "workspace:*",
-    "web-push": "^3.6.7",
-    "nodemailer": "^6.10.1"
+    "@memecloud/db": "workspace:*",
+    "nodemailer": "^9.0.6",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@types/web-push": "^3.6.4",
-    "@types/nodemailer": "^6.4.17",
     "@types/node": "^22.18.0",
+    "@types/nodemailer": "^6.4.17",
+    "@types/web-push": "^3.6.4",
     "typescript": "^5.9.2"
   }
 }

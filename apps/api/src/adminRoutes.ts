@@ -229,12 +229,15 @@ adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (
   const chain=String(req.body?.chain??"").toUpperCase();
   const address=String(req.body?.address??"").trim();
   const label=req.body?.label?String(req.body.label):undefined;
+  const curated=req.body?.curated===true;
+  const researchSource=req.body?.researchSource?String(req.body.researchSource):undefined;
+  const researchReason=req.body?.researchReason?String(req.body.researchReason):undefined;
   if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return res.status(400).json({error:"INVALID_CHAIN"});
   if(!address) return res.status(400).json({error:"ADDRESS_REQUIRED"});
   const existing=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:chain as Chain,address}}});
   if(existing) return res.status(409).json({error:"WALLET_ALREADY_TRACKED"});
-  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source:"ADMIN_MANUAL",label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:"Added by admin for observation. Objective scoring decides PAPER_TRACKING/PROVEN automatically; admin addition itself grants no trust."}}});
-  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label});
+  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source:curated?"MEMECLOUD_CURATED":"PLATFORM_ADDED",label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:researchReason??(curated?"MemeCloud selected this public wallet for high-priority research. Objective scoring decides PAPER_TRACKING/PROVEN automatically; curation grants no trading authority.":"Added by MemeCloud for observation. Objective scoring decides PAPER_TRACKING/PROVEN automatically; platform addition itself grants no trust."),curatedByPlatform:curated,researchSource,researchReason,researchAddedAt:new Date().toISOString()}}});
+  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label,curated,researchSource});
   res.status(201).json({candidate});
 }));
 adminRoutes.patch("/v1/admin/discovery/candidates/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
