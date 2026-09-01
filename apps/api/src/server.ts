@@ -888,7 +888,7 @@ app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   ]);
   const relationships=relationshipRows(flows,signals,new Map(candidates.map((c:any)=>[c.address,c])),new Map(tokens.map((t:any)=>[t.mint,t])));
   const summary={distinctTrackedWallets:new Set(relationships.map(r=>r.walletAddress)).size,memeCloudPicks:relationships.filter(r=>r.source==="MemeCloud Pick").length,elite:relationships.filter(r=>r.stage==="PROVEN"&&Number(r.skillScore??0)>=90).length,proven:relationships.filter(r=>r.stage==="PROVEN").length,whales:relationships.filter(r=>r.isWhale).length,trackedBuyFlowUsd:relationships.reduce((n,r)=>n+r.boughtUsd,0),trackedSellFlowUsd:relationships.reduce((n,r)=>n+r.soldUsd,0),netTrackedInflowUsd:relationships.reduce((n,r)=>n+r.netFlowUsd,0),lastObservedHolding:relationships.filter(r=>r.state==="LAST_OBSERVED_HOLDING").length,partialExits:relationships.filter(r=>["TRIMMED","MOSTLY_EXITED"].includes(r.state)).length,fullExits:relationships.filter(r=>r.state==="EXITED").length};
-  res.json({opportunity,flows,catalyst,smartMoney:{relationships,summary}});
+  res.json({opportunity,flows,catalyst,token:tokens[0]??null,smartMoney:{relationships,summary}});
 }));
 
 // ------------------------ SMART WALLETS (public) ------------------------
@@ -903,16 +903,17 @@ function smartWalletSummary(c:any){
   // fresh, timestamped balance observation may render a whale badge.
   const balanceObservedAt=meta.walletBalanceObservedAt??null;
   const balanceFresh=balanceObservedAt&&Date.now()-new Date(balanceObservedAt).getTime()<=7*24*60*60_000;
-  const whaleTier=balanceFresh?meta.whaleTier??null:null;
-  // A capital snapshot must explicitly identify its producer. Historical flow
-  // rows and a trade amount are not a wallet balance and cannot earn this badge.
-  const isWhale=Boolean(whaleTier&&meta.walletBalanceUsd!=null&&String(meta.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:"));
+  // Stablecoin capital alone is not meme-whale evidence. The scorer requires fresh, meaningful
+  // meme positions/volume and persists that separate classification.
+  const isWhale=Boolean(meta.isMemeWhale&&String(meta.whaleTier??"").startsWith("WHALE_MEME_"));
+  const whaleTier=isWhale?meta.whaleTier:null;
   const lastObservedTradeAt=meta.lastObservedTradeAt??null;
   return {
     id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
     intelligenceTier:c.stage==="PROVEN"&&Number(meta.skillScore??c.copyabilityScore)>=90&&Number(c.riskScore)<=30&&Number(meta.evidenceCompleteness??0)>=85&&Number(meta.currentFormScore??0)>=60?"ELITE":c.stage==="PROVEN"?"PROVEN":c.stage==="PAPER_TRACKING"?"WATCHING":"CANDIDATE",
     copyEligible:c.stage==="PROVEN"&&Boolean(c.traderId),
-    isWhale,whaleTier:isWhale?whaleTier:null,walletBalanceUsd:isWhale?meta.walletBalanceUsd:null,walletBalanceObservedAt:isWhale?balanceObservedAt:null,
+    isWhale,whaleTier,walletBalanceUsd:balanceFresh?meta.walletBalanceUsd:null,walletBalanceObservedAt:balanceFresh?balanceObservedAt:null,
+    walletType:meta.walletType??"INSUFFICIENT_EVIDENCE",isSmartDegen:Boolean(meta.isSmartDegen),capitalScore:meta.capitalScore??null,typicalMemePositionUsd:meta.typicalMemePositionUsd??null,largestMemePositionUsd:meta.largestMemePositionUsd??null,memeBuyVolume30dUsd:meta.memeBuyVolume30dUsd??null,
     copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
     skillScore:meta.skillScore??null,currentFormScore:meta.currentFormScore??null,activityScore:meta.activityScore??null,forwardHitRatePct:meta.forwardHitRatePct??null,forwardMeanPct:meta.forwardMeanPct??null,distinctTokens30d:meta.distinctTokens30d??null,
     sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
@@ -922,7 +923,7 @@ function smartWalletSummary(c:any){
     averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
     verifiedRugExposurePct:meta.verifiedRugExposurePct??null,catastrophicLossRatePct:meta.catastrophicLossRatePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
     performance90d:meta.walletPnl90d?.tradeCount>=10?meta.walletPnl90d:null,earlyEntry:meta.earlyEntryProvenance?.sampleSize>=10?{edgePct:meta.earlyEntryEdgePct,provenance:meta.earlyEntryProvenance}:null,
-    source:c.source,sourceLabel:smartWalletSourceLabel(c,meta),sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,
+    source:c.source,sourceLabel:smartWalletSourceLabel(c,meta),sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,adminDesignation:meta.adminDesignation??null,monitoringPriority:meta.monitoringPriority??null,researchSource:meta.researchSource??null,researchReason:meta.researchReason??null,researchNotes:meta.researchNotes??null,researchAddedAt:meta.researchAddedAt??null,researchProvenanceStatus:meta.researchProvenanceStatus??null,providerStatus:meta.providerStatus??null,providerEvidenceObservedAt:meta.providerEvidenceObservedAt??null,providerEvidenceFresh:Boolean(meta.providerEvidenceFresh),
     // Never use a database update/scoring timestamp as blockchain activity.
     firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt,
     paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
@@ -934,6 +935,8 @@ function smartWalletSourceLabel(c:any,meta:any){
   if(c.source==="TRADER_LEADERBOARD")return "Highly Followed Trader";
   if(c.source==="TRUSTED_WALLET_NEIGHBORHOOD")return "Platform Tracked";
   if(c.source==="PUMPFUN_HIGH_EARNER")return "Pump.fun High Earner";
+  if(c.source==="MANUAL_REVIEW")return "Manual Review";
+  if(c.source==="LAUNCHPAD_COUNTERPARTY")return "Launchpad Trader Lead";
   return "Platform Tracked";
 }
 function rawBalanceState(raw:any){
@@ -962,7 +965,6 @@ app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
   const stageParam=String(req.query.stage??"").toUpperCase();
   const includeWhalesOnly=String(req.query.whales??"")==="true";
   const where:any={stage:stageParam&&["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"].includes(stageParam)?stageParam:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}};
-  if(includeWhalesOnly)where.label={startsWith:"WHALE_"};
   const [candidates,mostRecentlyScored]=await Promise.all([
     db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:200}),
     // Same gap found and fixed on /v1/brain/feed this session, found here too by a full-platform
@@ -978,7 +980,8 @@ app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
   // round-robining 50 candidates at a time, so normal operation alone can leave any single
   // candidate's lastScoredAt lagging by more than one tick.
   const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
-  res.json({wallets:candidates.map(smartWalletSummary),pipelineDegraded,dataFreshnessSec});
+  const wallets=candidates.map(smartWalletSummary).filter(w=>!includeWhalesOnly||w.isWhale);
+  res.json({wallets,pipelineDegraded,dataFreshnessSec});
 }));
 app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
   const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});

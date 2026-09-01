@@ -8,6 +8,8 @@ import {TokenAvatar} from "./TokenAvatar";
 
 function n(v:any,d=0){const x=Number(v);return Number.isFinite(x)?x:d}
 function evidenceLabel(w:any){
+ if(w.isMemeWhale) return "Meme Whale";
+ if(w.isSmartDegen) return "Smart Degen";
  if(w.intelligenceTier==="ELITE") return "Elite proven wallet";
  if(w.stage==="PROVEN") return "Proven edge";
  if(w.stage==="PAPER_TRACKING") return "Being verified";
@@ -36,6 +38,7 @@ export default function SmartWalletsView(){
  const rows=useMemo(()=>{
   const now=Date.now();
   if(filter==="whales")return ranked.filter(w=>w.isWhale);
+  if(filter==="smart-degens")return ranked.filter(w=>w.isSmartDegen);
   if(filter==="picks")return ranked.filter(w=>w.source==="MEMECLOUD_CURATED"||w.sourceLabel==="MemeCloud Pick");
   if(filter==="elite")return ranked.filter(w=>w.intelligenceTier==="ELITE");
   if(filter==="proven")return ranked.filter(w=>w.stage==="PROVEN");
@@ -61,7 +64,7 @@ export default function SmartWalletsView(){
   {wallets===null?<div className="loading" style={{minHeight:180}}>Loading…</div>:rows.length?<div className="token-list">{rows.map(w=>
    <div className="token-row" key={w.id} onClick={()=>open(w.id)}>
     <TokenAvatar symbol={w.address.slice(0,2)}/>
-    <div className="token-row-main"><b style={{wordBreak:"break-all"}}>{w.address}</b><small>{w.sourceLabel||"Platform Tracked"} · {evidenceLabel(w)} · {activityLabel(w)}{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_","")||"Whale"}`:""}</small><small>{n(w.sampleTrades)} trades · {n(w.distinctTokens30d)} tokens tracked{w.realizedPnl7dUsd!=null?` · 7D ${money(w.realizedPnl7dUsd)}`:""}</small></div>
+    <div className="token-row-main"><b style={{wordBreak:"break-all"}}>{w.address}</b><small>{w.sourceLabel||"Platform Tracked"}{w.adminDesignation?` · ${String(w.adminDesignation).replaceAll("_"," ")}`:""} · {evidenceLabel(w)} · {activityLabel(w)}{w.isWhale?` · 🐋 ${w.whaleTier?.replace("WHALE_MEME_","")||"Meme Whale"}`:""}</small><small>{n(w.sampleTrades)} trades · {n(w.distinctTokens30d)} tokens tracked{w.realizedPnl7dUsd!=null?` · 7D ${money(w.realizedPnl7dUsd)}`:""}</small></div>
     <div className="token-row-side"><span className={`status-badge ${w.stage==="PROVEN"?"":"watch"}`}>{w.winRatePct!=null?`${Math.round(w.winRatePct)}% win`:evidenceLabel(w)}</span><small>{w.stage==="PROVEN"?`Skill ${Math.round(n(w.skillScore,w.copyabilityScore))}`:`Evidence ${Math.round(n(w.evidenceCompleteness))}%`}</small></div>
    </div>)}</div>:<Empty icon={Users} title={degraded?"Wallet intelligence is delayed":"No qualified smart wallets yet"} body={degraded?"Scoring will resume automatically when providers recover.":"MemeCloud is hunting repeat profitable meme traders and whales from real chain activity. It does not manufacture a smart-wallet list from one lucky trade."}/>} 
   {(detail||detailBusy)&&<div className="wallet-chooser-wrap" onClick={()=>setDetail(null)}><div className="wallet-chooser-sheet" onClick={e=>e.stopPropagation()}>
@@ -87,7 +90,8 @@ export default function SmartWalletsView(){
      <div><span>Evidence completeness</span><b>{Math.round(n(detail.wallet.evidenceCompleteness))}%</b></div>
      <div><span>Risk evidence</span><b>{Math.round(n(detail.wallet.riskEvidenceCompleteness))}%</b></div>
     </div>
-    {detail.wallet.discoveryReason&&<div className="notice" style={{marginBottom:12}}><b>Why MemeCloud found this wallet</b><div style={{fontSize:11,marginTop:5}}>{detail.wallet.discoveryReason}</div></div>}
+    {(detail.wallet.discoveryReason||detail.wallet.researchReason)&&<div className="notice" style={{marginBottom:12}}><b>Why MemeCloud follows this wallet</b><div style={{fontSize:11,marginTop:5}}>{detail.wallet.researchReason||detail.wallet.discoveryReason}</div>{detail.wallet.researchSource&&<small style={{display:"block",marginTop:5}}>Recorded source: {detail.wallet.researchSource}</small>}{detail.wallet.researchProvenanceStatus==="UNKNOWN_LEGACY_SOURCE"&&<small style={{display:"block",marginTop:5}}>Legacy platform addition; original research source was not recorded.</small>}</div>}
+    {!detail.wallet.providerEvidenceFresh&&<div className="notice" style={{marginBottom:12}}>Provider history is currently stale or unavailable. On-chain activity and forward observations continue, but MemeCloud will not promote this wallet from stale provider evidence.</div>}
     {detail.relationships?.length>0&&<><b style={{fontSize:11}}>Wallet-token relationships</b><div className="list" style={{margin:"8px 0 14px"}}>{detail.relationships.slice(0,8).map((t:any,i:number)=><div className="list-row" style={{gridTemplateColumns:"1fr auto"}} key={i}><div><b>{t.token?.symbol||t.token?.name||`${t.mint.slice(0,8)}…`}</b><small>{t.state.replaceAll("_"," ")} · {t.netFlowUsd?money(t.netFlowUsd):"amount pending"} · {timeAgo(t.latestActivityAt)}</small><small>{t.holdingVerification==="LAST_OBSERVED_TRANSACTION_BALANCE"?`Last observed balance at ${timeAgo(t.balanceObservedAt)}`:"Current holding verification pending"}</small></div><div style={{textAlign:"right"}}><small>{t.remainingPct!=null?`${t.remainingPct.toFixed(0)}% after last sell`:""}</small><small>{t.token?.liquidityUsd?`Liq ${money(t.token.liquidityUsd)}`:""}</small></div></div>)}</div></>}
     <div style={{display:"flex",gap:8,marginTop:8}}>
      <button className="soft-action" style={{flex:1}} disabled={Boolean(actionBusy)} onClick={()=>setMode("WATCH_ONLY")}><Eye size={14}/> {actionBusy==="WATCH_ONLY"?"Adding…":"Watch"}</button>

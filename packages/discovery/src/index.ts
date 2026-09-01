@@ -166,3 +166,5 @@ export function shouldProve(
     (s.entryQualityScore??60)>=58&&(s.currentFormScore??55)>=50&&(s.activityScore??50)>=40&&
     (s.forwardHitRatePct??55)>=55;
 }
+
+export * from "./walletIntelligence.js";

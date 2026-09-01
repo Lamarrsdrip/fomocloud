@@ -234,21 +234,28 @@ adminRoutes.get("/v1/admin/discovery/candidates", requireAdmin, asyncRoute(async
   ]);
   const dataFreshnessSec=mostRecentlyScored?.lastScoredAt?Math.round((Date.now()-mostRecentlyScored.lastScoredAt.getTime())/1000):null;
   const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
-  res.json({candidates,pipelineDegraded,dataFreshnessSec});
+  res.json({candidates:candidates.map((c:any)=>{const m=c.metadata??{};return {...c,walletType:m.walletType??"INSUFFICIENT_EVIDENCE",isMemeWhale:Boolean(m.isMemeWhale),isSmartDegen:Boolean(m.isSmartDegen),capitalScore:m.capitalScore??null,skillScore:m.skillScore??null,currentFormScore:m.currentFormScore??null,evidenceCompleteness:m.evidenceCompleteness??null,lastActivityAt:m.lastObservedTradeAt??null,typicalMemePositionUsd:m.typicalMemePositionUsd??null,largestMemePositionUsd:m.largestMemePositionUsd??null,memeBuyVolume30dUsd:m.memeBuyVolume30dUsd??null,performance90d:m.walletPnl90d??null,adminDesignation:m.adminDesignation??null,monitoringPriority:m.monitoringPriority??null,researchSource:m.researchSource??null,researchReason:m.researchReason??null,researchNotes:m.researchNotes??null,researchProvenanceStatus:m.researchProvenanceStatus??null,providerStatus:m.providerStatus??null,providerEvidenceObservedAt:m.providerEvidenceObservedAt??null}}),pipelineDegraded,dataFreshnessSec});
 }));
 adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const chain=String(req.body?.chain??"").toUpperCase();
   const address=String(req.body?.address??"").trim();
   const label=req.body?.label?String(req.body.label):undefined;
-  const curated=req.body?.curated===true;
+  const additionType=String(req.body?.additionType??(req.body?.curated?"PLATFORM_TRADER":"MANUAL_REVIEW")).toUpperCase();
+  const designation=String(req.body?.designation??(req.body?.curated?"MEMECLOUD_PICK":"NORMAL_WATCH")).toUpperCase();
   const researchSource=req.body?.researchSource?String(req.body.researchSource):undefined;
   const researchReason=req.body?.researchReason?String(req.body.researchReason):undefined;
+  const researchNotes=req.body?.researchNotes?String(req.body.researchNotes):undefined;
   if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return res.status(400).json({error:"INVALID_CHAIN"});
   if(!address) return res.status(400).json({error:"ADDRESS_REQUIRED"});
+  if(!["MANUAL_REVIEW","PLATFORM_TRADER"].includes(additionType))return res.status(400).json({error:"INVALID_ADDITION_TYPE"});
+  if(!["NORMAL_WATCH","MEMECLOUD_PICK","PRIORITY_WATCH","ADMIN_APPROVED"].includes(designation))return res.status(400).json({error:"INVALID_ADMIN_DESIGNATION"});
+  if(additionType==="PLATFORM_TRADER"&&(!researchSource||!researchReason))return res.status(400).json({error:"PLATFORM_RESEARCH_PROVENANCE_REQUIRED"});
   const existing=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:chain as Chain,address}}});
   if(existing) return res.status(409).json({error:"WALLET_ALREADY_TRACKED"});
-  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source:curated?"MEMECLOUD_CURATED":"PLATFORM_ADDED",label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:researchReason??(curated?"MemeCloud selected this public wallet for high-priority research. Objective scoring decides PAPER_TRACKING/PROVEN automatically; curation grants no trading authority.":"Added by MemeCloud for observation. Objective scoring decides PAPER_TRACKING/PROVEN automatically; platform addition itself grants no trust."),curatedByPlatform:curated,researchSource,researchReason,researchAddedAt:new Date().toISOString()}}});
-  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label,curated,researchSource});
+  const platform=additionType==="PLATFORM_TRADER",curated=designation==="MEMECLOUD_PICK";
+  const source=platform?(curated?"MEMECLOUD_CURATED":"PLATFORM_ADDED"):"MANUAL_REVIEW";
+  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source,label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:researchReason??"Manually submitted for objective identification, history reconstruction and scoring. Addition grants no trust or copy authority.",curatedByPlatform:platform,adminDesignation:designation,monitoringPriority:designation==="PRIORITY_WATCH"||designation==="MEMECLOUD_PICK"||designation==="ADMIN_APPROVED"?"P1":"P2",researchSource:researchSource??null,researchReason:researchReason??null,researchNotes:researchNotes??null,researchAddedAt:new Date().toISOString(),researchProvenanceStatus:platform?"RECORDED":"NOT_APPLICABLE",objectiveStatusOwnedBy:"SCORING_WORKER"}}});
+  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label,additionType,designation,researchSource});
   res.status(201).json({candidate});
 }));
 adminRoutes.patch("/v1/admin/discovery/candidates/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {

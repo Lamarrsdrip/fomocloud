@@ -39,6 +39,7 @@ export default function TokenDetail({sel,opp,me,close,onTraded}:{sel:{chain:stri
       lastEvaluatedAt (which only proves the Brain loop ran, not that it had fresh data). Surfacing
       this is what stops a stale score from silently looking live. */}
   {o?.evidenceObservedAt&&<p style={{fontSize:10,color:"#7b8190",margin:"-8px 0 12px"}}>Evidence captured {timeAgo(o.evidenceObservedAt)}{o.lastEvaluatedAt?` · scored ${timeAgo(o.lastEvaluatedAt)}`:""}</p>}
+  {data?.token?.metadata?.tokenProvenance&&<div className="notice" style={{marginBottom:12}}><b>{data.token.metadata.tokenProvenance.origin.replaceAll("_"," ")}</b><div style={{fontSize:11,marginTop:4}}>{data.token.metadata.tokenProvenance.launchpad?`${data.token.metadata.tokenProvenance.launchpad.replaceAll("_"," ")} · provenance confidence ${data.token.metadata.tokenProvenance.confidence}%`:"Origin is not verified. Deep research requires exceptional qualified-wallet evidence."}</div><small style={{display:"block",marginTop:4}}>Launchpad provenance is relevance evidence, not a safety guarantee.</small></div>}
   <div className="review-grid">
    <div><span>Market cap</span><b>{o?.marketCapUsd?money(o.marketCapUsd):"Collecting data"}</b></div>
    <div><span>Liquidity</span><b>{o?.liquidityUsd?money(o.liquidityUsd):"Collecting data"}</b></div>

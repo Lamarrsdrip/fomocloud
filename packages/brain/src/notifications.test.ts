@@ -55,6 +55,13 @@ test("a PROVEN wallet carries more convergence weight than a PAPER_TRACKING one"
   assert.ok(oneProven > onePaper, "a single PROVEN wallet should weigh more than a single PAPER_TRACKING wallet");
 });
 
+test("curation and verified meme capital raise priority without changing objective stage",()=>{
+  const plain=weightedConvergenceScore([{stage:"PAPER_TRACKING",copyabilityScore:75,currentFormScore:65}]);
+  const curatedWhale=weightedConvergenceScore([{stage:"PAPER_TRACKING",copyabilityScore:75,currentFormScore:65,source:"MEMECLOUD_CURATED",isMemeWhale:true,capitalScore:80}]);
+  assert.ok(curatedWhale>plain);
+  assert.ok(curatedWhale<weightedConvergenceScore([{stage:"PROVEN",copyabilityScore:80,currentFormScore:65}])*2);
+});
+
 test("weighted convergence can reach the notification threshold with fewer, higher-quality wallets", () => {
   const twoUnproven = weightedConvergenceScore([{ stage: "PAPER_TRACKING" }, { stage: "PAPER_TRACKING" }]);
   const oneProvenOnly = weightedConvergenceScore([{ stage: "PROVEN" }]);

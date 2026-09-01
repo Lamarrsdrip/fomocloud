@@ -12,3 +12,11 @@ allowBuilds:
   prisma: true
   sharp: true
   utf-8-validate: false
+
+auditConfig:
+  ignoreGhsas:
+    # No fixed image-size release exists. MemeCloud carries and regression-tests the equivalent
+    # progress/bounds guards in patches/image-size@2.0.2.patch. Remove these entries once an
+    # upstream release containing the fix is published.
+    - GHSA-5p2g-fcmc-qvqq
+    - GHSA-w3rx-r6r6-pgpr

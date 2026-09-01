@@ -7,6 +7,7 @@ import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
 import { solanaRpcCandidates, pickHealthyRpc, RpcBudget, recordProviderMetric } from "@memecloud/shared";
 import { classifySwap } from "./parsing.js";
+import {classifyTokenProvenance} from "@memecloud/discovery";
 
 const marketCfg=await getConfig<any>("marketData");
 const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[listener]");
@@ -24,8 +25,8 @@ const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
 let capitalSnapshots=0,capitalSnapshotErrors=0,lastCapitalSnapshotAt=0;
 
-function conservativeWhaleTier(usdcLowerBound:number){
-  if(usdcLowerBound>=10_000_000)return "WHALE_10M";if(usdcLowerBound>=2_000_000)return "WHALE_2M";if(usdcLowerBound>=1_000_000)return "WHALE_1M";if(usdcLowerBound>=100_000)return "WHALE_100K";if(usdcLowerBound>=50_000)return "WHALE_50K";return null;
+function conservativeCapitalTier(usdcLowerBound:number){
+  if(usdcLowerBound>=10_000_000)return "CAPITAL_10M";if(usdcLowerBound>=2_000_000)return "CAPITAL_2M";if(usdcLowerBound>=1_000_000)return "CAPITAL_1M";if(usdcLowerBound>=100_000)return "CAPITAL_100K";if(usdcLowerBound>=50_000)return "CAPITAL_50K";return null;
 }
 async function refreshOneCapitalSnapshot(){
   if(Date.now()-lastCapitalSnapshotAt<60_000)return;
@@ -41,7 +42,7 @@ async function refreshOneCapitalSnapshot(){
     const usdcLowerBound=accounts.value.reduce((sum,a)=>sum+Number((a.account.data as any)?.parsed?.info?.tokenAmount?.uiAmountString??0),0);
     await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"success",latencyMs:Date.now()-started});
     const prior=(candidate.metadata??{}) as any,observedAt=new Date().toISOString();
-    await db.smartWalletCandidate.update({where:{id:candidate.id},data:{metadata:{...prior,walletBalanceUsd:usdcLowerBound,walletBalanceObservedAt:observedAt,walletBalanceSource:"WALLET_CAPITAL_SNAPSHOT:SOLANA_USDC_LOWER_BOUND",walletCapitalSnapshotScope:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",whaleTier:conservativeWhaleTier(usdcLowerBound)}}});capitalSnapshots++;
+    await db.smartWalletCandidate.update({where:{id:candidate.id},data:{metadata:{...prior,walletBalanceUsd:usdcLowerBound,walletBalanceObservedAt:observedAt,walletBalanceSource:"WALLET_CAPITAL_SNAPSHOT:SOLANA_USDC_LOWER_BOUND",walletCapitalSnapshotScope:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",capitalTier:conservativeCapitalTier(usdcLowerBound)}}});capitalSnapshots++;
   }catch(e){capitalSnapshotErrors++;await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"error"}).catch(()=>{});console.error("[listener] capital snapshot",candidate.address,e)}
 }
 
@@ -82,13 +83,14 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   const capitalCandidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}},select:{metadata:true}}).catch(()=>null);
   const capital=(capitalCandidate?.metadata??{}) as any;
   const capitalFresh=capital.walletBalanceObservedAt&&Date.now()-new Date(capital.walletBalanceObservedAt).getTime()<7*24*3600_000&&String(capital.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:");
-  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",walletBalanceUsd:capitalFresh?Number(capital.walletBalanceUsd??0):undefined,walletTier:capitalFresh?capital.whaleTier??undefined:undefined,observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
+  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",walletBalanceUsd:capitalFresh?Number(capital.walletBalanceUsd??0):undefined,walletTier:capitalFresh&&capital.isMemeWhale?capital.whaleTier??"WHALE_MEME_VERIFIED":undefined,observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
   // A new monitored-wallet transaction is the event that makes this mint due
   // immediately. The market worker otherwise keeps its five-minute quiet cache.
   await redis.del(`market:due:SOLANA:${tokenMint}`).catch(()=>{});
   // A token record exists only because a monitored wallet touched it. This is metadata for the
   // wallet-triggered research pipeline, not a resurrection of broad New Token Radar scanning.
-  await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:tokenMint}},update:{lastSeenAt:observedAt},create:{chain:"SOLANA",mint:tokenMint,source:"WALLET_TRIGGERED",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{firstSourceWallet:wallet,firstSourceTx:signature}}}).catch(()=>{});
+  const tokenProvenance=classifyTokenProvenance({mint:tokenMint});
+  await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:tokenMint}},update:{lastSeenAt:observedAt},create:{chain:"SOLANA",mint:tokenMint,source:"WALLET_TRIGGERED",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{firstSourceWallet:wallet,firstSourceTx:signature,tokenProvenance,provenanceObservedAt:observedAt.toISOString(),migrationStatus:"UNKNOWN"}}}).catch(()=>{});
   const signal=await db.signal.upsert({
     where:{idempotencyKey},update:{},
     create:{
@@ -150,7 +152,7 @@ async function refreshWatchlist(){
   const profileLimit=Math.max(25,Math.min(300,Number(process.env.WALLET_PROFILE_WATCH_LIMIT??150)));
   const [adminCandidates,profilingCandidates]=await Promise.all([
     db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},select:{address:true}}),
-    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:"ANALYZING",adminWatched:false},orderBy:[{sourceQualityScore:"desc"},{lastScoredAt:"desc"}],take:profileLimit,select:{address:true}})
+    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:"ANALYZING",adminWatched:false,source:{in:["LAUNCHPAD_COUNTERPARTY","CONFIGURED_SEED","CHAIN_FLOW_WALLET_FIRST"]}},orderBy:[{sourceQualityScore:"desc"},{lastScoredAt:"desc"}],take:profileLimit,select:{address:true}})
   ]);
   const observationAddresses=[...new Set([...adminCandidates.map(c=>c.address),...profilingCandidates.map(c=>c.address)])];
   for(const address of observationAddresses){

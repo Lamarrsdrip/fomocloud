@@ -84,7 +84,8 @@ test("smartMoneyFilterLabel: maps each filter id to its display label, defaultin
   assert.equal(smartMoneyFilterLabel("hot"), "Hot Now");
   assert.equal(smartMoneyFilterLabel("new"), "Newly Discovered");
   assert.equal(smartMoneyFilterLabel("proven"), "Proven");
-  assert.equal(smartMoneyFilterLabel("whales"), "Whales");
+  assert.equal(smartMoneyFilterLabel("whales"), "Meme Whales");
+  assert.equal(smartMoneyFilterLabel("smart-degens"), "Smart Degens");
   assert.equal(smartMoneyFilterLabel("all"), "All");
   assert.equal(smartMoneyFilterLabel("unknown"), "All");
 });

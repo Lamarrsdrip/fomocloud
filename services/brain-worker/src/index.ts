@@ -50,13 +50,13 @@ async function context(chain:Chain,mint:string,s:any){
   const qualityCandidates=flowAddresses.length?await db.smartWalletCandidate.findMany({
     // Only wallets that have cleared an objective quality stage contribute smart-money authority.
     // DISCOVERED/ANALYZING addresses are profiling data, never a trading/convergence vote.
-    where:{chain,address:{in:flowAddresses},stage:{in:["PAPER_TRACKING","PROVEN"]}},
-    select:{address:true,stage:true,copyabilityScore:true,metadata:true}
+    where:{chain,address:{in:flowAddresses},OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true,source:{in:["MEMECLOUD_CURATED","PLATFORM_ADDED"]}}]},
+    select:{address:true,stage:true,source:true,copyabilityScore:true,metadata:true}
   }):[];
   const recentSet=new Set(recentAddresses);
   const qualitySet=new Set(qualityCandidates.map((w:any)=>w.address));
   const convergentWallets=qualityCandidates.filter((w:any)=>recentSet.has(w.address));
-  const convergenceForScore=convergentWallets.map((w:any)=>({stage:w.stage,copyabilityScore:Number(w.copyabilityScore??0),currentFormScore:Number((w.metadata as any)?.currentFormScore??50)}));
+  const convergenceForScore=convergentWallets.map((w:any)=>({stage:w.stage,source:w.source,copyabilityScore:Number(w.copyabilityScore??0),currentFormScore:Number((w.metadata as any)?.currentFormScore??50),isMemeWhale:Boolean((w.metadata as any)?.isMemeWhale),capitalScore:Number((w.metadata as any)?.capitalScore??0)}));
   const smartWalletWeightedScore=weightedConvergenceScore(convergenceForScore);
   const provenSmartWallets=convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
   const trackedNet5m=f5m.filter((r:any)=>qualitySet.has(r.walletAddress)).reduce((sum:any,r:any)=>sum+(String(r.side).toUpperCase()==="BUY"?1:-1)*Number(r.amountUsd??0),0);
@@ -65,7 +65,8 @@ async function context(chain:Chain,mint:string,s:any){
   // onto a wallet count -- "A Signal is not a wallet." platformSignals60s now reports that as its
   // own honest field instead of silently inflating a wallet-count metric with event counts from an
   // unrelated pipeline.
-  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWhales(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:trackedNet5m,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,bundledSupplyPct:s.bundledSupplyPct??undefined,creatorHoldingPct:s.creatorHoldingPct??undefined,mintAuthorityActive:s.mintAuthorityActive??undefined,freezeAuthorityActive:s.freezeAuthorityActive??undefined,token2022DangerousExtension:s.token2022DangerousExtension??undefined,lpRiskScore:s.lpRiskScore??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0,trackedSmartWallets:convergentWallets.length,provenSmartWallets,smartWalletWeightedScore};
+  const tokenOrigin=((token?.metadata??{}) as any)?.tokenProvenance?.origin??"UNKNOWN_ORIGIN";
+  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWhales(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:trackedNet5m,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,bundledSupplyPct:s.bundledSupplyPct??undefined,creatorHoldingPct:s.creatorHoldingPct??undefined,mintAuthorityActive:s.mintAuthorityActive??undefined,freezeAuthorityActive:s.freezeAuthorityActive??undefined,token2022DangerousExtension:s.token2022DangerousExtension??undefined,lpRiskScore:s.lpRiskScore??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0,trackedSmartWallets:convergentWallets.length,provenSmartWallets,smartWalletWeightedScore,tokenOrigin};
   return {evidence,token,catalyst,convergentWallets};
 }
 async function notifyUsers(opp:any,users:any[]){
@@ -185,7 +186,7 @@ async function notifyConvergence(row:any,count:number,provenCount:number){
 async function notifyWhaleActivity(row:any,whaleCount:number){
   const subs=await discoverySubscribers();
   const title=`Whale activity on ${row.symbol||"a token"}`;
-  const body=`${whaleCount} wallet(s) with a fresh verified $50K+ capital snapshot active in the last 60s · ${row.chain} · ${row.mint}`;
+  const body=`${whaleCount} wallet(s) with fresh verified meme-capital evidence active in the last 60s · ${row.chain} · ${row.mint}`;
   for(const u of subs){
     const key=`whale:${row.id}:${u.id}`;
     const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,whaleCount} as any}}).catch(()=>null);

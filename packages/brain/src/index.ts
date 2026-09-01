@@ -11,6 +11,7 @@ export type BrainEvidence={
   bundledSupplyPct?:number; creatorHoldingPct?:number; mintAuthorityActive?:boolean; freezeAuthorityActive?:boolean; token2022DangerousExtension?:boolean; lpRiskScore?:number;
   drawdownFromRecentPeakPct?:number; catalystBoost?:number;
   trackedSmartWallets?:number; provenSmartWallets?:number; smartWalletWeightedScore?:number;
+  tokenOrigin?:"VERIFIED_LAUNCHPAD"|"KNOWN_DEX_MIGRATION"|"UNKNOWN_ORIGIN"|"DIRECT_RANDOM_MINT";
 };
 export type BrainBreakdown={momentum:number;smartMoney:number;executionQuality:number;risk:number;evidenceCompleteness:number};
 export type BrainState="SCANNING"|"BUILDING"|"BREAKOUT_FLOW"|"MONEY_RUSH";
@@ -115,6 +116,8 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
 
   const criticalRiskKnown=[e.liquidityChange5mPct,e.top10EffectivePct,e.bundledSupplyPct,e.creatorHoldingPct,e.lpRiskScore].filter(v=>v!==undefined).length;
   const riskEvidenceReady=criticalRiskKnown>=3;
+  const originVerified=e.tokenOrigin==="VERIFIED_LAUNCHPAD"||e.tokenOrigin==="KNOWN_DEX_MIGRATION";
+  const exceptionalUnknownOrigin=(e.provenSmartWallets??0)>=1||(e.trackedSmartWallets??0)>=5||meaningfulWhale;
 
   if((e.liquidityChange5mPct??0)<-35)warnings.push("Liquidity is falling quickly");
   if((e.creatorNetSell5mPct??0)>40)warnings.push("Creator/dev selling is heavy");
@@ -128,12 +131,14 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   if(e.liquidityUsd<5_000)warnings.push("Very thin liquidity: actual execution may be unusable");
   if(!riskEvidenceReady)warnings.push("Token structure evidence is incomplete; automatic entry is held back");
   if(!ageKnown)warnings.push("Token launch age is not verified yet");
+  if(!originVerified)warnings.push("Token origin is unverified; exceptional smart-money evidence is required for deep conviction");
   else if(age>7*24*60&&!reawakening)warnings.push("Old token has not shown enough re-awakening evidence");
 
   score=clamp(Math.round(score));
   const severeStructure=breakdown.risk>=80||e.liquidityUsd<2_500;
-  const moneyRush=score>=82&&evidenceChannels>=4&&hasQualifiedCapital&&strongFlow&&accelerating&&breakdown.executionQuality>=38&&riskEvidenceReady&&!severeStructure;
-  const breakout=!moneyRush&&score>=68&&evidenceChannels>=3&&hasQualifiedCapital&&strongFlow&&breakdown.executionQuality>=30&&riskEvidenceReady&&!severeStructure;
+  const originGate=originVerified||exceptionalUnknownOrigin;
+  const moneyRush=score>=82&&evidenceChannels>=4&&hasQualifiedCapital&&strongFlow&&accelerating&&breakdown.executionQuality>=38&&riskEvidenceReady&&originGate&&!severeStructure;
+  const breakout=!moneyRush&&score>=68&&evidenceChannels>=3&&hasQualifiedCapital&&strongFlow&&breakdown.executionQuality>=30&&riskEvidenceReady&&originGate&&!severeStructure;
   const building=!moneyRush&&!breakout&&score>=52&&evidenceChannels>=2&&(hasQualifiedCapital||strongFlow)&&!severeStructure;
   const state:BrainState=moneyRush?"MONEY_RUSH":breakout?"BREAKOUT_FLOW":building?"BUILDING":"SCANNING";
   const action=(moneyRush||breakout)?"BUY_NOW":building?"WATCH":"IGNORE";
@@ -173,14 +178,16 @@ export function classifyWalletConvergence(distinctQualifiedWallets:number,strong
 }
 
 const CONVERGENCE_WEIGHT:Record<string,number>={PROVEN:2.5,PAPER_TRACKING:1,ANALYZING:.35,DISCOVERED:.2};
-export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?:number|null;currentFormScore?:number|null;earlyRepeatHits?:number|null}[]):number{
+export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?:number|null;currentFormScore?:number|null;earlyRepeatHits?:number|null;source?:string|null;isMemeWhale?:boolean|null;capitalScore?:number|null}[]):number{
   return Number(wallets.reduce((sum,w)=>{
     const base=CONVERGENCE_WEIGHT[w.stage]??0;
     if(!base)return sum;
     const quality=w.copyabilityScore==null?1:clamp(Number(w.copyabilityScore)/80,.7,1.25);
     const form=w.currentFormScore==null?1:clamp(Number(w.currentFormScore)/65,.75,1.2);
     const early=(w.stage==="DISCOVERED"||w.stage==="ANALYZING")?clamp(Number(w.earlyRepeatHits??0)/3,0,1.25):1;
-    return sum+base*quality*form*early;
+    const curated=["MEMECLOUD_CURATED","PLATFORM_ADDED"].includes(String(w.source??""))?1.18:1;
+    const whale=w.isMemeWhale?Math.min(1.35,1.08+Number(w.capitalScore??0)/400):1;
+    return sum+base*quality*form*early*curated*whale;
   },0).toFixed(2));
 }
 export function countUniqueWhaleWallets(rows:{walletAddress:string;walletTier?:string|null}[]):number{return new Set(rows.filter(r=>String(r.walletTier??"").startsWith("WHALE_")).map(r=>r.walletAddress)).size;}
