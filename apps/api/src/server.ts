@@ -823,37 +823,35 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
   // arbitrary new number invented for this route. A token with truly no real buyer/inflow/whale
   // evidence cannot reach this score (the formula's base is ~24-30 with zero evidence).
   const QUALIFIED_MIN_SCORE=58;
-  const [opportunities,mostRecentlyEvaluated]=await Promise.all([
+  const [opportunities,brainHeartbeat]=await Promise.all([
     db.globalBrainOpportunity.findMany({
       where:{
         // Real bug found by audit, surfaced by a live 20+ hour outage (Helius RPC quota exhausted
-        // -> market-worker stalled -> brain-worker had nothing fresh to evaluate): every row's
-        // lastEvaluatedAt is touched on every 750ms tick regardless of whether it currently has
-        // live evidence, so in healthy operation this filter is close to a no-op -- it only
-        // actually excludes data during an extended pipeline outage exactly like this one, which is
-        // precisely when a user most needs to still see the last real, meaningful evidence instead
-        // of a bare empty list. Widened so genuine outages don't erase the feed entirely;
-        // pipelineDegraded below is what actually tells the client this isn't live right now.
+        // -> market-worker stalled -> brain-worker had nothing fresh to evaluate): widened so a
+        // genuine outage doesn't erase the feed entirely; pipelineDegraded below is what actually
+        // tells the client this isn't live right now.
         lastEvaluatedAt:{gte:new Date(now-48*60*60_000)},
         score:{gte:QUALIFIED_MIN_SCORE},
         state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}
       },
       orderBy:[{score:"desc"},{lastEvaluatedAt:"desc"}],take:150
     }),
-    // Deliberately unfiltered by the 6h window above -- this is the real signal of whether the
-    // Brain's scoring loop is actually running at all right now, independent of whether any
-    // individual token happened to qualify. An empty `opportunities` array is ambiguous on its
-    // own (it could mean "pipeline dead" or "genuinely nothing interesting right now"); this
-    // resolves that ambiguity so the client can tell users the real reason instead of a bare,
-    // unexplained empty state.
-    db.globalBrainOpportunity.findFirst({orderBy:{lastEvaluatedAt:"desc"},select:{lastEvaluatedAt:true}})
+    db.workerHeartbeat.findUnique({where:{name:"global-brain"}})
   ]);
-  const dataFreshnessSec=mostRecentlyEvaluated?Math.round((now-mostRecentlyEvaluated.lastEvaluatedAt.getTime())/1000):null;
-  // 5 minutes matches the same chain-data-freshness bar already used for live-trading readiness
-  // elsewhere in this file -- the Brain loop runs every 750ms when healthy, so anything idle this
-  // long means its upstream data (MemeMarketSnapshot, itself dependent on the Solana RPC) has
-  // stalled, not that the loop is just between ticks.
-  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>300;
+  // The wallet-first rewrite scoped tick() down to only mints a tracked wallet actually bought (or
+  // an open position) -- GlobalBrainOpportunity rows now only get touched when something qualifies,
+  // so a long real gap between evaluations is an expected quiet period, not a stall (confirmed live:
+  // a healthy heartbeating brain-worker sat with a 3-day-old lastEvaluatedAt simply because nothing
+  // had qualified). The genuine "is Brain actually alive and cycling" signal is its own heartbeat --
+  // pulsed every 15s by startHeartbeat() -- combined with lastTickAt, which tick() only stamps at
+  // the START of a real attempt (see services/brain-worker), so a wedged tick (stuck on one hung
+  // await, `running` never reset) shows up as lastTickAt going stale even though the heartbeat
+  // pulse itself, on its own independent timer, keeps reporting "healthy" regardless.
+  const brainDetail=(brainHeartbeat?.detail??{}) as any;
+  const heartbeatAgeSec=brainHeartbeat?Math.round((now-brainHeartbeat.lastBeatAt.getTime())/1000):null;
+  const lastTickAgeSec=brainDetail.lastTickAt?Math.round((now-new Date(brainDetail.lastTickAt).getTime())/1000):null;
+  const dataFreshnessSec=lastTickAgeSec??heartbeatAgeSec;
+  const pipelineDegraded=heartbeatAgeSec===null||heartbeatAgeSec>45||lastTickAgeSec===null||lastTickAgeSec>60;
   // Main Hunt is intentionally NOT a generic trending-token list. A row must have earned either
   // quality smart-wallet convergence, whale participation, or material tracked smart-money flow.
   // High raw volume alone never qualifies a wallet-first opportunity; capital quality is required.

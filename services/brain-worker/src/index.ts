@@ -12,7 +12,15 @@ const signalQueue=new Queue("signals",{connection:redis});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
 const socialQueue=new Queue("social-intelligence",{connection:redis});
 const USDC_SOL=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-let scans=0,opportunities=0,signals=0,errors=0,lastBest:any=null,running=false;
+let scans=0,opportunities=0,signals=0,errors=0,lastBest:any=null,running=false,runningSince=0,lastTickAt:string|null=null,lastEligibleCount=0;
+// tick() is a plain async function guarded by `running` -- a single hung await (a stuck DB/redis
+// call) would otherwise set running=true forever with nothing to ever flip it back, silently
+// wedging every future tick into a no-op while the separate startHeartbeat() timer below keeps
+// reporting "healthy" regardless (it's on its own interval, unaware tick() ever stopped doing
+// anything). A tick genuinely never takes anywhere near this long, so treating one still "running"
+// past this bound as wedged -- and letting the next interval firing take over -- costs nothing on
+// the healthy path and recovers automatically on the wedged one instead of needing a manual restart.
+const TICK_STALE_MS=5*60_000;
 
 async function systemTrader(){
   const handle="memecloud-global-brain";
@@ -194,7 +202,8 @@ async function notifyWhaleActivity(row:any,whaleCount:number){
   }
 }
 async function tick(){
-  if(running)return;running=true;
+  if(running&&Date.now()-runningSince<TICK_STALE_MS)return;
+  running=true;runningSince=Date.now();lastTickAt=new Date().toISOString();
   try{
     const cfg=await getConfig<any>("brain"),maxAge=Math.max(5_000,Number(cfg?.snapshotMaxAgeMs??45_000));
     const triggerWindowMin=Math.max(5,Number(cfg?.walletTriggerWindowMinutes??30));
@@ -214,6 +223,7 @@ async function tick(){
     // already in an open position and must keep being risk-managed).
     const snaps=eligible.size?await db.memeMarketSnapshot.findMany({where:{observedAt:{gte:new Date(Date.now()-maxAge)}},orderBy:{observedAt:"desc"},take:800}):[];
     const latest=new Map<string,any>();for(const s of snaps){const k=`${s.chain}:${s.mint}`;if(eligible.has(k)&&!latest.has(k))latest.set(k,s)}
+    lastEligibleCount=eligible.size;
     const trader=await systemTrader(),users=await ensureBrainFollowers(trader.id);
     for(const s of latest.values()){
       const c=await context(s.chain,s.mint,s),d=evaluateOpportunity(c.evidence);
@@ -333,7 +343,7 @@ async function checkWatchlist(){
   }catch(e){watchlistErrors++;console.error("[brain-worker] watchlist check failed",e)}
 }
 const brainLoopMs=Math.max(1_000,Number(process.env.BRAIN_LOOP_MS??3_000));
-startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:brainLoopMs,watchlistAlerts,watchlistPushes,watchlistErrors}));
+startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:brainLoopMs,watchlistAlerts,watchlistPushes,watchlistErrors,lastTickAt,lastEligibleCount}));
 setInterval(()=>void tick(),brainLoopMs);void tick();
 setInterval(()=>void checkWatchlist(),10_000);void checkWatchlist();
 console.log("[brain-worker] Global Brain online");
