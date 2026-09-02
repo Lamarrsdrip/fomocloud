@@ -58,3 +58,22 @@ export function isProviderQuotaExhausted(error: unknown) {
   const e = error as { status?: number; message?: string; body?: { message?: string } };
   return e?.status === 429 || /quota|compute units usage limit|rate limit/i.test(`${e?.message ?? ""} ${e?.body?.message ?? ""}`);
 }
+
+// Real gap found by audit: every isProviderQuotaExhausted() hit opened the same hour-long circuit,
+// whether it was a genuine sustained quota/compute-units exhaustion or just a bare 429 from
+// ordinary momentary traffic congestion (confirmed live: a direct call to the wallet-scoring
+// endpoint succeeded seconds after a *different*, unrelated Birdeye call on the same shared API
+// key returned "Too many requests" -- the account's rate limit is shared and bursty across every
+// consumer of the key, not a sustained per-endpoint block). A plain 429 with no quota/compute-units
+// wording is exactly that kind of short burst and clears again within seconds to a couple of
+// minutes; treating it the same as a real quota exhaustion was blocking ALL wallet evidence
+// gathering -- the only path a wallet can ever leave ANALYZING through -- for a full hour at a
+// time, repeatedly, which is why 240+ actively-trading candidates never accumulated enough
+// evidence to promote. Only a message that actually names quota/compute-units exhaustion still
+// gets the long circuit; a bare 429 gets a short one so real evidence keeps accumulating.
+export function providerQuotaCircuitMs(error: unknown) {
+  const e = error as { status?: number; message?: string; body?: { message?: string } };
+  const text = `${e?.message ?? ""} ${e?.body?.message ?? ""}`;
+  if (/quota|compute units usage limit/i.test(text)) return 60 * 60_000;
+  return 2 * 60_000;
+}

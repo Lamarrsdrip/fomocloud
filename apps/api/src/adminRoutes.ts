@@ -79,12 +79,30 @@ adminRoutes.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:Authe
   // SIMULATION" / "Live trading enabled" ended up contradicting each other in production: two
   // different endpoints each doing their own partial read of the underlying gates).
   const liveReadiness=await computeLiveReadiness();
+  // Real gap found by audit: "opportunitiesToday" was actually newTokensToday -- every raw
+  // wallet-triggered DiscoveryToken, most of which never become a scored, evidence-backed Hunt
+  // opportunity. Labeled as "opportunities" it reads as if Hunt should be full when it's genuinely
+  // empty, which is exactly the confusion that happened live. qualifiedOpportunitiesNow uses the
+  // identical qualification bar GET /v1/brain/feed shows real users, so this number and what a
+  // user actually sees on Hunt can never silently drift apart again.
+  const scanningOpportunities=await db.globalBrainOpportunity.findMany({
+    where:{lastEvaluatedAt:{gte:new Date(Date.now()-48*60*60_000)},score:{gte:58},state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}},
+    select:{evidence:true,whaleBuyers60s:true,knownWhaleBuyers60s:true,smartMoneyNetFlow5mUsd:true,liquidityUsd:true}
+  });
+  const qualifiedOpportunitiesNow=scanningOpportunities.filter((o:any)=>{
+    const ev=(o.evidence??{}) as any;
+    const weighted=Number(ev.convergentWeightedScore??ev.smartWalletWeightedScore??0);
+    const whales=Number(o.whaleBuyers60s??0)+Number(o.knownWhaleBuyers60s??0);
+    const smartNet=Number(o.smartMoneyNetFlow5mUsd??0);
+    const materialSmartNet=smartNet>=Math.max(2500,Number(o.liquidityUsd??0)*.03);
+    return weighted>=1||whales>=1||materialSmartNet;
+  }).length;
   res.json({
     metrics:{
       users:{registered:registeredUsers,active:activeUsers,newToday,newWeek,verified:verifiedUsers,walletConnected:walletUsers,autoCopyEnabled:autoCopyUsers},
       trading:{openPositions,ordersToday,buysToday:buyOrders,sellsToday:sellOrders,liveOrders,simulationOrders,realizedPnlUsd:microsToUsd(livePnl._sum.realizedPnlUsdMicros??0n),unrealizedPnlUsd:microsToUsd(livePnl._sum.unrealizedPnlUsdMicros??0n),allocatedCashUsd:microsToUsd((cash._sum.availableUsdMicros??0n)+(cash._sum.inTradesUsdMicros??0n))},
       smartTraders:{platform:platformTraders,candidates,paperTracked:paperCandidates,proven:provenCandidates,rejected:rejectedCandidates,averageCopyability:averageCopyability._avg.copyabilityScore},
-      discovery:{watchedTokens:discoveryTokens,opportunitiesToday:newTokensToday},
+      discovery:{watchedTokens:discoveryTokens,newTokensToday,qualifiedOpportunitiesNow},
       engine:{signals,signalsToday,buyDecisions,waitDecisions,skipDecisions}
     },
     executionMode:liveReadiness.actualRuntimeMode.toLowerCase(),

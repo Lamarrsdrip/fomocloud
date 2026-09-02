@@ -1,6 +1,6 @@
 import {db} from "@memecloud/db";
 import {BirdeyeClient} from "@memecloud/providers";
-import {classifyWalletRole,isProviderQuotaExhausted,providerEvidenceDue,scoreWallet,shouldPaperTrack,shouldProve} from "@memecloud/discovery";
+import {classifyWalletRole,isProviderQuotaExhausted,providerEvidenceDue,providerQuotaCircuitMs,scoreWallet,shouldPaperTrack,shouldProve} from "@memecloud/discovery";
 import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {Redis} from "ioredis";
@@ -47,7 +47,7 @@ async function tick(){
     const raw=await b.walletPnlSummary(c.address,"30d","solana");requestsThisCycle++;providerRequests++;p=b.normalizeWalletPnl(raw);providerEvidenceObservedAt=new Date().toISOString();candidateProviderStatus="FRESH";
     if(due.priority==="P1"&&requestsThisCycle<maxProviderRequests&&(!priorMeta.walletPnl7dObservedAt||Date.now()-new Date(priorMeta.walletPnl7dObservedAt).getTime()>24*3600_000)){const raw7d=await b.walletPnlSummary(c.address,"7d","solana");requestsThisCycle++;providerRequests++;p7d=b.normalizeWalletPnl(raw7d)}
     if(due.priority==="P1"&&requestsThisCycle<maxProviderRequests&&(!priorMeta.walletPnl90d?.observedAt||Date.now()-new Date(priorMeta.walletPnl90d.observedAt).getTime()>7*24*3600_000)){const raw90d=await b.walletPnlSummary(c.address,"90d","solana");requestsThisCycle++;providerRequests++;const z=b.normalizeWalletPnl(raw90d);p90d={...z,observedAt:new Date().toISOString(),provider:"BIRDEYE_WALLET_PNL_SUMMARY"}}
-   }catch(e){if(isProviderQuotaExhausted(e)){await redis.set(CIRCUIT_KEY,"1","EX",3600);circuitOpen=true;providerQuotaStops++;providerStatus="QUOTA_CIRCUIT_OPEN";candidateProviderStatus=providerStatus;console.warn("[scoring] Birdeye quota circuit opened; continuing from stored and on-chain evidence")}else{candidateProviderStatus="UNAVAILABLE";console.warn("[scoring] provider unavailable",c.address,String((e as any)?.message??e))}}}
+   }catch(e){if(isProviderQuotaExhausted(e)){const circuitMs=providerQuotaCircuitMs(e);await redis.set(CIRCUIT_KEY,"1","PX",circuitMs);circuitOpen=true;providerQuotaStops++;providerStatus="QUOTA_CIRCUIT_OPEN";candidateProviderStatus=providerStatus;console.warn(`[scoring] Birdeye quota circuit opened for ${Math.round(circuitMs/1000)}s; continuing from stored and on-chain evidence`)}else{candidateProviderStatus="UNAVAILABLE";console.warn("[scoring] provider unavailable",c.address,String((e as any)?.message??e))}}}
    const providerAge=providerEvidenceObservedAt?Date.now()-new Date(providerEvidenceObservedAt).getTime():Infinity,providerFresh=providerAge<=48*3600_000;
    const [obs,paper,userChases,recentFlow]=await Promise.all([
     db.sourceSignalObservation.findMany({where:{sourceWallet:c.address,horizonSeconds:3600,status:"OK",returnPct:{not:null}},orderBy:{observedAt:"desc"},take:100}),
