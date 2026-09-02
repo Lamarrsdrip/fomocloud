@@ -5,7 +5,11 @@ import {startHeartbeat} from "@memecloud/ops";
 import {Redis} from "ioredis";
 import {classifyTokenProvenance} from "@memecloud/discovery";
 
-let scans=0,candidatesSeen=0,errors=0,lastRun:string|null=null,running=false,mode:"WALLET_FIRST"="WALLET_FIRST";
+let scans=0,candidatesSeen=0,errors=0,lastRun:string|null=null,running=false,runningSince=0,mode:"WALLET_FIRST"="WALLET_FIRST";
+// Same class of bug found and fixed in brain-worker/solana-listener this session: an unbounded
+// `if(running)return;running=true` lets one hung await wedge every future scan forever while the
+// heartbeat below keeps reporting "healthy" regardless, on its own independent timer.
+const SCAN_STALE_MS=30*60_000;
 let seedWalletScans=0,seedWalletCandidates=0;
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 
@@ -101,7 +105,7 @@ async function bootstrapWalletsFromTrustedActivity(client:BirdeyeClient,cfg:any)
 }
 
 async function scan(){
-  if(running)return;running=true;
+  if(running&&Date.now()-runningSince<SCAN_STALE_MS)return;running=true;runningSince=Date.now();
   try{
     const cfg=await getConfig<any>("discovery");
     mode="WALLET_FIRST";

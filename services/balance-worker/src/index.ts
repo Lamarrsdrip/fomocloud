@@ -32,7 +32,13 @@ const usdc=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzy
 let walletsScanned=0,allocationsUpdated=0,assetBalancesUpdated=0,allocationsSkippedUnresolved=0,errors=0,lastCycleMs=0,rateLimited=false,lastRateLimitAt:number|null=null,fallbackSkippedForRateLimit=0;
 let depositsRecorded=0,unsupportedDepositsRecorded=0,depositWalletsScanned=0,depositScanErrors=0,depositScanOffset=0;
 
-let running=false;
+let running=false,runningSince=0;
+// Same class of bug found and fixed in brain-worker/solana-listener this session: a plain
+// `if(running)return;running=true` with no bound means one hung await (an RPC/DB call with no
+// internal timeout) sets running=true forever, silently wedging every future cycle while
+// startHeartbeat's own independent timer keeps reporting "healthy" regardless. A cycle here
+// genuinely never takes anywhere near this long.
+const CYCLE_STALE_MS=10*60_000;
 
 // Returns null for an address whenever its real balance genuinely could not be determined this
 // cycle (RPC denial/429/timeout/error) -- never a fabricated 0n. A real bug this shipped in
@@ -202,7 +208,7 @@ async function reconcileDeposits(wallet:{id:string;userId:string;address:string;
 }
 function isRateLimitErr(e:any):boolean{return /429|too many requests|rate.?limit/i.test(String(e?.message??e??""))}
 async function cycle(){
-  if(running)return; running=true; const started=Date.now();
+  if(running&&Date.now()-runningSince<CYCLE_STALE_MS)return; running=true;runningSince=Date.now(); const started=Date.now();
   try{
     await reloadConfig().catch(e=>console.error("[balance-worker] config reload failed, keeping previous connection",e));
     const wallets=await db.wallet.findMany({where:{chain:"SOLANA"},select:{id:true,userId:true,address:true,createdAt:true},take:10_000,orderBy:{createdAt:"asc"}});

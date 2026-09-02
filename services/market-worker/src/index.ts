@@ -24,7 +24,13 @@ const sharedRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{
   ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))
 });
 let sharedBudgetDenied=0,lastSharedBudgetDenyAt:number|null=null;
-let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false;
+let tracked=0,updates=0,richUpdates=0,quoteErrors=0,enrichmentErrors=0,running=false,runningSince=0;
+// Same class of bug found and fixed in brain-worker/solana-listener this session: an unbounded
+// `if(running)return;running=true` lets one hung await (a provider/RPC call with no internal
+// timeout) wedge every future tick forever while the heartbeat keeps reporting "healthy"
+// regardless, on its own independent timer. This worker prices OPEN LIVE positions (P0) as well
+// as discovery candidates -- a wedge here would silently stop real position mark-price updates.
+const TICK_STALE_MS=5*60_000;
 let jupiterRequests=0,rpcRequests=0,birdeyeRequests=0,quietTickExternalRequests=0,quietTickCacheHits=0,dbReads=0,redisReads=0;
 
 // Previously read once at process startup and cached forever — an Admin change to the RPC URL,
@@ -222,7 +228,7 @@ async function updateMint(mint:string,priority:"P0"|"P2",deep:boolean){
 let adaptiveDelayMs=Number(process.env.MARKET_BATCH_DELAY_MS??500);
 const baseDelayMs=adaptiveDelayMs,maxDelayMs=Math.max(baseDelayMs,8000);
 async function tick(){
-  if(running)return;running=true;
+  if(running&&Date.now()-runningSince<TICK_STALE_MS)return;running=true;runningSince=Date.now();
   try{
     await reloadConfig().catch(e=>console.error("[market-worker] config reload failed, keeping previous clients",e));
     const plan=await trackedMints();const mints=plan.mints;tracked=mints.length;

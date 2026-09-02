@@ -23,7 +23,11 @@ await reloadConfig();
 setInterval(()=>void reloadConfig().catch(e=>console.error("[paper-worker] config reload failed, keeping previous clients",e)),60_000);
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const paperUsd=Math.max(10,Number(process.env.DISCOVERY_PAPER_TRADE_USD??100));
-const decimals=new Map<string,number>();let entries=0,skips=0,marks=0,exits=0,errors=0,ticking=false;
+const decimals=new Map<string,number>();let entries=0,skips=0,marks=0,exits=0,errors=0,ticking=false,tickingSince=0;
+// Same class of bug found and fixed in brain-worker/solana-listener/exits this session: an
+// unbounded `if(ticking)return;ticking=true` lets one hung await wedge every future mark() call
+// forever while the heartbeat keeps reporting "healthy" regardless.
+const MARK_STALE_MS=5*60_000;
 async function dec(mint:string){
   if(decimals.has(mint))return decimals.get(mint)!;
   const d=await cachedTokenDecimals(redis,mint,async()=>(await connection.getTokenSupply(new PublicKey(mint),"confirmed")).value.decimals);
@@ -62,7 +66,7 @@ const worker=new Worker("discovery-paper",async job=>{
 },{connection:redis,concurrency:4});
 worker.on("failed",(_j,e)=>{errors++;console.error("[paper-worker] entry",e)});
 
-async function mark(){if(ticking)return;ticking=true;try{
+async function mark(){if(ticking&&Date.now()-tickingSince<MARK_STALE_MS)return;ticking=true;tickingSince=Date.now();try{
   const ps=await db.paperCopyTrade.findMany({where:{status:{in:["OPEN","PARTIAL"]}},take:500});
   for(const p of ps){try{
     if(!p.entryPriceUsd||!p.remainingTokenRaw||!p.tokenRaw||!p.tokenDecimals)continue;

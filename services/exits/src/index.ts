@@ -36,7 +36,14 @@ async function reloadConfig(){
 await reloadConfig();
 setInterval(()=>void reloadConfig().catch(e=>console.error("[exits] config reload failed, keeping previous clients",e)),60_000);
 const usdc=process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-let scanned=0,marked=0,stale=0,errors=0,profitEvents=0,liveSubmitted=0,liveConfirmed=0,ticking=false;
+let scanned=0,marked=0,stale=0,errors=0,profitEvents=0,liveSubmitted=0,liveConfirmed=0,ticking=false,tickingSince=0;
+// Same class of bug found and fixed in brain-worker/solana-listener this session: an unbounded
+// `if(ticking)return;ticking=true` lets one hung await wedge every future tick forever while the
+// heartbeat keeps reporting "healthy" regardless, on its own independent timer. This is the
+// single most safety-critical instance of this pattern in the codebase -- exits monitors and
+// exits real OPEN LIVE positions; a silent wedge here means real money stops being protected
+// while every other signal says the platform is fine.
+const TICK_STALE_MS=2*60_000;
 
 async function userEvent(userId:string,type:string,title:string,body:string,data:Record<string,unknown>={}){
   const event=await db.userActivityEvent.create({data:{userId,type,title,body,data:data as any}});
@@ -313,12 +320,17 @@ async function tick(){
       // the exact same unresolved condition. Only create a new incident if the last unresolved one
       // for this position+code is more than 10 minutes old (still resurfaces if it's genuinely
       // still stuck, without spamming every 3 seconds).
-      const recent=await db.riskIncident.findFirst({where:{positionId:p.id,code,resolvedAt:null,createdAt:{gte:new Date(Date.now()-10*60_000)}},select:{id:true}}).catch(()=>null);
+      // resolvedAt is never explicitly written at RiskIncident creation, so it is genuinely UNSET,
+      // not "set to null" -- a bare `resolvedAt:null` filter never matches an unset field on
+      // Mongo (only `{isSet:false}` does), which is exactly why the dedup this comment describes
+      // was never actually working: `recent` was always null, so a new incident was still created
+      // every 3s tick regardless.
+      const recent=await db.riskIncident.findFirst({where:{positionId:p.id,code,resolvedAt:{isSet:false},createdAt:{gte:new Date(Date.now()-10*60_000)}},select:{id:true}}).catch(()=>null);
       if(!recent)await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code,detail:{message:String(e?.message??e)}}}).catch(()=>{});
     }
   }
 }
-async function guardedTick(){if(ticking)return;ticking=true;try{await tick()}catch(e){errors++;console.error("[exits]",e)}finally{ticking=false}}
+async function guardedTick(){if(ticking&&Date.now()-tickingSince<TICK_STALE_MS)return;ticking=true;tickingSince=Date.now();try{await tick()}catch(e){errors++;console.error("[exits]",e)}finally{ticking=false}}
 startHeartbeat("exits",()=>({scanned,marked,stale,errors,profitEvents,liveSubmitted,liveConfirmed,ticking,adaptiveExit:true,signerConfigured:Boolean(signer)}));
 setInterval(()=>void guardedTick(),3000);void guardedTick();
 console.log("[exits] adaptive position monitor active");

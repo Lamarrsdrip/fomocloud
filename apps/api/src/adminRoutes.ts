@@ -319,7 +319,12 @@ adminRoutes.get("/v1/admin/discovery/watchlist", requireAdmin, asyncRoute(async 
 }));
 adminRoutes.get("/v1/admin/alerts", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const unresolvedOnly=String(req.query.unresolved??"")==="true";
-  const alerts=await db.adminAlert.findMany({where:unresolvedOnly?{resolvedAt:null}:undefined,orderBy:{createdAt:"desc"},take:250});
+  // Real bug found by audit, same class as the RefreshSession one: AdminAlert.resolvedAt is never
+  // explicitly written at creation (see brain-worker's checkWatchlist), so it's genuinely UNSET on
+  // every row, not "set to null" -- Prisma's MongoDB connector does not match a bare `{field:null}`
+  // filter against an unset field, only `{field:{isSet:false}}` does. The unresolved-only filter
+  // was therefore silently returning zero alerts, always, regardless of how many actually existed.
+  const alerts=await db.adminAlert.findMany({where:unresolvedOnly?{resolvedAt:{isSet:false}}:undefined,orderBy:{createdAt:"desc"},take:250});
   res.json({alerts});
 }));
 adminRoutes.post("/v1/admin/alerts/:id/resolve", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {

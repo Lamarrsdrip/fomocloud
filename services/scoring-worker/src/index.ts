@@ -5,7 +5,11 @@ import {getConfig} from "@memecloud/config";
 import {startHeartbeat} from "@memecloud/ops";
 import {Redis} from "ioredis";
 
-let scored=0,promotedPaper=0,promotedProven=0,rejected=0,errors=0,running=false;
+let scored=0,promotedPaper=0,promotedProven=0,rejected=0,errors=0,running=false,runningSince=0;
+// Same class of bug found and fixed in brain-worker/solana-listener this session: an unbounded
+// `if(running)return;running=true` lets one hung await wedge every future cycle forever while
+// the heartbeat keeps reporting "healthy" regardless, on its own independent timer.
+const TICK_STALE_MS=15*60_000;
 let providerRequests=0,providerQuotaStops=0,providerStatus="UNKNOWN",lastCycleAt:string|null=null,lastSuccessfulCycleAt:string|null=null;
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const CIRCUIT_KEY="provider:circuit:BIRDEYE:wallet-scoring";
@@ -28,7 +32,7 @@ function median(xs:number[]){if(!xs.length)return 0;const a=[...xs].sort((x,y)=>
 function storedPnl(c:any,meta:any){const raw=meta?.walletPnlNormalized30d;if(raw&&typeof raw==="object")return raw;const trades=Number(c.sampleTrades??0),wins=Number(c.profitableTrades??0);return {totalPnlUsd:Number(c.totalPnlUsd??0),realizedPnlUsd:Number(c.realizedPnlUsd??0),unrealizedPnlUsd:Math.max(0,Number(c.totalPnlUsd??0)-Number(c.realizedPnlUsd??0)),volumeUsd:Number(c.volumeUsd??0),tradeCount:trades,profitableTrades:wins,winRate:trades?wins/trades*100:undefined,evidenceCompletenessPct:Number(meta?.providerEvidenceCompletenessPct??0)}}
 
 async function tick(){
- if(running)return;running=true;lastCycleAt=new Date().toISOString();
+ if(running&&Date.now()-runningSince<TICK_STALE_MS)return;running=true;runningSince=Date.now();lastCycleAt=new Date().toISOString();
  try{
   const [b,dc,circuit]=await Promise.all([client(),getConfig<any>("discovery"),redis.get(CIRCUIT_KEY)]);
   const paperMin=Math.max(65,Number(dc?.paperMinScore??process.env.DISCOVERY_PAPER_MIN_SCORE??68)),provenMin=Math.max(80,Number(dc?.provenMinScore??process.env.DISCOVERY_PROVEN_MIN_SCORE??80)),provenSamples=Math.max(20,Number(dc?.provenMinForwardSamples??process.env.DISCOVERY_PROVEN_MIN_FORWARD_SAMPLES??20)),provenMean=Math.max(5,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
