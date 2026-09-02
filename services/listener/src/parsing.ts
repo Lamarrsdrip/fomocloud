@@ -86,3 +86,26 @@ export function classifySwap(tx: ParsedTransactionWithMeta, wallet: string) {
   const amountUsd=(quoteLeg.mint===usdcMint||quoteLeg.mint===usdtMint)&&Number.isFinite(quoteAmount)?quoteAmount:undefined;
   return { action, inputMint: input.mint, outputMint: output.mint, inputRaw, outputRaw, sourcePriceUsd, sourceTokenBalanceBeforeRaw, sourceTokenBalanceAfterRaw, sourceSoldPct, amountUsd };
 }
+
+// Extracted for the same reason as the rest of this file: the pure "should we tear down and
+// reopen the connection" decision, testable without a real Solana Connection. See index.ts's
+// pollSlotLiveness -- conn.onLogs websocket subscriptions have no built-in liveness/reconnect, so
+// a silent drop (confirmed live: detected/decoded/errors all froze mid-run with no thrown error)
+// leaves every subscription id sitting in the map forever with a dead underlying socket unless
+// something else notices and forces a reconnect.
+export function shouldReconnect(input: {
+  now: number;
+  lastSlotAt: number;
+  lastForcedReconnectAt: number;
+  slotStaleMs: number;
+  forcedIntervalMs: number;
+}): { reconnect: boolean; reason: string | null } {
+  const { now, lastSlotAt, lastForcedReconnectAt, slotStaleMs, forcedIntervalMs } = input;
+  if (lastSlotAt && now - lastSlotAt > slotStaleMs) {
+    return { reconnect: true, reason: `slot poll stale for ${Math.round((now - lastSlotAt) / 1000)}s` };
+  }
+  if (now - lastForcedReconnectAt > forcedIntervalMs) {
+    return { reconnect: true, reason: "periodic refresh" };
+  }
+  return { reconnect: false, reason: null };
+}

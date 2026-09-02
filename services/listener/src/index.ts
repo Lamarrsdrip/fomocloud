@@ -6,7 +6,8 @@ import { db } from "@memecloud/db";
 import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
 import { solanaRpcCandidates, pickHealthyRpc, RpcBudget, recordProviderMetric } from "@memecloud/shared";
-import { classifySwap } from "./parsing.js";
+import { classifySwap, shouldReconnect } from "./parsing.js";
+import { planSignatureReplay } from "./replay.js";
 import {classifyTokenProvenance} from "@memecloud/discovery";
 
 const marketCfg=await getConfig<any>("marketData");
@@ -24,6 +25,54 @@ const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
 let capitalSnapshots=0,capitalSnapshotErrors=0,lastCapitalSnapshotAt=0;
+// `conn.onLogs` websocket subscriptions have no built-in liveness/reconnect: a silent network
+// drop (confirmed live -- this is exactly what happened in production: detected/decoded/errors
+// all froze mid-run with no thrown error, no crash, nothing to make the process exit) leaves every
+// subscription ID sitting in `subscriptions` forever with a dead underlying socket. refreshWatchlist
+// only subscribes wallets NOT already in that map, so a silently-dead connection is never noticed
+// or recovered on its own -- the heartbeat below kept reporting "healthy" throughout because it
+// just reads these counters on its own independent timer, with no idea the actual event stream had
+// stopped. lastEventAt/lastSlotAt below are the real liveness proof: lastEventAt only advances on
+// an actual onLogs callback firing (proves wallet activity is genuinely reaching us), lastSlotAt
+// advances on an independent getSlot() poll that runs regardless of wallet activity (proves the
+// RPC connection itself is alive even during a genuine wallet-quiet stretch). Either going stale
+// past SLOT_POLL_STALE_MS triggers a hard reconnect; a periodic unconditional reconnect on top of
+// that is cheap insurance (~23 subscriptions) against any other silent-death mode this doesn't
+// directly detect.
+let lastEventAt=0,lastSlotAt=0,currentSlot=0,slotPollErrors=0,reconnects=0;
+const SLOT_POLL_STALE_MS=90_000;
+const FORCED_RECONNECT_MS=15*60_000;
+// planSignatureReplay (replay.ts) already existed, fully tested, and was never actually wired up
+// anywhere -- meaning every reconnect (whether from a config change, or the hard reconnect this
+// session added for the silent-websocket-death case) was already silently losing whatever
+// happened to a watched wallet during the gap before this fix: onLogs only fires for events after
+// a subscription is (re-)established, never for what was missed while it was down. Cursor is
+// process-lifetime, not persisted -- a full process restart baselines fresh rather than replaying
+// (this matches replay.ts's own "baselines a newly verified wallet" behavior for an unknown
+// cursor, and avoids ever guessing how far back a genuinely cold start should reach).
+const lastSeenSignature=new Map<string,string>();
+let replays=0,replayFailures=0;
+async function replayMissedSignatures(traderId:string,address:string,pubkey:PublicKey){
+  const cursor=lastSeenSignature.get(address);
+  if(!cursor)return;
+  try{
+    const plan=await planSignatureReplay(
+      async(before,limit)=>conn.getSignaturesForAddress(pubkey,{before,limit},"confirmed"),
+      cursor
+    );
+    if(!plan.complete){
+      // Fails closed by design (see replay.ts) rather than guessing across an unbounded gap --
+      // logged so a genuinely long outage is visible, not silently accepted as "nothing missed".
+      console.warn("[listener] replay incomplete for",address,"- gap too large or cursor not found; resuming from current activity only");
+      return;
+    }
+    for(const sig of plan.signatures){
+      await handleSignature(traderId,address,sig.signature).catch(e=>{errors++;console.error("[listener] replay tx error",sig.signature,e)});
+      lastSeenSignature.set(address,sig.signature);
+    }
+    if(plan.signatures.length)replays+=plan.signatures.length;
+  }catch(e){replayFailures++;console.error("[listener] replay failed",address,e)}
+}
 
 function conservativeCapitalTier(usdcLowerBound:number){
   if(usdcLowerBound>=10_000_000)return "CAPITAL_10M";if(usdcLowerBound>=2_000_000)return "CAPITAL_2M";if(usdcLowerBound>=1_000_000)return "CAPITAL_1M";if(usdcLowerBound>=100_000)return "CAPITAL_100K";if(usdcLowerBound>=50_000)return "CAPITAL_50K";return null;
@@ -61,7 +110,7 @@ async function fetchParsedTransactionWithRetry(signature:string){
 }
 
 async function handleSignature(traderId:string,wallet:string,signature:string){
-  detected++;
+  detected++;lastEventAt=Date.now();
   const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
   if(existing) return;
   const tx=await fetchParsedTransactionWithRetry(signature);
@@ -126,6 +175,43 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
 }
 
 let currentRpcHost=new URL(rpc).host;
+// Tears down every subscription and opens a fresh Connection so a silently-dead websocket can't
+// keep masquerading as subscribed forever. Safe to call anytime: refreshWatchlist's normal 30s
+// cycle repopulates `subscriptions` from scratch immediately afterward.
+async function hardReconnect(reason:string){
+  reconnects++;
+  console.warn("[listener] hard reconnect:",reason);
+  for(const [,id] of subscriptions)await conn.removeOnLogsListener(id).catch(()=>{});
+  subscriptions.clear();
+  const fresh=await getConfig<any>("marketData").catch(()=>null);
+  const freshRpc=fresh?await pickHealthyRpc(solanaRpcCandidates(fresh),"[listener]").catch(()=>rpc):rpc;
+  conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+  currentRpcHost=new URL(freshRpc).host;
+  lastSlotAt=0;
+}
+let lastForcedReconnectAt=Date.now();
+// A truly dead connection can hang getSlot() forever rather than reject it -- an unbounded await
+// here would mean this very staleness check never gets a chance to run again on this interval
+// firing, silently defeating the whole recovery path. The timeout guarantees this function always
+// reaches the staleness check below within a bounded time, whichever way the poll resolves.
+function withTimeout<T>(p:Promise<T>,ms:number):Promise<T>{
+  return Promise.race([p,new Promise<T>((_,rej)=>setTimeout(()=>rej(new Error("slot poll timed out")),ms))]);
+}
+async function pollSlotLiveness(){
+  try{
+    currentSlot=await withTimeout(conn.getSlot("confirmed"),10_000);
+    lastSlotAt=Date.now();
+  }catch(e){
+    slotPollErrors++;
+    console.error("[listener] slot poll failed",(e as any)?.message??e);
+  }
+  const now=Date.now();
+  const decision=shouldReconnect({now,lastSlotAt,lastForcedReconnectAt,slotStaleMs:SLOT_POLL_STALE_MS,forcedIntervalMs:FORCED_RECONNECT_MS});
+  if(decision.reconnect){
+    lastForcedReconnectAt=now;
+    await hardReconnect(decision.reason!).catch(e=>console.error("[listener] reconnect failed",e));
+  }
+}
 async function reconnectIfConfigChanged(){
   const fresh=await getConfig<any>("marketData");
   // Re-running the real health probe here (not just re-reading the raw config) means this also
@@ -182,16 +268,28 @@ async function refreshWatchlist(){
     try{
       const pubkey=new PublicKey(tw.address);
       const id=conn.onLogs(pubkey,async logs=>{
+        lastSeenSignature.set(tw.address,logs.signature);
         try{await handleSignature(tw.traderId,tw.address,logs.signature);}
         catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
       },"confirmed");
       subscriptions.set(tw.address,id);
       console.log("[listener] watching",tw.trader.handle,tw.address);
+      // A cursor already existing here means this wallet was watched before this exact
+      // subscribe call (a prior process cursor, or a resubscribe after hardReconnect) -- catch up
+      // on anything that happened in the gap. A genuinely first-ever subscribe has no cursor yet
+      // and intentionally does not backfill (see replayMissedSignatures/replay.ts).
+      if(lastSeenSignature.has(tw.address)){
+        await replayMissedSignatures(tw.traderId,tw.address,pubkey);
+      }else{
+        const [newest]=await conn.getSignaturesForAddress(pubkey,{limit:1},"confirmed").catch(()=>[]);
+        if(newest)lastSeenSignature.set(tw.address,newest.signature);
+      }
     }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
   }
   await refreshOneCapitalSnapshot();
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,capitalSnapshots,capitalSnapshotErrors,capitalSnapshotMethod:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND"}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,capitalSnapshots,capitalSnapshotErrors,capitalSnapshotMethod:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",lastEventAt:lastEventAt?new Date(lastEventAt).toISOString():null,lastSlotAt:lastSlotAt?new Date(lastSlotAt).toISOString():null,currentSlot,slotPollErrors,reconnects,replays,replayFailures}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
+setInterval(()=>void pollSlotLiveness(),20_000);void pollSlotLiveness();
 console.log("[listener] running");

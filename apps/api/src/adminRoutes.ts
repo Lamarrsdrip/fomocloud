@@ -164,6 +164,11 @@ adminRoutes.post("/v1/admin/traders", adminOnly, asyncRoute(async (req:AuthedReq
     const chain=String(w?.chain??"SOLANA") as Chain, address=String(w?.address??"").trim();
     if(!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET",chain});
   }
+  // Trader.handle is @unique -- a duplicate previously fell through to the generic 500 handler
+  // ("internal error" with no explanation) instead of a real validation response. Checked
+  // explicitly up front so the admin sees why, not a bare internal-error toast.
+  const existing=await db.trader.findUnique({where:{handle},select:{id:true}});
+  if(existing) return res.status(409).json({error:"HANDLE_ALREADY_EXISTS",message:`A trader with handle "${handle}" already exists.`});
   const trader=await db.trader.create({
     data:{
       handle,displayName,xHandle:String(req.body?.xHandle??handle).replace(/^@/,"")||undefined,bio:req.body?.bio||undefined,category:req.body?.category||undefined,

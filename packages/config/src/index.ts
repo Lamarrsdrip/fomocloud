@@ -120,7 +120,16 @@ export async function readExecutionState(options:ReadExecutionStateOptions={}){
   // scanner heartbeat anymore; listener health is part of requiredWorkersHealthy and actual
   // observed-chain freshness is enforced separately below.
   const scannerDegraded=false;
-  const chainDataFresh=Boolean(latestChainEvent)&&now-latestChainEvent!.observedAt.getTime()<EXECUTION_CHAIN_DATA_MAX_AGE_MS;
+  // A fresh ChainFlowObservation alone is not a fair freshness bar under wallet-first ingestion --
+  // genuinely no tracked wallet trading for a while is expected, not broken. lastSlotAt is the
+  // listener's own independent liveness probe (see services/listener: a periodic getSlot() poll
+  // unrelated to whether any wallet actually traded), so a fresh one proves the real Solana
+  // observation path is alive even during a real quiet stretch. Either counts.
+  const listenerHeartbeat=heartbeats.find(h=>h.name==="solana-listener");
+  const listenerLastSlotAt=(listenerHeartbeat?.detail as any)?.lastSlotAt;
+  const listenerSlotFresh=Boolean(listenerLastSlotAt)&&now-new Date(listenerLastSlotAt).getTime()<EXECUTION_CHAIN_DATA_MAX_AGE_MS;
+  const chainEventFresh=Boolean(latestChainEvent)&&now-latestChainEvent!.observedAt.getTime()<EXECUTION_CHAIN_DATA_MAX_AGE_MS;
+  const chainDataFresh=chainEventFresh||listenerSlotFresh;
   const resolved=resolveExecutionState({
     liveTradingRequested:Boolean(liveCfg?.enabled),
     environmentMode,
@@ -150,6 +159,8 @@ export async function readExecutionState(options:ReadExecutionStateOptions={}){
       rpcState:rpc.operational?rpc.state:helius.operational?helius.state:`${rpc.state}/${helius.state}`,
       chainDataFresh,
       lastRealChainEvent:latestChainEvent?.observedAt??null,
+      lastListenerSlotObservation:listenerLastSlotAt??null,
+      listenerCurrentSlot:(listenerHeartbeat?.detail as any)?.currentSlot??null,
       scannerDegraded,
       jupiter:jupiter.operational,
       signerCredentialsConnected:privy.operational,
