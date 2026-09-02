@@ -1032,8 +1032,13 @@ async function checkProviderDegradation(){
     const heartbeats=await db.workerHeartbeat.findMany({where:{name:{in:RPC_HEARTBEAT_WORKERS}}});
     for(const h of heartbeats){
       const dt:any=h.detail??{};
+      // A worker's `detail` is whatever it last reported before it stopped heartbeating -- if it
+      // died while rate-limited, that stale `rateLimited:true` would otherwise keep recreating/
+      // renewing a PROVIDER_DEGRADED incident forever, long after the condition (and the worker's
+      // own process) is gone. Only a heartbeat still fresh enough to be a live report counts.
+      const heartbeatFresh=Date.now()-h.lastBeatAt.getTime()<=5*60_000;
       const open=await db.riskIncident.findFirst({where:{scope:"PROVIDER_DEGRADED",code:h.name,resolvedAt:{isSet:false}}});
-      if(dt.rateLimited){
+      if(dt.rateLimited&&heartbeatFresh){
         if(!open) await db.riskIncident.create({data:{severity:"WARNING",scope:"PROVIDER_DEGRADED",code:h.name,detail:{message:`${h.name} is currently being rate-limited by its RPC/provider.`,snapshot:dt}}});
       }else if(open){
         await db.riskIncident.update({where:{id:open.id},data:{resolvedAt:new Date()}});

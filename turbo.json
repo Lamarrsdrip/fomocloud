@@ -5,6 +5,6 @@
     "dev": {"cache": false, "persistent": true},
     "lint": {"dependsOn": ["^lint"]},
     "typecheck": {"dependsOn": ["^typecheck"]},
-    "test": {"dependsOn": ["build", "^build"], "outputs": ["coverage/**"]}
+    "test": {"dependsOn": ["build", "^build"], "outputs": ["coverage/**"], "env": ["DATABASE_URL", "REDIS_URL"]}
   }
 }

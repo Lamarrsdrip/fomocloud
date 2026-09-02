@@ -40,8 +40,8 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
    <button onClick={()=>setView("discover")}><TrendingUp size={18}/><span>Discover</span></button>
    <button onClick={()=>setView("positions")}><WalletCards size={18}/><span>Wallet</span></button>
   </div>
-  <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div>{brainDegraded&&<span className="status-badge watch">Degraded</span>}</div>
-   {brainDegraded?<p style={{fontSize:11,color:"#8a8fa0",margin:0}}>The market data provider is rate-limited right now, so these counts aren't updating. Not a sign the market is quiet -- existing counts just aren't live.</p>:
+  <section className="app-card"><div className="card-title"><div><span>MEMECLOUD PULSE</span><h2>What's happening right now</h2></div>{brainDegraded&&<span className="status-badge watch">Refreshing</span>}</div>
+   {brainDegraded?<p style={{fontSize:11,color:"#8a8fa0",margin:0}}>Scoring hasn't refreshed in the last few minutes, so these counts aren't fully live. Wallet tracking keeps running in the background -- not a sign the market is quiet.</p>:
    <div className="review-grid">
     <div><span>Smart money building</span><b>{pulse.heatingUp}</b></div>
     <div><span>Strong wallet-backed setups</span><b>{pulse.strong}</b></div>
@@ -60,8 +60,8 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
     <div className="token-row-side"><span className="status-badge">{lifecycleLabel(o.lifecycleStatus)}</span></div>
    </div>)}</div>
   </section>}
-  <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">Live</span></div>
-   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Discovery activity is temporarily paused -- the market data provider is rate-limited right now. This will resume automatically once it recovers.":"MemeCloud is watching its smart-money network. Activity appears when proven traders, watched wallets or whales actually move — no random-token firehose."}</div>}
+  <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">{brainDegraded?"Refreshing":"Live"}</span></div>
+   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Scoring hasn't refreshed in the last few minutes. Wallet tracking keeps running in the background; this resumes automatically once scoring catches back up.":"MemeCloud is watching its smart-money network. Activity appears when proven traders, watched wallets or whales actually move — no random-token firehose."}</div>}
   </section>
  </>;
 }

@@ -6,11 +6,11 @@ The production split is **Hostinger static frontend + Windows VPS backend**. Hos
 
 - Repository: `Lamarrsdrip/fomocloud`
 - Branch: `main`
-- Project/root directory: `apps/web`
+- Project/root directory: repo root (not `apps/web` — the build needs the pnpm workspace)
 - Node.js: `22.x`
-- Package manager: `npm`
-- Build: `npm run build`
-- Output directory: `out`
+- Package manager: `pnpm`
+- Build: `pnpm hostinger:build` (equivalent to `pnpm --filter @memecloud/web build`)
+- Output directory: `apps/web/out`
 - Start command / entry file: none; this is a static Next export
 - Auto deployment: enabled for every push to `main`
 
