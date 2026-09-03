@@ -67,13 +67,24 @@ export class BirdeyeClient{
   // silently into a PnL-derived score.
   normalizeTrader(row:any){return {address:str(row,"owner","wallet","address","wallet_address","walletAddress","trader","trader_address","wallet.address","trader.address"),totalPnlUsd:n(row,"totalPnl","total_pnl","total_pnl_usd","pnl"),realizedPnlUsd:n(row,"realizedPnl","realized_pnl","realized_pnl_usd"),volumeUsd:n(row,"volumeUsd","volume_usd","volume"),buyVolumeUsd:n(row,"volumeBuyUSD","volume_buy_usd"),sellVolumeUsd:n(row,"volumeSellUSD","volume_sell_usd"),tradeCount:n(row,"trade_count","tradeCount","trades"),tags:(Array.isArray(row?.tags)?row.tags.map((t:any)=>String(t)):[]) as string[]}}
   normalizeWalletPnl(x:any){
-    const total=n(x,"total_pnl","totalPnl","pnl","pnl_usd");
-    const realized=n(x,"realized_pnl","realizedPnl","realized_pnl_usd");
-    const unrealized=n(x,"unrealized_pnl","unrealizedPnl","unrealized_pnl_usd");
-    const volume=n(x,"volume_usd","total_volume","volumeUsd","volume");
-    const trades=n(x,"trade_count","total_trades","tradeCount","trades");
-    const wins=n(x,"win_count","profitable_trades","wins");
-    const rawWinRate=n(x,"win_rate","winRate","win_rate_percent");
+    // Real bug found by audit: /wallet/v2/pnl/summary's actual response is nested under
+    // `summary.{pnl,counts,cashflow_usd}` (confirmed live against the real endpoint -- every
+    // field this previously looked for lived one or two levels deeper), so every one of these
+    // extractions silently returned undefined regardless of whether the call succeeded.
+    // evidenceCompletenessPct was 0 for every wallet the platform ever scored, live and locally,
+    // even wallets with a genuine fresh successful provider response -- the entire wallet-scoring
+    // provider integration has never actually read real data since this endpoint's response took
+    // this shape. The nested paths are checked first; the old flat ones stay as a fallback in
+    // case a different endpoint variant or a future API version reverts to a flat shape.
+    const total=n(x,"summary.pnl.total_usd","total_pnl","totalPnl","pnl","pnl_usd");
+    const realized=n(x,"summary.pnl.realized_profit_usd","realized_pnl","realizedPnl","realized_pnl_usd");
+    const unrealized=n(x,"summary.pnl.unrealized_usd","unrealized_pnl","unrealizedPnl","unrealized_pnl_usd");
+    const invested=n(x,"summary.cashflow_usd.total_invested");
+    const sold=n(x,"summary.cashflow_usd.total_sold");
+    const volume=invested!=null||sold!=null?(invested??0)+(sold??0):n(x,"volume_usd","total_volume","volumeUsd","volume");
+    const trades=n(x,"summary.counts.total_trade","trade_count","total_trades","tradeCount","trades");
+    const wins=n(x,"summary.counts.total_win","win_count","profitable_trades","wins");
+    const rawWinRate=n(x,"summary.counts.win_rate","win_rate","winRate","win_rate_percent");
     // Providers commonly expose win-rate as either 0.62 or 62. Never let the same wallet score
     // ~100x differently merely because an endpoint changed percentage representation.
     const winRate=rawWinRate==null?undefined:(rawWinRate>=0&&rawWinRate<=1?rawWinRate*100:rawWinRate);

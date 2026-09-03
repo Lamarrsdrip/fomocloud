@@ -76,3 +76,27 @@ test("normalizeWalletPnl normalizes fractional win-rate to percent and exposes e
   const sparse=client.normalizeWalletPnl({total_pnl:10});
   assert.ok(sparse.evidenceCompletenessPct<50);
 });
+
+// Regression coverage for a real bug found by audit: /wallet/v2/pnl/summary's actual live response
+// (captured directly from the real endpoint, not guessed) nests everything under
+// summary.{pnl,counts,cashflow_usd} -- every field normalizeWalletPnl looked for used to live one
+// or two levels shallower, so evidenceCompletenessPct was 0 for every wallet ever scored, even ones
+// with a genuine fresh successful provider response. This is that exact real response shape (with
+// the outer {data:{...},success:true} envelope already stripped by dataOf(), same as production).
+test("normalizeWalletPnl reads the real (nested) /wallet/v2/pnl/summary shape, not just the old flat one", () => {
+  const real = client.normalizeWalletPnl({
+    summary: {
+      counts: { total_buy: 495, total_sell: 507, total_trade: 1002, total_win: 1, total_loss: 1, win_rate: 0.3333333333333333 },
+      cashflow_usd: { total_invested: 792991.41, total_sold: 539916.63, current_value: 0 },
+      pnl: { realized_profit_usd: 461609.98, realized_profit_percent: 746.65, unrealized_usd: -731167.13, total_usd: -269557.16, avg_profit_per_trade_usd: -269.02 }
+    }
+  });
+  assert.equal(real.totalPnlUsd, -269557.16);
+  assert.equal(real.realizedPnlUsd, 461609.98);
+  assert.equal(real.unrealizedPnlUsd, -731167.13);
+  assert.equal(real.tradeCount, 1002);
+  assert.equal(real.profitableTrades, 1);
+  assert.ok(Math.abs((real.winRate ?? 0) - 33.33) < 0.1);
+  assert.equal(real.volumeUsd, 792991.41 + 539916.63);
+  assert.equal(real.evidenceCompletenessPct, 100, "every field was present in the real response -- this must not silently read as 0% complete");
+});
