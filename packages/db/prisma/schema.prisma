@@ -1272,3 +1272,31 @@ model CatalystEvent {
   @@index([chain, mint, announcedAt])
   @@index([type, announcedAt])
 }
+
+// Transaction facts; independent of copy eligibility and token research.
+model WalletActivity {
+  id              String @id @default(auto()) @map("_id") @db.ObjectId
+  eventKey        String @unique
+  chain           Chain
+  traderId        String @db.ObjectId
+  walletAddress   String
+  walletLabel     String
+  sourceTx        String
+  mint            String
+  action          String
+  state           String
+  amountRaw       String
+  decimals        Int
+  amountUsd       Float?
+  balanceBeforeRaw String
+  balanceAfterRaw  String
+  marketCapUsd    Float?
+  public          Boolean
+  observedAt      DateTime
+  createdAt       DateTime @default(now())
+  notificationStatus String @default("PENDING")
+
+  @@index([observedAt])
+  @@index([notificationStatus, createdAt])
+  @@index([traderId, observedAt])
+}

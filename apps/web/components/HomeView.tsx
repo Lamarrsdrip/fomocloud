@@ -8,7 +8,7 @@ import {TokenAvatar} from "./TokenAvatar";
 export default function HomeView({d,activity,brain,brainDegraded,setView,openToken,onFund}:{d:any;activity:any;brain:any[];brainDegraded:boolean;setView:(v:any)=>void;openToken:(s:{chain:string;mint:string})=>void;onFund:()=>void}){
  const s=d?.summary||{};
  const feed=useMemo(()=>{
-  const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain}));
+  const brainItems=brain.slice(0,8).map(o=>({...feedLine(o),at:o.lastEvaluatedAt,mint:o.mint,chain:o.chain,wallet:null}));
   const eventItems=(activity?.events||[]).filter((e:any)=>{const t=`${e?.title||""} ${e?.body||""}`.toLowerCase();return !t.includes("new token radar")&&!t.includes("early/raw intelligence")}).slice(0,8).map((e:any)=>eventLine(e));
   return [...brainItems,...eventItems].sort((a,b)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,10);
  },[brain,activity]);
@@ -60,8 +60,8 @@ export default function HomeView({d,activity,brain,brainDegraded,setView,openTok
     <div className="token-row-side"><span className="status-badge">{lifecycleLabel(o.lifecycleStatus)}</span></div>
    </div>)}</div>
   </section>}
-  <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">{brainDegraded?"Refreshing":"Live"}</span></div>
-   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}><span className="feed-emoji">{f.emoji}</span><div><b>{f.text}</b><small>{f.sub}</small></div><small className="feed-time">{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{brainDegraded?"Scoring hasn't refreshed in the last few minutes. Wallet tracking keeps running in the background; this resumes automatically once scoring catches back up.":"MemeCloud is watching its smart-money network. Activity appears when proven traders, watched wallets or whales actually move — no random-token firehose."}</div>}
+  <section className="app-card live-feed"><div className="card-title"><div><span>MEMECLOUD</span><h2>Live activity</h2></div><span className="status-badge">Live</span></div>
+   {feed.length?<div className="feed-list">{feed.map((f,i)=><div className={`feed-item ${f.mint?"tap":""}`} key={i} onClick={()=>f.mint&&openToken({chain:f.chain,mint:f.mint})}>{f.wallet?<TokenAvatar symbol={f.wallet.symbol||f.wallet.name||"?"}/>:<span className="feed-emoji">{f.emoji}</span>}<div>{f.wallet?<><b>{f.wallet.tokenLabel||"Unknown token"}</b><small>{f.text}{f.wallet.amountUsd!=null?` · ${money(f.wallet.amountUsd)}`:` · ${(Number(f.wallet.amountRaw)/10**f.wallet.decimals).toLocaleString()} ${f.wallet.symbol||"tokens"}`}</small>{f.wallet.marketCapUsd!=null&&<small>{money(f.wallet.marketCapUsd)} MC at entry</small>}{f.wallet.action==="SELL"&&<small>Remaining: {(Number(f.wallet.balanceAfterRaw)/10**f.wallet.decimals).toLocaleString()} {f.wallet.symbol||"tokens"}</small>}</>:<><b>{f.text}</b><small>{f.sub}</small></>}{f.mint&&<a href={`https://solscan.io/token/${f.mint}`} target="_blank" rel="noreferrer" title={f.mint} onClick={e=>e.stopPropagation()} style={{fontSize:11,overflowWrap:"anywhere"}}>Mint: {f.mint.slice(0,6)}…{f.mint.slice(-4)}</a>}</div><small className="feed-time" title={new Date(f.at).toLocaleString()}>{timeAgo(f.at)}</small></div>)}</div>:<div className="pnl-empty">{"Watching monitored wallets. Confirmed token activity appears here."}</div>}
   </section>
  </>;
 }

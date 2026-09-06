@@ -4,7 +4,7 @@ import helmet from "helmet";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import crypto from "node:crypto";
-import { db, type Chain, type FollowMode } from "@memecloud/db";
+import { db, walletActivityForUser, walletActivityContent, type Chain, type FollowMode } from "@memecloud/db";
 import { CopySettingsSchema, solanaRpcCandidates, pickHealthyRpc, usdToMicros, microsToUsd, positionUsdFields, tradingCashUsdFields, positionExitUsdFields } from "@memecloud/shared";
 import { getConfig, encryptJson, decryptJson, recordProviderResults, readExecutionState } from "@memecloud/config";
 import { classifyLifecycle } from "@memecloud/brain";
@@ -521,19 +521,27 @@ app.get("/v1/me/trades", auth, asyncRoute(async (req:AuthedRequest,res) => {
 }));
 
 app.get("/v1/me/activity", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const [events,decisions]=await Promise.all([
+  const [events,decisions,walletEvents]=await Promise.all([
     db.userActivityEvent.findMany({where:{userId:req.user.sub},orderBy:{createdAt:"desc"},take:100}),
-    db.copyDecision.findMany({where:{userId:req.user.sub},include:{signal:{include:{trader:true}},orders:true},orderBy:{createdAt:"desc"},take:50})
+    db.copyDecision.findMany({where:{userId:req.user.sub},include:{signal:{include:{trader:true}},orders:true},orderBy:{createdAt:"desc"},take:50}),
+    walletActivityForUser(req.user.sub)
   ]);
   res.json({
-    events,
+    events:[...walletEvents,...events.filter(e=>!["TRADER_SIGNAL","SMART_WALLET_BUY"].includes(e.type))].sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()).slice(0,100),
     decisions:decisions.map(d=>({...d,plainReason:reasonText(d.reason)}))
   });
 }));
 
 app.get("/v1/me/notifications", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const notifications=await db.notification.findMany({where:{userId:req.user.sub},orderBy:{createdAt:"desc"},take:100});
-  res.json({notifications});
+  const walletRows=notifications.filter(n=>n.type==="WALLET_ACTIVITY");
+  const identities=walletRows.length?await db.discoveryToken.findMany({where:{OR:walletRows.map(n=>({chain:(n.data as any).chain,mint:(n.data as any).mint}))}}):[];
+  res.json({notifications:notifications.map(n=>{
+    if(n.type!=="WALLET_ACTIVITY")return n;
+    const data=n.data as any,token=identities.find(t=>t.chain===data.chain&&t.mint===data.mint);
+    const enriched=walletActivityContent(data,token);
+    return {...n,title:enriched.title,body:enriched.body,data:enriched.data};
+  })});
 }));
 
 app.post("/v1/me/notifications/read", auth, asyncRoute(async (req:AuthedRequest,res) => {

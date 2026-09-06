@@ -393,8 +393,7 @@ const worker=new Worker("signals",async job=>{
 
     if(follow.mode==="WATCH_ONLY"){
       await saveDecision({allowed:false,action:"WATCH",reason:"WATCH_ONLY",explanation:"You follow this trader in Watch mode."});
-      await userEvent(follow.userId,"TRADER_SIGNAL",`${signal.trader.displayName} ${signal.action==="BUY"?"bought":"sold"} a token`,
-        "Watch mode is on, so no automatic trade was placed.",{signalId:signal.id,traderId:signal.traderId});
+      // Wallet activity is persisted by the listener before trading decisions.
       skippedCount++; continue;
     }
 

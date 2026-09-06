@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo db lint",
-    "test": "echo db tests",
+    "test": "node --test dist/*.test.js",
     "prisma": "prisma",
     "ensure-indexes": "node scripts/ensure-indexes.mjs",
     "seed": "tsx prisma/seed.ts",

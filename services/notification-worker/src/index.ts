@@ -1,3 +1,4 @@
+import { deliverWalletActivity } from "./walletActivity.js";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { db } from "@memecloud/db";
@@ -72,13 +73,11 @@ const userWorker=new Worker("user-notifications",async job=>{
   const {userId,type,title,body,data}=job.data;
   const pref=await db.notificationPreference.findUnique({where:{userId}});
   const deliveryKey=String(job.data.deliveryKey??job.id??`${userId}:${type}`);
-  const n=await db.notification.upsert({
-    where:{deliveryKey},
-    create:{userId,deliveryKey,type,title,body,data:data as any},
-    update:{}
-  });
+  let n;
+  try{n=await db.notification.create({data:{userId,deliveryKey,type,title,body,data:data as any}})}
+  catch(e:any){if(e.code==="P2002")return;throw e;}
   if(resolvePushAllowed(type,pref)){
-    try{await sendPush(userId,{title,body,url:"/app/",type});}catch(e){console.error("[notification-worker] push",e);}
+    try{await sendPush(userId,{title,body,url:data?.url||"/app/",type,tag:deliveryKey,data});}catch(e){console.error("[notification-worker] push",e);}
   }
   if(emailWorthSending(type) && pref?.emailEnabled!==false){
     const user=await db.user.findUnique({where:{id:userId},select:{email:true}});
@@ -95,3 +94,5 @@ userWorker.on("failed",(job,err)=>console.error("[notification-worker] user noti
 startHeartbeat("notification-broadcast-worker",()=>({active,processed}));
 await beat("notification-broadcast-worker","healthy",{active,processed});
 console.log("[notification-worker] running");
+
+setInterval(()=>void deliverWalletActivity().catch(e=>console.error("[notification-worker] wallet outbox",e)),2000);

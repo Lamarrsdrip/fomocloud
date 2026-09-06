@@ -26,8 +26,8 @@ self.addEventListener("push", event => {
     body:data.body,
     icon:"/icon-192.png",
     badge:"/icon-192.png",
-    tag:data.type?`memecloud-${data.type}`:undefined,
-    data:{url:data.url||"/app/"}
+    tag:data.tag||(data.type?`memecloud-${data.type}`:undefined),
+    data:{...data.data,url:data.url||"/app/"}
   }));
 });
 self.addEventListener("notificationclick", event => {

@@ -5,6 +5,10 @@
 import { db } from "../dist/index.js";
 
 const indexes = [
+  {collection:"WalletActivity",name:"WalletActivity_eventKey_key",keys:{eventKey:1},options:{unique:true}},
+  {collection:"WalletActivity",name:"WalletActivity_observedAt_idx",keys:{observedAt:1},options:{}},
+  {collection:"WalletActivity",name:"WalletActivity_notificationStatus_createdAt_idx",keys:{notificationStatus:1,createdAt:1},options:{}},
+  {collection:"WalletActivity",name:"WalletActivity_traderId_observedAt_idx",keys:{traderId:1,observedAt:1},options:{}},
   {
     collection: "Position",
     name: "Position_entryTxHash_sparse_unique",

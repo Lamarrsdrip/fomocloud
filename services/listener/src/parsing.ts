@@ -24,7 +24,8 @@ export function tokenDeltas(tx: ParsedTransactionWithMeta, wallet: string): Delt
   const map = new Map<string, { raw: bigint; decimals: number }>();
   const apply = (rows: typeof pre, sign: bigint) => {
     for (const r of rows) {
-      if (r.owner !== wallet) continue;
+      const peer=[...pre,...post].find(p=>p.accountIndex!=null&&p.accountIndex===r.accountIndex&&p.mint===r.mint);
+      if ((r.owner||peer?.owner) !== wallet) continue;
       const cur = map.get(r.mint) ?? { raw: 0n, decimals: r.uiTokenAmount.decimals };
       cur.raw += sign * BigInt(r.uiTokenAmount.amount || "0"); cur.decimals = r.uiTokenAmount.decimals;
       map.set(r.mint, cur);
@@ -36,7 +37,7 @@ export function tokenDeltas(tx: ParsedTransactionWithMeta, wallet: string): Delt
 
 export function ownerMintBalanceRaw(tx: ParsedTransactionWithMeta, wallet: string, mint: string, side: "pre" | "post") {
   const rows = side === "pre" ? (tx.meta?.preTokenBalances ?? []) : (tx.meta?.postTokenBalances ?? []);
-  return rows.filter((r) => r.owner === wallet && r.mint === mint).reduce((a, r) => a + BigInt(r.uiTokenAmount.amount || "0"), 0n);
+  return rows.filter((r) => (r.owner||[...(tx.meta?.preTokenBalances??[]),...(tx.meta?.postTokenBalances??[])].find(p=>p.accountIndex!=null&&p.accountIndex===r.accountIndex&&p.mint===r.mint)?.owner) === wallet && r.mint === mint).reduce((a, r) => a + BigInt(r.uiTokenAmount.amount || "0"), 0n);
 }
 
 export function classifySwap(tx: ParsedTransactionWithMeta, wallet: string) {

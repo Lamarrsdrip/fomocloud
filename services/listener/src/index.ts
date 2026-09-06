@@ -7,6 +7,7 @@ import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
 import { solanaRpcCandidates, pickHealthyRpc, RpcBudget, recordProviderMetric } from "@memecloud/shared";
 import { classifySwap, shouldReconnect } from "./parsing.js";
+import { persistWalletActivity, enrichPendingWalletTokens } from "./activity.js";
 import { planSignatureReplay } from "./replay.js";
 import {classifyTokenProvenance} from "@memecloud/discovery";
 
@@ -112,12 +113,17 @@ async function fetchParsedTransactionWithRetry(signature:string){
 async function handleSignature(traderId:string,wallet:string,signature:string){
   detected++;lastEventAt=Date.now();
   const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
-  if(existing) return;
+  if(existing){
+    await persistWalletActivity(traderId,wallet,signature,existing.rawJson as any);
+    return;
+  }
   const tx=await fetchParsedTransactionWithRetry(signature);
   if(!tx||tx.meta?.err){if(!tx)errors++;return;}
 
-  await db.sourceTransaction.create({
-    data:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
+  await persistWalletActivity(traderId,wallet,signature,tx);
+  await db.sourceTransaction.upsert({
+    where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}},update:{},
+    create:{chain:"SOLANA",txHash:signature,walletAddress:wallet,slot:BigInt(tx.slot),blockTime:tx.blockTime?new Date(tx.blockTime*1000):null,rawJson:JSON.parse(JSON.stringify(tx))}
   });
 
   const swap=classifySwap(tx,wallet);
@@ -151,23 +157,6 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
   const trader=await db.trader.findUnique({where:{id:traderId},select:{trackingStatus:true,displayName:true,handle:true}});
-  if(swap.action==="BUY"&&trader?.trackingStatus==="PROVEN"){
-    const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}},select:{copyabilityScore:true,riskScore:true,metadata:true}}).catch(()=>null);
-    const meta=(candidate?.metadata??{}) as any;
-    const skill=Number(meta?.skillScore??candidate?.copyabilityScore??0);
-    const elite=skill>=90&&Number(candidate?.riskScore??100)<=30&&Number(meta?.evidenceCompleteness??0)>=85&&Number(meta?.currentFormScore??0)>=60;
-    const tier=elite?"Elite":"Proven";
-    const users=await db.user.findMany({where:{status:"ACTIVE"},select:{id:true,notificationPrefs:true}});
-    const token=tokenMint;
-    const title=`${tier} wallet bought a token`;
-    const body=`${trader.displayName||trader.handle||wallet} (${wallet}) bought ${token}. MemeCloud Brain is researching it now.`;
-    for(const u of users){
-      if(u.notificationPrefs?.pushEnabled===false)continue;
-      const deliveryKey=`proven-wallet:${signature}:${wallet}:${u.id}`;
-      await db.userActivityEvent.create({data:{userId:u.id,type:"SMART_WALLET_BUY",title,body,data:{chain:"SOLANA",mint:token,walletAddress:wallet,sourceTx:signature,tier,skill} as any}}).catch(()=>null);
-      await notificationQueue.add("notify",{userId:u.id,type:"SMART_WALLET_BUY",title,body,data:{url:"/app/?view=discover",chain:"SOLANA",mint:token,walletAddress:wallet},deliveryKey},{jobId:deliveryKey,removeOnComplete:2000,attempts:3,backoff:{type:"exponential",delay:500}}).catch(()=>{});
-    }
-  }
   if(swap.action==="BUY" && trader && ["PAPER_TRACKING","PROVEN"].includes(trader.trackingStatus)){
     await forwardScheduleQueue.add("schedule",{signalId:signal.id},{jobId:`forward:${signal.id}`,removeOnComplete:1000});
     await paperQueue.add("paper",{signalId:signal.id},{jobId:`paper:${signal.id}`,removeOnComplete:1000,attempts:4,backoff:{type:"exponential",delay:1000}});
@@ -237,7 +226,7 @@ async function refreshWatchlist(){
   const observationTrader=await ensureObservationTrader();
   const profileLimit=Math.max(25,Math.min(300,Number(process.env.WALLET_PROFILE_WATCH_LIMIT??150)));
   const [adminCandidates,profilingCandidates]=await Promise.all([
-    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},select:{address:true}}),
+    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",OR:[{adminWatched:true},{stage:"PROVEN"},{source:{in:["MEMECLOUD_CURATED","PLATFORM_ADDED"]}}]},select:{address:true}}),
     db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:"ANALYZING",adminWatched:false,source:{in:["LAUNCHPAD_COUNTERPARTY","CONFIGURED_SEED","CHAIN_FLOW_WALLET_FIRST"]}},orderBy:[{sourceQualityScore:"desc"},{lastScoredAt:"desc"}],take:profileLimit,select:{address:true}})
   ]);
   const observationAddresses=[...new Set([...adminCandidates.map(c=>c.address),...profilingCandidates.map(c=>c.address)])];
@@ -293,3 +282,5 @@ await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 setInterval(()=>void pollSlotLiveness(),20_000);void pollSlotLiveness();
 console.log("[listener] running");
+
+setInterval(()=>void enrichPendingWalletTokens().catch(e=>console.error("[listener] metadata backfill",e)),30_000);

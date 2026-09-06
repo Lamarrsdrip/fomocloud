@@ -28,7 +28,8 @@ export function feedLine(o:any){
 }
 export function eventLine(e:any){
  const map:Record<string,string>={TRADE_COPIED:"💰",PROFIT_TAKEN:"💰",POSITION_CLOSED:"✅",TRADE_SKIPPED:"⏸️",WAIT_PULLBACK:"⏳",GLOBAL_BRAIN:"🧠"};
- return {emoji:map[e.type]||"📣",text:e.title,sub:e.body,at:e.createdAt};
+ const d=e.data||{};
+ return {emoji:map[e.type]||"📣",text:e.title,sub:e.body,at:e.createdAt,mint:d.mint,chain:d.chain||"SOLANA",wallet:e.type==="WALLET_ACTIVITY"?d:null};
 }
 
 export function qualityLabel(score:number){return score>=76?"Strong setup":score>=56?"Building evidence":score>=40?"Early — thin evidence":"Just watching"}

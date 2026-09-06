@@ -37,7 +37,7 @@ export async function publicPushKey() {
   return cfg?.vapidPublicKey ?? process.env.VAPID_PUBLIC_KEY ?? null;
 }
 
-export async function sendPush(userId:string, payload:{title:string;body:string;url?:string;type?:string}) {
+export async function sendPush(userId:string, payload:{title:string;body:string;url?:string;type?:string;tag?:string;data?:unknown}) {
   const cfg = await getConfig<PushConfig>("push");
   const finalCfg:PushConfig | null = cfg?.vapidPublicKey ? cfg : (
     process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
