@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifySwap, tokenDeltas, usdcMint } from "./parsing.js";
+import { classifySwap, tokenDeltas, usdcMint, PUMP_FUN_PROGRAM, JUPITER_V6_PROGRAM, RAYDIUM_AMM_V4_PROGRAM } from "./parsing.js";
 
 const WALLET = "TRADER_WALLET";
 const TOKEN = "MEME_TOKEN_MINT";
@@ -77,4 +77,65 @@ test("classifySwap does not compute sourcePriceUsd when neither leg is USDC (e.g
   // Real gap this guards against: inventing a USD price from a non-USDC leg would silently feed a
   // fabricated number into chase-% math. Undefined (not 0, not guessed) is the only honest value.
   assert.equal(result?.sourcePriceUsd, undefined);
+});
+
+// Native SOL fixtures: accountKeys[0] is the fee-paying tracked wallet, preBalances/postBalances
+// are lamports indexed the same way. No SPL quote-token balance is touched at all here -- this is
+// exactly a Pump.fun-style native-SOL buy, which the SPL-only quote-leg checks above would miss.
+function nativeTx(opts: { preLamports: number; postLamports: number; fee?: number; programInvoked?: string; pre?: any[]; post?: any[] }): any {
+  return {
+    meta: {
+      err: null,
+      fee: opts.fee ?? 5000,
+      logMessages: opts.programInvoked ? [`Program ${opts.programInvoked} invoke [1]`] : [],
+      preBalances: [opts.preLamports],
+      postBalances: [opts.postLamports],
+      preTokenBalances: opts.pre ?? [],
+      postTokenBalances: opts.post ?? [],
+    },
+    transaction: { message: { accountKeys: [{ pubkey: WALLET }] } },
+  };
+}
+
+test("classifySwap detects a native-SOL Pump.fun BUY with no WSOL balance touched", () => {
+  const t = nativeTx({
+    preLamports: 2_000_000_000, postLamports: 999_995_000, programInvoked: PUMP_FUN_PROGRAM,
+    pre: [balRow(WALLET, TOKEN, "0", 5)], post: [balRow(WALLET, TOKEN, "200000", 5)],
+  });
+  const result = classifySwap(t, WALLET);
+  assert.equal(result?.action, "BUY");
+  assert.equal(result?.outputMint, TOKEN);
+  assert.equal(result?.inputMethod, "NATIVE_SOL_BALANCE");
+});
+
+test("classifySwap detects native-SOL BUY/SELL through Jupiter and Raydium alike", () => {
+  const buyViaJupiter = classifySwap(nativeTx({
+    preLamports: 2_000_000_000, postLamports: 999_995_000, programInvoked: JUPITER_V6_PROGRAM,
+    pre: [balRow(WALLET, TOKEN, "0", 5)], post: [balRow(WALLET, TOKEN, "200000", 5)],
+  }), WALLET);
+  const buyViaRaydium = classifySwap(nativeTx({
+    preLamports: 2_000_000_000, postLamports: 999_995_000, programInvoked: RAYDIUM_AMM_V4_PROGRAM,
+    pre: [balRow(WALLET, TOKEN, "0", 5)], post: [balRow(WALLET, TOKEN, "200000", 5)],
+  }), WALLET);
+  assert.equal(buyViaJupiter?.action, "BUY");
+  assert.equal(buyViaRaydium?.action, "BUY");
+});
+
+test("classifySwap rejects an identical lamport/token balance change with no recognized swap program invoked", () => {
+  // Same balances as the Pump.fun BUY above, minus the program log line -- this is exactly a dev
+  // sending tokens to a whale (transfer fee paid from the whale's own lamports, or none at all),
+  // not a trade. Must not become a BUY just because lamports happened to move.
+  const t = nativeTx({
+    preLamports: 2_000_000_000, postLamports: 999_995_000,
+    pre: [balRow(WALLET, TOKEN, "0", 5)], post: [balRow(WALLET, TOKEN, "200000", 5)],
+  });
+  assert.equal(classifySwap(t, WALLET), null);
+});
+
+test("classifySwap ignores fee-only lamport drift on a plain inbound token transfer (no program invoked)", () => {
+  const t = nativeTx({
+    preLamports: 1_000_000_000, postLamports: 999_995_000,
+    pre: [balRow(WALLET, TOKEN, "0", 5)], post: [balRow(WALLET, TOKEN, "500000", 5)],
+  });
+  assert.equal(classifySwap(t, WALLET), null);
 });

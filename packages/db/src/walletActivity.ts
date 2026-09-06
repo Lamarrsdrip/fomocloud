@@ -7,7 +7,7 @@ export function walletEventKey(chain:string,signature:string,wallet:string,mint:
 export function walletActivityContent(event:any,token?:any){
   const symbol=token?.symbol||null,name=token?.name||null;
   const tokenLabel=symbol||name||"Unknown token";
-  const verb:Record<string,string>={BOUGHT:"bought",ADDED:"added to",TRIMMED:"trimmed",MOSTLY_EXITED:"mostly exited",EXITED:"exited"};
+  const verb:Record<string,string>={BOUGHT:"bought",ADDED:"added to",TRIMMED:"trimmed",MOSTLY_EXITED:"mostly exited",EXITED:"exited",TRANSFER_IN:"received a transfer of (not a buy — no swap evidence)",TRANSFER_OUT:"sent out a transfer of (not a sell — no swap evidence)"};
   const amount=event.amountUsd!=null?`$${Number(event.amountUsd).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`:null;
   const mc=event.marketCapUsd!=null?`$${Number(event.marketCapUsd).toLocaleString("en-US",{maximumFractionDigits:0})} MC`:null;
   const title=`${event.walletLabel} ${verb[event.state]||event.action.toLowerCase()} ${tokenLabel}`;

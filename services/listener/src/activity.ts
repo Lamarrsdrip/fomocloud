@@ -13,8 +13,12 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
   const observedAt=tx.blockTime?new Date(tx.blockTime*1000):new Date();
   for(const fact of facts){
     const eventKey=walletEventKey("SOLANA",signature,wallet,fact.mint,fact.action);
+    // Real trade evidence only (see activityParsing.ts): a TRANSFER_IN/TRANSFER_OUT record is kept
+    // for audit but must never surface as a "wallet bought/sold" alert or count as smart money --
+    // that's exactly how a rug dev faking a whale endorsement by airdropping tokens gets excluded.
+    const isRealTrade=fact.action==="BUY"||fact.action==="SELL";
     // No provider, scoring, research or notification dependency before the durable fact.
-    await db.walletActivity.upsert({where:{eventKey},update:{},create:{...fact,eventKey,chain:"SOLANA",traderId,walletAddress:wallet,walletLabel,sourceTx:signature,public:trader.kind==="PLATFORM"||Boolean(candidate?.adminWatched),observedAt,notificationStatus:notify?"PENDING":"HISTORICAL"}});
+    await db.walletActivity.upsert({where:{eventKey},update:{},create:{...fact,eventKey,chain:"SOLANA",traderId,walletAddress:wallet,walletLabel,sourceTx:signature,public:isRealTrade&&(trader.kind==="PLATFORM"||Boolean(candidate?.adminWatched)),observedAt,notificationStatus:notify&&isRealTrade?"PENDING":"HISTORICAL"}});
     const snapshot=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:fact.mint,observedAt:{lte:observedAt,gte:new Date(observedAt.getTime()-5*60_000)}},orderBy:{observedAt:"desc"},select:{marketCapUsd:true}}).catch(()=>null);
     if(snapshot?.marketCapUsd!=null)await db.walletActivity.update({where:{eventKey},data:{marketCapUsd:snapshot.marketCapUsd}});
     await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:fact.mint}},update:{},create:{chain:"SOLANA",mint:fact.mint,source:"WALLET_ACTIVITY",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{decimals:fact.decimals}}});
