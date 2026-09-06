@@ -39,6 +39,19 @@ const DEFAULT_SWAP_PROGRAMS = [
 ];
 export const swapProgramIds = new Set((process.env.SOLANA_SWAP_PROGRAM_IDS ?? DEFAULT_SWAP_PROGRAMS.join(",")).split(",").map((x) => x.trim()).filter(Boolean));
 
+// A tracked wallet can only have *traded* if it actually authorized the transaction. A dev
+// airdropping tokens into a whale's account signs it themselves -- the whale is a passive,
+// non-signing account key there. Requiring the signer role is the cheapest hard proof that the
+// wallet was the actor rather than the recipient.
+export function walletIsSigner(tx: ParsedTransactionWithMeta, wallet: string) {
+  const keys = tx.transaction?.message?.accountKeys as any[] | undefined;
+  if (!keys) return false;
+  return keys.some((k:any) => {
+    const address = k?.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k?.pubkey ?? k);
+    return address === wallet && k?.signer === true;
+  });
+}
+
 export function hasRecognizedSwapProgram(tx: ParsedTransactionWithMeta) {
   const logs = tx.meta?.logMessages ?? [];
   for (const line of logs) for (const id of swapProgramIds) if (line.includes(id)) return true;
@@ -80,7 +93,7 @@ export function ownerMintBalanceRaw(tx: ParsedTransactionWithMeta, wallet: strin
 }
 
 export function classifySwap(tx: ParsedTransactionWithMeta, wallet: string) {
-  if (tx.meta?.err) return null;
+  if (tx.meta?.err || !walletIsSigner(tx, wallet)) return null;
   const deltas = tokenDeltas(tx, wallet);
   const positives = deltas.filter((x) => x.raw > 0n).sort((a, b) => (a.raw > b.raw ? -1 : 1));
   const negatives = deltas.filter((x) => x.raw < 0n).sort((a, b) => (a.raw < b.raw ? -1 : 1));

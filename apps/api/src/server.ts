@@ -16,6 +16,7 @@ import { authLimiter, tradeLimiter, auth, requireAdmin, adminOnly, type TokenPay
 import { authRoutes } from "./authRoutes.js";
 import { walletRoutes } from "./walletRoutes.js";
 import { adminRoutes } from "./adminRoutes.js";
+import { curatedRoutes } from "./curatedRoutes.js";
 import { redis } from "./queues.js";
 import { runProviderTests } from "./providerHealth.js";
 import { asyncRoute, routeParam, normalizeEmail, validPublicAddress, hashToken, randomToken, safeUser, parseCookies, refreshCookieOptions, audit, ensureUserDefaults, canEnableAutoCopy, reasonText } from "./auth.js";
@@ -44,6 +45,7 @@ app.use("/auth", authLimiter);
 app.use(authRoutes);
 app.use(walletRoutes);
 app.use(adminRoutes);
+app.use(curatedRoutes);
 
 app.get("/health", asyncRoute(async (_req,res) => {
   try {

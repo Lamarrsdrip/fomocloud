@@ -40,7 +40,7 @@ const TOKEN="MEME_TOKEN_MINT_XYZ";
 function row(owner:string,mint:string,amount:string,decimals=6){
   return {owner,mint,uiTokenAmount:{amount,decimals,uiAmount:null,uiAmountString:amount}};
 }
-function fixture(opts:{pre?:any[];post?:any[];preLamports?:number;postLamports?:number;fee?:number;program?:string}):any{
+function fixture(opts:{pre?:any[];post?:any[];preLamports?:number;postLamports?:number;fee?:number;program?:string;signer?:boolean}):any{
   const fee=opts.fee??5000, preLamports=opts.preLamports??1_000_000_000;
   // Realistic default: the tracked wallet is the fee payer, so lamports drop by exactly the fee
   // when nothing else moves them -- an inconsistent fixture here (pre === post) is what caused a
@@ -56,7 +56,7 @@ function fixture(opts:{pre?:any[];post?:any[];preLamports?:number;postLamports?:
       preTokenBalances:opts.pre??[],
       postTokenBalances:opts.post??[],
     },
-    transaction:{message:{accountKeys:[{pubkey:WHALE}]}},
+    transaction:{message:{accountKeys:[{pubkey:WHALE,signer:opts.signer!==false}]}},
   };
 }
 
@@ -116,10 +116,46 @@ test("9/10/11. Pump.fun, Jupiter, and Raydium native-SOL swaps all resolve to BU
   }
 });
 
-test("12. an ambiguous token-to-token swap is never BUY/SELL in the public feed (never auto-copy)",()=>{
-  const t=fixture({program:JUPITER_V6_PROGRAM,pre:[row(WHALE,TOKEN,"5000000",5)],post:[row(WHALE,TOKEN,"0",5),row(WHALE,"OTHER_TOKEN_MINT","100",8)]});
+// Policy note: a token-for-token swap routed through a RECOGNIZED program is a genuine trade and
+// is classified BUY/SELL (see test 15). The invariant that actually protects users is the one below
+// -- token balances moving with no recognized swap program behind them are never a trade, because
+// that is indistinguishable from someone moving tokens into or out of the wallet.
+test("12. an ambiguous token-to-token movement with no recognized swap program is never BUY/SELL",()=>{
+  const t=fixture({pre:[row(WHALE,TOKEN,"5000000",5)],post:[row(WHALE,TOKEN,"0",5),row(WHALE,"OTHER_TOKEN_MINT","100",8)]});
   const events=walletTokenActivity(t,WHALE);
   assert.ok(events.every(e=>e.action!=="BUY"&&e.action!=="SELL"));
+});
+
+test("13. a swap the tracked wallet did NOT sign is never its trade, even with full swap evidence",()=>{
+  // The exact shape of a dev/rug wallet routing a real swap that happens to deposit tokens into a
+  // tracked whale's account: every economic signal looks like a buy, but the whale never authorized
+  // it. Without the signer gate this is indistinguishable from the whale buying.
+  const t=fixture({signer:false,preLamports:5_000_000_000,postLamports:2_999_995_000,program:PUMP_FUN_PROGRAM,pre:[row(WHALE,TOKEN,"0",5)],post:[row(WHALE,TOKEN,"5000000",5)]});
+  assert.deepEqual(walletTokenActivity(t,WHALE),[]);
+});
+
+test("14. the same transaction IS the wallet's trade once it is the signer",()=>{
+  const t=fixture({signer:true,preLamports:5_000_000_000,postLamports:2_999_995_000,program:PUMP_FUN_PROGRAM,pre:[row(WHALE,TOKEN,"0",5)],post:[row(WHALE,TOKEN,"5000000",5)]});
+  const [event]=walletTokenActivity(t,WHALE);
+  assert.equal(event.action,"BUY");
+});
+
+test("15. a token-for-token swap through a recognized program is a real trade on both legs",()=>{
+  const OTHER="OTHER_TOKEN_MINT_ABC";
+  const t=fixture({program:JUPITER_V6_PROGRAM,pre:[row(WHALE,TOKEN,"5000000",5)],post:[row(WHALE,TOKEN,"0",5),row(WHALE,OTHER,"100",8)]});
+  const events=walletTokenActivity(t,WHALE);
+  assert.equal(events.find(e=>e.mint===OTHER)?.action,"BUY");
+  assert.equal(events.find(e=>e.mint===TOKEN)?.action,"SELL");
+});
+
+test("16. one funding leg is never reported as the full amount of two acquired tokens",()=>{
+  const OTHER="OTHER_TOKEN_MINT_ABC";
+  const t=fixture({pre:[row(WHALE,usdcMint,"100000000"),row(WHALE,TOKEN,"0",5),row(WHALE,OTHER,"0",5)],post:[row(WHALE,usdcMint,"90000000"),row(WHALE,TOKEN,"5000000",5),row(WHALE,OTHER,"7000000",5)]});
+  const events=walletTokenActivity(t,WHALE);
+  assert.equal(events.length,2);
+  assert.ok(events.every(e=>e.action==="BUY"));
+  // $10 of USDC funded both; neither may claim the whole $10.
+  assert.ok(events.every(e=>e.amountUsd===undefined),"a shared funding leg must not be attributed in full to each token");
 });
 
 test("fee-only lamport drift on a plain inbound transfer never fakes native-SOL buy evidence",()=>{

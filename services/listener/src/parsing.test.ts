@@ -9,7 +9,8 @@ function balRow(owner: string, mint: string, amount: string, decimals = 6) {
   return { owner, mint, uiTokenAmount: { amount, decimals, uiAmount: null, uiAmountString: amount } };
 }
 function tx(pre: any[], post: any[]): any {
-  return { meta: { preTokenBalances: pre, postTokenBalances: post } };
+  // classifySwap now requires the tracked wallet to have actually signed the transaction.
+  return { meta: { preTokenBalances: pre, postTokenBalances: post }, transaction: { message: { accountKeys: [{ pubkey: WALLET, signer: true }] } } };
 }
 
 test("classifySwap detects a BUY: USDC spent, token received", () => {
@@ -82,7 +83,7 @@ test("classifySwap does not compute sourcePriceUsd when neither leg is USDC (e.g
 // Native SOL fixtures: accountKeys[0] is the fee-paying tracked wallet, preBalances/postBalances
 // are lamports indexed the same way. No SPL quote-token balance is touched at all here -- this is
 // exactly a Pump.fun-style native-SOL buy, which the SPL-only quote-leg checks above would miss.
-function nativeTx(opts: { preLamports: number; postLamports: number; fee?: number; programInvoked?: string; pre?: any[]; post?: any[] }): any {
+function nativeTx(opts: { preLamports: number; postLamports: number; fee?: number; programInvoked?: string; pre?: any[]; post?: any[]; signer?: boolean }): any {
   return {
     meta: {
       err: null,
@@ -93,7 +94,7 @@ function nativeTx(opts: { preLamports: number; postLamports: number; fee?: numbe
       preTokenBalances: opts.pre ?? [],
       postTokenBalances: opts.post ?? [],
     },
-    transaction: { message: { accountKeys: [{ pubkey: WALLET }] } },
+    transaction: { message: { accountKeys: [{ pubkey: WALLET, signer: opts.signer !== false }] } },
   };
 }
 

@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { db } from "@memecloud/db";
 import { startHeartbeat } from "@memecloud/ops";
 import { getConfig } from "@memecloud/config";
-import { solanaRpcCandidates, pickHealthyRpc, RpcBudget, recordProviderMetric } from "@memecloud/shared";
+import { solanaRpcCandidates, pickHealthyRpc } from "@memecloud/shared";
 import { classifySwap, shouldReconnect } from "./parsing.js";
 import { persistWalletActivity, enrichPendingWalletTokens } from "./activity.js";
 import { planSignatureReplay } from "./replay.js";
@@ -17,15 +17,12 @@ const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[listener]");
 // without a manual restart — this was previously read once at process startup and cached forever.
 let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
-const capitalRpcBudget=new RpcBudget(redis,"rpc-budget:solana",{capacity:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_CAPACITY??50)),ratePerSec:Math.max(1,Number(process.env.RPC_ACCOUNT_BUDGET_RATE_PER_SEC??25))});
-const USDC_MINT=new PublicKey(process.env.USDC_MINT_SOLANA??"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const queue=new Queue("signals",{connection:redis});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
 const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
 const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
-let capitalSnapshots=0,capitalSnapshotErrors=0,lastCapitalSnapshotAt=0;
 // `conn.onLogs` websocket subscriptions have no built-in liveness/reconnect: a silent network
 // drop (confirmed live -- this is exactly what happened in production: detected/decoded/errors
 // all froze mid-run with no thrown error, no crash, nothing to make the process exit) leaves every
@@ -73,27 +70,6 @@ async function replayMissedSignatures(traderId:string,address:string,pubkey:Publ
     }
     if(plan.signatures.length)replays+=plan.signatures.length;
   }catch(e){replayFailures++;console.error("[listener] replay failed",address,e)}
-}
-
-function conservativeCapitalTier(usdcLowerBound:number){
-  if(usdcLowerBound>=10_000_000)return "CAPITAL_10M";if(usdcLowerBound>=2_000_000)return "CAPITAL_2M";if(usdcLowerBound>=1_000_000)return "CAPITAL_1M";if(usdcLowerBound>=100_000)return "CAPITAL_100K";if(usdcLowerBound>=50_000)return "CAPITAL_50K";return null;
-}
-async function refreshOneCapitalSnapshot(){
-  if(Date.now()-lastCapitalSnapshotAt<60_000)return;
-  const staleBefore=new Date(Date.now()-6*3600_000).toISOString();
-  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},orderBy:{updatedAt:"asc"},take:200});
-  const candidate=candidates.find(c=>{const m=(c.metadata??{}) as any;return !m.walletBalanceObservedAt||m.walletBalanceObservedAt<staleBefore});
-  if(!candidate)return;
-  const granted=await capitalRpcBudget.tryAcquire("P1");if(!granted.granted)return;
-  lastCapitalSnapshotAt=Date.now();const started=Date.now();
-  try{
-    await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"request"});
-    const accounts=await conn.getParsedTokenAccountsByOwner(new PublicKey(candidate.address),{mint:USDC_MINT},"confirmed");
-    const usdcLowerBound=accounts.value.reduce((sum,a)=>sum+Number((a.account.data as any)?.parsed?.info?.tokenAmount?.uiAmountString??0),0);
-    await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"success",latencyMs:Date.now()-started});
-    const prior=(candidate.metadata??{}) as any,observedAt=new Date().toISOString();
-    await db.smartWalletCandidate.update({where:{id:candidate.id},data:{metadata:{...prior,walletBalanceUsd:usdcLowerBound,walletBalanceObservedAt:observedAt,walletBalanceSource:"WALLET_CAPITAL_SNAPSHOT:SOLANA_USDC_LOWER_BOUND",walletCapitalSnapshotScope:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",capitalTier:conservativeCapitalTier(usdcLowerBound)}}});capitalSnapshots++;
-  }catch(e){capitalSnapshotErrors++;await recordProviderMetric(redis,{provider:"SOLANA_RPC",endpoint:"getTokenAccountsByOwner:USDC",service:"listener",priority:"P1",providerClass:"CRITICAL",event:"error"}).catch(()=>{});console.error("[listener] capital snapshot",candidate.address,e)}
 }
 
 // tokenDeltas/ownerMintBalanceRaw/classifySwap moved to ./parsing.ts so they're testable without
@@ -215,49 +191,21 @@ async function reconnectIfConfigChanged(){
   conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
   currentRpcHost=freshHost;
 }
-async function ensureObservationTrader(){
-  return db.trader.upsert({where:{handle:"memecloud-observation"},update:{enabled:false,trackingStatus:"WATCH_ONLY"},create:{handle:"memecloud-observation",displayName:"MemeCloud Observation",bio:"Internal public-wallet observation source. Not copy-eligible.",category:"SMART_MONEY_OBSERVATION",verification:"UNVERIFIED",kind:"PLATFORM",enabled:false,featured:false,recommended:false,defaultSelected:false,trackingStatus:"WATCH_ONLY"}});
-}
-
 async function refreshWatchlist(){
   await reconnectIfConfigChanged();
-  // Watch every enabled verified source wallet ONCE. Fan-out happens downstream per user.
-  // This also lets the platform track public trader history before a user enables Auto Copy.
-  //
-  // ONLY ADMIN-ADDED WALLETS ARE SIGNAL SOURCES. Real gap found by forensic audit (2026-09-06): a
-  // wallet's `stage` reaching "PROVEN"/"PAPER_TRACKING" is scoring-worker's own algorithmic
-  // promotion -- no admin ever approved it -- yet the old queries here treated that the same as an
-  // explicit `adminWatched:true` action, and a separate ANALYZING-stage "objective profiling"
-  // branch actively subscribed up to WALLET_PROFILE_WATCH_LIMIT auto-discovered candidates that
-  // were explicitly `adminWatched:false`. Both silently turned into live subscriptions, WalletActivity
-  // rows and push alerts for wallets no admin ever added. `adminWatched` (toggled only by the
-  // admin add/watch/unwatch routes) is now the single predicate for platform-wide observation.
-  const observationTrader=await ensureObservationTrader();
-  const adminCandidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},select:{address:true}});
-  const observationAddresses=[...new Set(adminCandidates.map(c=>c.address))];
-  for(const address of observationAddresses){
-    await db.traderWallet.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{},create:{traderId:observationTrader.id,chain:"SOLANA",address,verified:true,source:"ADMIN_WATCHLIST",verificationMethod:"PUBLIC_CHAIN_ADDRESS",evidenceNote:"Admin-added public wallet observed for objective scoring. Observation grants no copy authority on its own.",verifiedAt:new Date(),monitoringStatus:"WATCH_ONLY"}}).catch(()=>{});
-  }
-  const observationAddressSet=new Set(observationAddresses);
-  const staleObservationWallets=await db.traderWallet.findMany({where:{traderId:observationTrader.id},select:{id:true,address:true}});
-  for(const w of staleObservationWallets)if(!observationAddressSet.has(w.address))await db.traderWallet.delete({where:{id:w.id}}).catch(()=>{});
+  // Wallet-first v1: ONLY Admin-added, verified Solana wallets on enabled PLATFORM traders
+  // are platform signal sources. User-added public wallets and auto-discovered candidates never
+  // enter the platform-wide listener.
   const wallets=await db.traderWallet.findMany({
-    where:{
-      verified:true,
-      OR:[
-        {monitoringStatus:"WATCH_ONLY"}, // synced from adminCandidates above -- admin-watched only
-        {source:"ADMIN",trader:{enabled:true}}, // wallet added directly on a platform Trader via Admin
-        {source:"USER_PUBLIC_WALLET",trader:{kind:"CUSTOM",enabled:true,follows:{some:{}}}} // a user's own personal copy-source wallet
-      ]
-    },
+    where:{chain:"SOLANA",verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},
     include:{trader:true}
   });
   const wanted=new Set(wallets.map(w=>w.address));
   for(const [address,id] of subscriptions){
-    if(!wanted.has(address)){await conn.removeOnLogsListener(id);subscriptions.delete(address);}
+    if(!wanted.has(address)){await conn.removeOnLogsListener(id).catch(()=>{});subscriptions.delete(address);}
   }
   for(const tw of wallets){
-    if(tw.chain!=="SOLANA"||subscriptions.has(tw.address)) continue;
+    if(subscriptions.has(tw.address))continue;
     try{
       const pubkey=new PublicKey(tw.address);
       const id=conn.onLogs(pubkey,async logs=>{
@@ -266,22 +214,17 @@ async function refreshWatchlist(){
         catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
       },"confirmed");
       subscriptions.set(tw.address,id);
-      console.log("[listener] watching",tw.trader.handle,tw.address);
-      // A cursor already existing here means this wallet was watched before this exact
-      // subscribe call (a prior process cursor, or a resubscribe after hardReconnect) -- catch up
-      // on anything that happened in the gap. A genuinely first-ever subscribe has no cursor yet
-      // and intentionally does not backfill (see replayMissedSignatures/replay.ts).
-      if(lastSeenSignature.has(tw.address)){
-        await replayMissedSignatures(tw.traderId,tw.address,pubkey);
-      }else{
+      console.log("[listener] watching admin trader",tw.trader.handle,tw.address);
+      if(lastSeenSignature.has(tw.address)) await replayMissedSignatures(tw.traderId,tw.address,pubkey);
+      else {
         const [newest]=await conn.getSignaturesForAddress(pubkey,{limit:1},"confirmed").catch(()=>[]);
         if(newest)lastSeenSignature.set(tw.address,newest.signature);
       }
-    }catch(e){errors++;console.error("[listener] invalid wallet",tw.address,e);}
+    }catch(e){errors++;console.error("[listener] invalid admin wallet",tw.address,e);}
   }
-  await refreshOneCapitalSnapshot();
 }
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,capitalSnapshots,capitalSnapshotErrors,capitalSnapshotMethod:"USDC_ONLY_CONSERVATIVE_LOWER_BOUND",lastEventAt:lastEventAt?new Date(lastEventAt).toISOString():null,lastSlotAt:lastSlotAt?new Date(lastSlotAt).toISOString():null,currentSlot,slotPollErrors,reconnects,replays,replayFailures}));
+
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,lastEventAt:lastEventAt?new Date(lastEventAt).toISOString():null,lastSlotAt:lastSlotAt?new Date(lastSlotAt).toISOString():null,currentSlot,slotPollErrors,reconnects,replays,replayFailures}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 setInterval(()=>void pollSlotLiveness(),20_000);void pollSlotLiveness();
