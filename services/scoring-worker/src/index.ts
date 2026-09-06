@@ -38,7 +38,13 @@ async function tick(){
   const paperMin=Math.max(65,Number(dc?.paperMinScore??process.env.DISCOVERY_PAPER_MIN_SCORE??68)),provenMin=Math.max(80,Number(dc?.provenMinScore??process.env.DISCOVERY_PROVEN_MIN_SCORE??80)),provenSamples=Math.max(20,Number(dc?.provenMinForwardSamples??process.env.DISCOVERY_PROVEN_MIN_FORWARD_SAMPLES??20)),provenMean=Math.max(5,Number(dc?.provenMinForwardMeanPct??process.env.DISCOVERY_PROVEN_MIN_FORWARD_MEAN_PCT??5));
   const maxProviderRequests=Math.max(0,Math.min(12,Number(dc?.walletScoringProviderRequestsPerCycle??process.env.SCORING_PROVIDER_REQUESTS_PER_CYCLE??4)));
   let requestsThisCycle=0,circuitOpen=Boolean(circuit)||!b;providerStatus=!b?"NOT_CONFIGURED":circuit?"QUOTA_CIRCUIT_OPEN":"AVAILABLE";
-  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"]}},orderBy:[{lastScoredAt:"asc"},{createdAt:"asc"}],take:100});
+  // ONLY ADMIN-ADDED WALLETS ARE SIGNAL SOURCES. Scoring a candidate no admin ever watched still
+  // burns real Birdeye provider budget and can still auto-promote/auto-create a Trader for it
+  // (ensurePaperTrader below) with zero human involvement -- exactly the "automatic wallet
+  // promotion" this system must not do. Objective performance analytics on a wallet Admin DID add
+  // is still valuable (and still runs through the normal stage machine below); wallets nobody
+  // admin-watched are no longer scored at all.
+  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true,stage:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"]}},orderBy:[{lastScoredAt:"asc"},{createdAt:"asc"}],take:100});
   candidates.sort((a:any,b:any)=>{const p=(x:any)=>["MEMECLOUD_CURATED","PLATFORM_ADDED","ADMIN_MANUAL"].includes(x.source)?4:x.stage==="PROVEN"?3:x.stage==="PAPER_TRACKING"?2:1;return p(b)-p(a)||Number(a.lastScoredAt??0)-Number(b.lastScoredAt??0)});
   for(const c of candidates){try{
    const priorMeta=(c.metadata??{}) as any,due=providerEvidenceDue({source:c.source,stage:c.stage,lastProviderAt:priorMeta.providerEvidenceObservedAt});

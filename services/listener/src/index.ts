@@ -81,7 +81,7 @@ function conservativeCapitalTier(usdcLowerBound:number){
 async function refreshOneCapitalSnapshot(){
   if(Date.now()-lastCapitalSnapshotAt<60_000)return;
   const staleBefore=new Date(Date.now()-6*3600_000).toISOString();
-  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",OR:[{adminWatched:true},{stage:"PROVEN"}]},orderBy:{updatedAt:"asc"},take:200});
+  const candidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},orderBy:{updatedAt:"asc"},take:200});
   const candidate=candidates.find(c=>{const m=(c.metadata??{}) as any;return !m.walletBalanceObservedAt||m.walletBalanceObservedAt<staleBefore});
   if(!candidate)return;
   const granted=await capitalRpcBudget.tryAcquire("P1");if(!granted.granted)return;
@@ -223,16 +223,20 @@ async function refreshWatchlist(){
   await reconnectIfConfigChanged();
   // Watch every enabled verified source wallet ONCE. Fan-out happens downstream per user.
   // This also lets the platform track public trader history before a user enables Auto Copy.
+  //
+  // ONLY ADMIN-ADDED WALLETS ARE SIGNAL SOURCES. Real gap found by forensic audit (2026-09-06): a
+  // wallet's `stage` reaching "PROVEN"/"PAPER_TRACKING" is scoring-worker's own algorithmic
+  // promotion -- no admin ever approved it -- yet the old queries here treated that the same as an
+  // explicit `adminWatched:true` action, and a separate ANALYZING-stage "objective profiling"
+  // branch actively subscribed up to WALLET_PROFILE_WATCH_LIMIT auto-discovered candidates that
+  // were explicitly `adminWatched:false`. Both silently turned into live subscriptions, WalletActivity
+  // rows and push alerts for wallets no admin ever added. `adminWatched` (toggled only by the
+  // admin add/watch/unwatch routes) is now the single predicate for platform-wide observation.
   const observationTrader=await ensureObservationTrader();
-  const profileLimit=Math.max(25,Math.min(300,Number(process.env.WALLET_PROFILE_WATCH_LIMIT??150)));
-  const [adminCandidates,profilingCandidates]=await Promise.all([
-    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",OR:[{adminWatched:true},{stage:"PROVEN"},{source:{in:["MEMECLOUD_CURATED","PLATFORM_ADDED"]}}]},select:{address:true}}),
-    db.smartWalletCandidate.findMany({where:{chain:"SOLANA",stage:"ANALYZING",adminWatched:false,source:{in:["LAUNCHPAD_COUNTERPARTY","CONFIGURED_SEED","CHAIN_FLOW_WALLET_FIRST"]}},orderBy:[{sourceQualityScore:"desc"},{lastScoredAt:"desc"}],take:profileLimit,select:{address:true}})
-  ]);
-  const observationAddresses=[...new Set([...adminCandidates.map(c=>c.address),...profilingCandidates.map(c=>c.address)])];
+  const adminCandidates=await db.smartWalletCandidate.findMany({where:{chain:"SOLANA",adminWatched:true},select:{address:true}});
+  const observationAddresses=[...new Set(adminCandidates.map(c=>c.address))];
   for(const address of observationAddresses){
-    const isAdmin=adminCandidates.some(c=>c.address===address);
-    await db.traderWallet.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{},create:{traderId:observationTrader.id,chain:"SOLANA",address,verified:true,source:isAdmin?"ADMIN_WATCHLIST":"OBJECTIVE_PROFILING",verificationMethod:"PUBLIC_CHAIN_ADDRESS",evidenceNote:"Public wallet observed for objective scoring. Identity is not asserted and observation grants no copy authority.",verifiedAt:new Date(),monitoringStatus:"WATCH_ONLY"}}).catch(()=>{});
+    await db.traderWallet.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{},create:{traderId:observationTrader.id,chain:"SOLANA",address,verified:true,source:"ADMIN_WATCHLIST",verificationMethod:"PUBLIC_CHAIN_ADDRESS",evidenceNote:"Admin-added public wallet observed for objective scoring. Observation grants no copy authority on its own.",verifiedAt:new Date(),monitoringStatus:"WATCH_ONLY"}}).catch(()=>{});
   }
   const observationAddressSet=new Set(observationAddresses);
   const staleObservationWallets=await db.traderWallet.findMany({where:{traderId:observationTrader.id},select:{id:true,address:true}});
@@ -241,9 +245,9 @@ async function refreshWatchlist(){
     where:{
       verified:true,
       OR:[
-        {monitoringStatus:"WATCH_ONLY"},
-        {trader:{trackingStatus:{in:["PAPER_TRACKING","PROVEN"]}}},
-        {trader:{enabled:true,OR:[{kind:"PLATFORM"},{kind:"CUSTOM",follows:{some:{}}}]}}
+        {monitoringStatus:"WATCH_ONLY"}, // synced from adminCandidates above -- admin-watched only
+        {source:"ADMIN",trader:{enabled:true}}, // wallet added directly on a platform Trader via Admin
+        {source:"USER_PUBLIC_WALLET",trader:{kind:"CUSTOM",enabled:true,follows:{some:{}}}} // a user's own personal copy-source wallet
       ]
     },
     include:{trader:true}

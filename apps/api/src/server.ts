@@ -565,7 +565,12 @@ app.post("/v1/me/resume", auth, asyncRoute(async (req:AuthedRequest,res) => {
 // ------------------------ TRADERS ------------------------
 app.get("/v1/traders", asyncRoute(async (_req,res) => {
   const traders=await db.trader.findMany({
-    where:{kind:"PLATFORM",enabled:true,trackingStatus:{not:"PAPER_TRACKING"}},
+    // ONLY ADMIN-ADDED WALLETS ARE SIGNAL SOURCES: `kind:"PLATFORM"` alone is not proof of that --
+    // scoring-worker auto-creates and auto-promotes its own PLATFORM traders purely from
+    // algorithmic scoring. `wallets:{some:{source:"ADMIN"}}` requires at least one wallet Admin
+    // actually added on this trader, so an auto-promoted trader (which the listener no longer
+    // even subscribes to) can't still surface as a followable "platform trader" here.
+    where:{kind:"PLATFORM",enabled:true,trackingStatus:{not:"PAPER_TRACKING"},wallets:{some:{source:"ADMIN"}}},
     include:{wallets:{where:{verified:true}},_count:{select:{follows:true,signals:true}}},
     orderBy:[{featured:"desc"},{recommended:"desc"},{createdAt:"desc"}],take:200
   });
