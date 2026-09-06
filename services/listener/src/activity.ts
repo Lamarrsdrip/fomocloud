@@ -1,6 +1,9 @@
 import { db, walletEventKey } from "@memecloud/db";
 import type { ParsedTransactionWithMeta } from "@solana/web3.js";
 import { walletTokenActivity } from "./activityParsing.js";
+import { resolveQuoteLeg } from "./quotePrice.js";
+import { isPublicTradeEvent, SESSION_IDLE_MS, type SessionTrade } from "./publicActivity.js";
+import { usdcMint, usdtMint } from "./parsing.js";
 
 export async function persistWalletActivity(traderId:string,wallet:string,signature:string,tx:ParsedTransactionWithMeta,notify=true){
   const facts=walletTokenActivity(tx,wallet); if(!facts.length)return;
@@ -14,10 +17,49 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
   for(const fact of facts){
     const eventKey=walletEventKey("SOLANA",signature,wallet,fact.mint,fact.action);
     const isRealTrade=fact.action==="BUY"||fact.action==="SELL";
-    await db.walletActivity.upsert({where:{eventKey},update:{},create:{...fact,eventKey,chain:"SOLANA",traderId,walletAddress:wallet,walletLabel,sourceTx:signature,public:isRealTrade&&isAdminTracked,observedAt,notificationStatus:notify&&isRealTrade&&isAdminTracked?"PENDING":"HISTORICAL"}});
+
+    // What the wallet actually spent/received, in its real asset, with a USD value when knowable.
+    // This is why a SOL buy no longer renders with a null amount.
+    const leg=isRealTrade&&fact.quote
+      ? await resolveQuoteLeg({quoteMint:fact.quote.quoteMint,rawAmount:BigInt(fact.quote.quoteRaw),decimals:fact.quote.quoteDecimals,usdcMint,usdtMint}).catch(()=>null)
+      : null;
+    const amountUsd=fact.amountUsd??leg?.amountUsd??undefined;
+
+    // A verified swap is always recorded. Whether it also becomes a PUSH is a separate decision --
+    // transaction idempotency (eventKey) and public aggregation are deliberately different keys.
+    let publicDecision={push:false,reason:"NOT_A_TRADE_ACTION",aggregate:false};
+    if(isRealTrade&&isAdminTracked){
+      const since=new Date(observedAt.getTime()-SESSION_IDLE_MS);
+      const [priorRows,otherTraders]=await Promise.all([
+        db.walletActivity.findMany({where:{chain:"SOLANA",walletAddress:wallet,mint:fact.mint,action:{in:["BUY","SELL"]},observedAt:{gte:since,lt:observedAt}},orderBy:{observedAt:"asc"},take:200}),
+        db.walletActivity.findMany({where:{chain:"SOLANA",mint:fact.mint,action:"BUY",public:true,walletAddress:{not:wallet},observedAt:{gte:since}},select:{walletAddress:true},take:50})
+      ]);
+      const priorTrades:SessionTrade[]=priorRows.map(r=>({action:r.action,state:r.state,quoteAmount:r.amountUsd,amountUsd:r.amountUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw}));
+      publicDecision=isPublicTradeEvent({
+        walletIsAdminTracked:true,swapVerified:true,
+        incoming:{action:fact.action,state:fact.state,quoteAmount:leg?.quoteAmount??amountUsd,amountUsd,observedAt,balanceBeforeRaw:fact.balanceBeforeRaw,balanceAfterRaw:fact.balanceAfterRaw},
+        priorTrades,
+        otherTrackedTradersOnMint:new Set(otherTraders.map(o=>o.walletAddress)).size
+      });
+    }
+
+    await db.walletActivity.upsert({where:{eventKey},update:{},create:{
+      mint:fact.mint,action:fact.action,state:fact.state,amountRaw:fact.amountRaw,decimals:fact.decimals,
+      balanceBeforeRaw:fact.balanceBeforeRaw,balanceAfterRaw:fact.balanceAfterRaw,amountUsd,
+      eventKey,chain:"SOLANA",traderId,walletAddress:wallet,walletLabel,sourceTx:signature,
+      public:isRealTrade&&isAdminTracked,observedAt,
+      // Only a genuinely newsworthy event enters the notification pipeline. Churn inside a live
+      // session is still stored and still counts toward PNL -- it just updates the existing card.
+      notificationStatus:notify&&publicDecision.push?"PENDING":"HISTORICAL"
+    }});
     if(!isRealTrade)continue;
-    const snapshot=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:fact.mint,observedAt:{lte:observedAt,gte:new Date(observedAt.getTime()-5*60_000)}},orderBy:{observedAt:"desc"},select:{marketCapUsd:true}}).catch(()=>null);
-    if(snapshot?.marketCapUsd!=null)await db.walletActivity.update({where:{eventKey},data:{marketCapUsd:snapshot.marketCapUsd}});
+
+    // Entry market cap is captured once, at detection, and never overwritten with the current MC.
+    const existing=await db.walletActivity.findUnique({where:{eventKey},select:{marketCapUsd:true}});
+    if(existing?.marketCapUsd==null){
+      const snapshot=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:fact.mint,observedAt:{lte:observedAt,gte:new Date(observedAt.getTime()-5*60_000)}},orderBy:{observedAt:"desc"},select:{marketCapUsd:true}}).catch(()=>null);
+      if(snapshot?.marketCapUsd!=null)await db.walletActivity.update({where:{eventKey},data:{marketCapUsd:snapshot.marketCapUsd}});
+    }
     await db.discoveryToken.upsert({where:{chain_mint:{chain:"SOLANA",mint:fact.mint}},update:{lastSeenAt:observedAt},create:{chain:"SOLANA",mint:fact.mint,source:"ADMIN_WALLET_SWAP",discoveredAt:observedAt,lastSeenAt:observedAt,metadata:{decimals:fact.decimals}}});
   }
 }

@@ -19,8 +19,6 @@ let conn=new Connection(rpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed")
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const queue=new Queue("signals",{connection:redis});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
-const forwardScheduleQueue=new Queue("discovery-forward-schedule",{connection:redis});
-const paperQueue=new Queue("discovery-paper",{connection:redis});
 const subscriptions=new Map<string,number>();
 let detected=0, decoded=0, errors=0;
 // `conn.onLogs` websocket subscriptions have no built-in liveness/reconnect: a silent network
@@ -132,11 +130,10 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
     }
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
-  const trader=await db.trader.findUnique({where:{id:traderId},select:{trackingStatus:true,displayName:true,handle:true}});
-  if(swap.action==="BUY" && trader && ["PAPER_TRACKING","PROVEN"].includes(trader.trackingStatus)){
-    await forwardScheduleQueue.add("schedule",{signalId:signal.id},{jobId:`forward:${signal.id}`,removeOnComplete:1000});
-    await paperQueue.add("paper",{signalId:signal.id},{jobId:`paper:${signal.id}`,removeOnComplete:1000,attempts:4,backoff:{type:"exponential",delay:1000}});
-  }
+  // Wallet-first v1: the forward-observation and paper-trading queues existed only to build
+  // promotion evidence for the retired candidate lifecycle. Their sole consumer (scoring-worker)
+  // is retired, so enqueuing here would just accumulate Redis jobs and spend Jupiter quotes on
+  // paper trades nothing reads. Admin curation replaces promotion evidence entirely.
 }
 
 let currentRpcHost=new URL(rpc).host;

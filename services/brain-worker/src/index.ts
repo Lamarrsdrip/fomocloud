@@ -36,9 +36,11 @@ async function ensureBrainFollowers(traderId:string){
 async function context(chain:Chain,mint:string,s:any){
   const now=Date.now(),since10=new Date(now-10_000),since60=new Date(now-60_000),since10m=new Date(now-10*60_000);
   const since5m=new Date(now-5*60_000);
-  const [f10,f60,f10m,f5m,known,token,catalyst,peak]=await Promise.all([
+  const [f10,f60,s10,s60,f10m,f5m,known,token,catalyst,peak]=await Promise.all([
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since60}},select:{walletAddress:true,amountUsd:true,walletTier:true,knownWallet:true}}),
+    db.chainFlowObservation.findMany({where:{chain,mint,side:"SELL",observedAt:{gte:since10}},select:{amountUsd:true}}),
+    db.chainFlowObservation.findMany({where:{chain,mint,side:"SELL",observedAt:{gte:since60}},select:{amountUsd:true}}),
     db.chainFlowObservation.findMany({where:{chain,mint,side:"BUY",observedAt:{gte:since10m}},select:{walletAddress:true,amountUsd:true,observedAt:true}}),
     db.chainFlowObservation.findMany({where:{chain,mint,observedAt:{gte:since5m}},select:{walletAddress:true,amountUsd:true,side:true}}),
     db.signal.count({where:{chain,action:"BUY",outputMint:mint,observedAt:{gte:since60}}}),
@@ -55,12 +57,12 @@ async function context(chain:Chain,mint:string,s:any){
   // threshold separately requires at least five distinct tracked wallets.
   const recentAddresses=[...new Set(f10m.map(v=>v.walletAddress))];
   const flowAddresses=[...new Set([...recentAddresses,...f5m.map((v:any)=>v.walletAddress)])];
-  const qualityCandidates=flowAddresses.length?await db.smartWalletCandidate.findMany({
-    // Only wallets that have cleared an objective quality stage contribute smart-money authority.
-    // DISCOVERED/ANALYZING addresses are profiling data, never a trading/convergence vote.
-    where:{chain,address:{in:flowAddresses},OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true,source:{in:["MEMECLOUD_CURATED","PLATFORM_ADDED"]}}]},
-    select:{address:true,stage:true,source:true,copyabilityScore:true,metadata:true}
-  }):[];
+  // Wallet-first v1: smart-money authority comes from Admin curation, not from an algorithmic
+  // candidate stage. An Admin-added, enabled platform wallet is the ONLY thing that votes here.
+  const qualityCandidates=flowAddresses.length?(await db.traderWallet.findMany({
+    where:{chain,address:{in:flowAddresses},verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},
+    select:{address:true}
+  })).map((w:any)=>({address:w.address,stage:"ADMIN_CURATED",source:"ADMIN",copyabilityScore:0,metadata:{}})):[];
   const recentSet=new Set(recentAddresses);
   const qualitySet=new Set(qualityCandidates.map((w:any)=>w.address));
   const convergentWallets=qualityCandidates.filter((w:any)=>recentSet.has(w.address));
@@ -74,7 +76,7 @@ async function context(chain:Chain,mint:string,s:any){
   // own honest field instead of silently inflating a wallet-count metric with event counts from an
   // unrelated pipeline.
   const tokenOrigin=((token?.metadata??{}) as any)?.tokenProvenance?.origin??"UNKNOWN_ORIGIN";
-  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:sum(f10),inflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWhales(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:trackedNet5m,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,bundledSupplyPct:s.bundledSupplyPct??undefined,creatorHoldingPct:s.creatorHoldingPct??undefined,mintAuthorityActive:s.mintAuthorityActive??undefined,freezeAuthorityActive:s.freezeAuthorityActive??undefined,token2022DangerousExtension:s.token2022DangerousExtension??undefined,lpRiskScore:s.lpRiskScore??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0,trackedSmartWallets:convergentWallets.length,provenSmartWallets,smartWalletWeightedScore,tokenOrigin};
+  const evidence={marketCapUsd:s.marketCapUsd??undefined,liquidityUsd:s.liquidityUsd,ageMinutes:s.ageMinutes,inflow10sUsd:Math.max(0,sum(f10)-sum(s10)),inflow60sUsd:Math.max(0,sum(f60)-sum(s60)),grossInflow10sUsd:sum(f10),grossInflow60sUsd:sum(f60),buyers10s:uniq(f10),buyers60s:uniq(f60),whaleBuyers60s:whale(f60),knownWhaleBuyers60s:knownWhales(f60),platformSignals60s:known,volumeAcceleration1m:s.volumeAcceleration1m,volumeAcceleration5m:s.volumeAcceleration5m,buyVolume5mUsd:s.buyVolume5mUsd,sellVolume5mUsd:s.sellVolume5mUsd,uniqueBuyers1m:s.uniqueBuyers1m,uniqueBuyers5m:s.uniqueBuyers5m,holderGrowth5mPct:s.holderGrowth5mPct??undefined,smartMoneyNetFlow5mUsd:trackedNet5m,socialVelocity:s.socialVelocity??undefined,socialSpamRatio:s.socialSpamRatio??undefined,narrativeScore:s.narrativeScore??undefined,liquidityChange5mPct:s.liquidityChange5mPct??undefined,creatorNetSell5mPct:s.creatorNetSell5mPct??undefined,top10EffectivePct:s.top10EffectivePct??undefined,bundledSupplyPct:s.bundledSupplyPct??undefined,creatorHoldingPct:s.creatorHoldingPct??undefined,mintAuthorityActive:s.mintAuthorityActive??undefined,freezeAuthorityActive:s.freezeAuthorityActive??undefined,token2022DangerousExtension:s.token2022DangerousExtension??undefined,lpRiskScore:s.lpRiskScore??undefined,drawdownFromRecentPeakPct:dd,catalystBoost:catalyst?10:0,trackedSmartWallets:convergentWallets.length,provenSmartWallets,smartWalletWeightedScore,tokenOrigin};
   return {evidence,token,catalyst,convergentWallets};
 }
 async function notifyUsers(opp:any,users:any[]){
@@ -209,7 +211,7 @@ async function tick(){
     const triggerWindowMin=Math.max(5,Number(cfg?.walletTriggerWindowMinutes??30));
     const sinceTrigger=new Date(Date.now()-triggerWindowMin*60_000);
     const [qualityWallets,openPositions]=await Promise.all([
-      db.smartWalletCandidate.findMany({where:{OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true}]},select:{address:true,stage:true,copyabilityScore:true},take:1500}),
+      db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1500}),
       db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{chain:true,mint:true},take:2000})
     ]);
     const qualityAddresses=[...new Set(qualityWallets.map(w=>w.address))];
@@ -326,7 +328,7 @@ async function checkWatchlist(){
   const since=lastWatchlistCheckAt,now=new Date();
   lastWatchlistCheckAt=now;
   try{
-    const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},select:{address:true,label:true,stage:true}});
+    const watched=(await db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true,trader:{select:{displayName:true}}}})).map((w:any)=>({address:w.address,label:w.trader?.displayName??null,stage:"ADMIN_CURATED"}));
     if(!watched.length)return;
     const byAddress=new Map<string,any>(watched.map((w:any)=>[w.address,w]));
     const flows=await db.chainFlowObservation.findMany({where:{walletAddress:{in:[...byAddress.keys()]},observedAt:{gt:since,lte:now}},orderBy:{observedAt:"asc"},take:1000});

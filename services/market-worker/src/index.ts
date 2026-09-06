@@ -86,10 +86,11 @@ async function trackedMints(){
   dbReads+=3;
   const [positions,qualityWallets,signals]=await Promise.all([
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
-    db.smartWalletCandidate.findMany({where:{OR:[{stage:{in:["PAPER_TRACKING","PROVEN"]}},{adminWatched:true}]},select:{address:true,stage:true,source:true,metadata:true},take:1000}),
+    // Wallet-first v1: the priced universe follows Admin-curated wallets, not candidate stages.
+    db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1000}),
     db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"},take:1500})
   ]);
-  const addresses=[...new Set(qualityWallets.map(w=>w.address))];
+  const addresses=[...new Set(qualityWallets.map((w:any)=>w.address))];
   if(addresses.length)dbReads++;
   const flows=addresses.length?await db.chainFlowObservation.findMany({
     where:{chain:"SOLANA",side:"BUY",walletAddress:{in:addresses},observedAt:{gte:since}},
@@ -103,14 +104,14 @@ async function trackedMints(){
   // P2: their source signals. Raw discoveryToken rows are deliberately NOT a pricing source anymore.
   const unique=[...new Set([...positionMints,...walletMints,...signalMints])].filter(m=>!excluded.has(m));
   const maxTracked=Math.max(positionMints.length,Math.max(25,Number(process.env.WALLET_FIRST_MARKET_MINT_LIMIT??80)));
-  const mints=unique.slice(0,maxTracked),candidateByAddress=new Map(qualityWallets.map((w:any)=>[w.address,w]));
+  const mints=unique.slice(0,maxTracked),candidateByAddress=new Map(qualityWallets.map((w:any)=>[w.address,{address:w.address,stage:"ADMIN_CURATED",source:"ADMIN",metadata:{}}]));
   const tokenRows=mints.length?await db.discoveryToken.findMany({where:{chain:"SOLANA",mint:{in:mints}},select:{mint:true,metadata:true}}):[];
   const tokenByMint=new Map(tokenRows.map((t:any)=>[t.mint,t]));
   const deepEligible=new Set<string>();
   for(const mint of mints){
     const rows=flows.filter(f=>f.mint===mint),wallets=[...new Set(rows.map(f=>f.walletAddress))].map(a=>candidateByAddress.get(a)).filter(Boolean) as any[];
     const provenance=((tokenByMint.get(mint)?.metadata??{}) as any).tokenProvenance??classifyTokenProvenance({mint});
-    if(deepResearchEligible({origin:provenance.origin,distinctQualifiedWallets:wallets.length,provenWallets:wallets.filter(w=>w.stage==="PROVEN").length,curatedWallets:wallets.filter(w=>["MEMECLOUD_CURATED","PLATFORM_ADDED"].includes(w.source)).length,memeWhales:wallets.filter(w=>(w.metadata as any)?.isMemeWhale).length,materialCapitalUsd:rows.reduce((n,r)=>n+Number(r.amountUsd??0),0),openPosition:positionMints.includes(mint)}))deepEligible.add(mint);
+    if(deepResearchEligible({origin:provenance.origin,distinctQualifiedWallets:wallets.length,provenWallets:wallets.filter(w=>w.stage==="PROVEN").length,curatedWallets:wallets.filter(w=>w.source==="ADMIN").length,memeWhales:wallets.filter(w=>(w.metadata as any)?.isMemeWhale).length,materialCapitalUsd:rows.reduce((n,r)=>n+Number(r.amountUsd??0),0),openPosition:positionMints.includes(mint)}))deepEligible.add(mint);
   }
   return {mints,openPositionMints:new Set(positionMints),deepEligible};
 }

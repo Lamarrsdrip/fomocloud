@@ -2,6 +2,7 @@ import type { ParsedTransactionWithMeta } from "@solana/web3.js";
 import { tokenDeltas, ownerMintBalanceRaw, quoteMints, usdcMint, usdtMint, hasRecognizedSwapProgram, nativeSolDelta, walletIsSigner } from "./parsing.js";
 
 export type WalletActivityAction="BUY"|"SELL"|"TRANSFER_IN"|"TRANSFER_OUT";
+export const NATIVE_SOL_MINT="So11111111111111111111111111111111111111112";
 
 /**
  * Feeds the PUBLIC activity feed and push alerts.
@@ -31,9 +32,18 @@ export function walletTokenActivity(tx:ParsedTransactionWithMeta,wallet:string){
     const hasEvidence=quoteEvidence||nativeEvidence||tokenSwapEvidence;
     // Multiple tokens acquired in one transaction cannot each be assigned the entire funding leg --
     // reporting the full stable amount against every one of them would inflate every buy size.
-    const amountUsd=hasEvidence&&sameSide.length===1&&stable.length===1?Number(stable[0].raw<0n?-stable[0].raw:stable[0].raw)/10**stable[0].decimals:undefined;
+    const soleLeg=sameSide.length===1;
+    const amountUsd=hasEvidence&&soleLeg&&stable.length===1?Number(stable[0].raw<0n?-stable[0].raw:stable[0].raw)/10**stable[0].decimals:undefined;
+    // What the wallet ACTUALLY spent/received, in its real asset -- an SPL quote leg when there is
+    // one, otherwise the native SOL that moved through the recognized swap program. USD conversion
+    // happens downstream (quotePrice.ts) so this stays a pure function.
+    const splQuoteLeg=quoteDeltas.find(q=>buy?q.raw<0n:q.raw>0n);
+    const quote=!hasEvidence||!soleLeg?undefined
+      :splQuoteLeg?{quoteMint:splQuoteLeg.mint,quoteRaw:(splQuoteLeg.raw<0n?-splQuoteLeg.raw:splQuoteLeg.raw).toString(),quoteDecimals:splQuoteLeg.decimals}
+      :nativeEvidence?{quoteMint:NATIVE_SOL_MINT,quoteRaw:(lamportDelta<0n?-lamportDelta:lamportDelta).toString(),quoteDecimals:9}
+      :undefined;
     const action:WalletActivityAction=hasEvidence?(buy?"BUY":"SELL"):(buy?"TRANSFER_IN":"TRANSFER_OUT");
     const state=hasEvidence?(buy?(before>0n?"ADDED":"BOUGHT"):(after===0n?"EXITED":before>0n&&after*10n<=before?"MOSTLY_EXITED":"TRIMMED")):action;
-    return {mint:d.mint,action,state,amountRaw:(buy?d.raw:-d.raw).toString(),decimals:d.decimals,amountUsd,balanceBeforeRaw:before.toString(),balanceAfterRaw:after.toString()};
+    return {mint:d.mint,action,state,amountRaw:(buy?d.raw:-d.raw).toString(),decimals:d.decimals,amountUsd,balanceBeforeRaw:before.toString(),balanceAfterRaw:after.toString(),quote};
   });
 }

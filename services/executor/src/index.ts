@@ -371,6 +371,21 @@ const worker=new Worker("signals",async job=>{
   const riskCfg=await getConfig<any>("risk");
   const globalChaseCap=Math.max(0,Number(riskCfg?.hyperMaxChasePct??0)); // 0 = no platform chase ceiling
 
+  // Behaviour check on the SOURCE wallet, from the durable verified-swap record. Round-tripping the
+  // same mint repeatedly inside a short window is churn, not conviction (see the SKIP below).
+  const scalpingSourceMints=new Set<string>();
+  if(signal.chain==="SOLANA"&&signal.sourceWallet&&signal.outputMint){
+    const recent=await db.walletActivity.findMany({
+      where:{chain:"SOLANA",walletAddress:signal.sourceWallet,mint:signal.outputMint,action:{in:["BUY","SELL"]},observedAt:{gte:new Date(Date.now()-15*60_000)}},
+      orderBy:{observedAt:"asc"},select:{action:true,amountUsd:true},take:100
+    }).catch(()=>[] as any[]);
+    let flips=0;for(let i=1;i<recent.length;i++)if(recent[i].action!==recent[i-1].action)flips++;
+    const bought=recent.filter((r:any)=>r.action==="BUY").reduce((n:number,r:any)=>n+Math.abs(Number(r.amountUsd??0)),0);
+    const sold=recent.filter((r:any)=>r.action==="SELL").reduce((n:number,r:any)=>n+Math.abs(Number(r.amountUsd??0)),0);
+    const gross=bought+sold,netRatio=gross>0?Math.abs(bought-sold)/gross:1;
+    if(recent.length>=4&&flips>=2&&netRatio<0.5)scalpingSourceMints.add(`${signal.sourceWallet}:${signal.outputMint}`);
+  }
+
   const follows=await db.userFollow.findMany({
     where:{traderId:signal.traderId,mode:{in:["AUTO_COPY","WATCH_ONLY"]}},
     include:{user:{include:{tradingSettings:true,cashAllocations:true}}}
@@ -394,6 +409,17 @@ const worker=new Worker("signals",async job=>{
     if(follow.mode==="WATCH_ONLY"){
       await saveDecision({allowed:false,action:"WATCH",reason:"WATCH_ONLY",explanation:"You follow this trader in Watch mode."});
       // Wallet activity is persisted by the listener before trading decisions.
+      skippedCount++; continue;
+    }
+
+    // SCALPER COPY is opt-in and there is no opt-in yet, so it is off for everyone. Copying a
+    // wallet that is round-tripping the same mint every few seconds is materially different from
+    // copying its conviction entries: our fill lands later, at a worse price, and pays fees on both
+    // sides of a move the source already captured. Verified production example (MARTINSHKRELI,
+    // 2026-09-06) round-tripped one mint 40 times in 7 minutes. Every swap is still recorded and
+    // still counts toward the trader's performance -- it just does not spend a user's real money.
+    if(scalpingSourceMints.has(`${signal.sourceWallet}:${signal.outputMint}`)){
+      await saveDecision({allowed:false,action:"SKIP",reason:"SOURCE_SCALPING_CHURN",explanation:"The source trader is rapidly round-tripping this token rather than accumulating. Copying high-frequency churn is opt-in only (Scalper Copy) and is currently disabled, so no funds were moved."});
       skippedCount++; continue;
     }
 
