@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "@memecloud/db";
 import { auth, type AuthedRequest } from "./middleware.js";
 import { asyncRoute } from "./auth.js";
+import { summariseSession, SESSION_IDLE_MS } from "@memecloud/shared";
 
 export const curatedRoutes = Router();
 
@@ -52,15 +53,53 @@ curatedRoutes.get("/v1/curated/traders",auth,asyncRoute(async(req:AuthedRequest,
   res.json({traders:await curatedTraderRows(req.user.sub),sourcePolicy:"ADMIN_VERIFIED_WALLETS_ONLY"});
 }));
 
+// The public feed answers "what meaningful thing is this trader doing?", not "what did every
+// blockchain transaction do". Verified swaps are grouped into wallet+mint activity SESSIONS, so a
+// wallet round-tripping one mint 40 times renders as one live card carrying the aggregate, rather
+// than 40 rows. Every underlying swap is still stored and still counts toward PNL.
 curatedRoutes.get("/v1/curated/flow",auth,asyncRoute(async(_req:AuthedRequest,res)=>{
   const since=new Date(Date.now()-24*3600_000);
-  const rows=await db.walletActivity.findMany({where:{public:true,action:{in:["BUY","SELL"]},observedAt:{gte:since}},orderBy:{observedAt:"desc"},take:250});
+  const rows=await db.walletActivity.findMany({where:{public:true,action:{in:["BUY","SELL"]},observedAt:{gte:since}},orderBy:{observedAt:"desc"},take:1000});
   const traderIds=[...new Set(rows.map(r=>r.traderId))],mints=[...new Set(rows.map(r=>r.mint))];
   const [traders,tokens]=await Promise.all([
     traderIds.length?db.trader.findMany({where:{id:{in:traderIds},kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true}}},select:{id:true,displayName:true,handle:true,avatarUrl:true}}):[],
     mints.length?db.discoveryToken.findMany({where:{chain:"SOLANA",mint:{in:mints}},select:{mint:true,symbol:true,name:true,marketCapUsd:true,liquidityUsd:true,metadata:true}}):[]
   ]);
   const tm=new Map(traders.map(t=>[t.id,t])),mm=new Map(tokens.map(t=>[t.mint,t]));
-  const events=rows.filter(r=>tm.has(r.traderId)).map(r=>({id:r.id,action:r.action,state:r.state,trader:tm.get(r.traderId),walletAddress:r.walletAddress,mint:r.mint,token:mm.get(r.mint)||null,amountUsd:r.amountUsd,marketCapUsd:r.marketCapUsd??mm.get(r.mint)?.marketCapUsd??null,observedAt:r.observedAt,sourceTx:r.sourceTx}));
-  res.json({events,sourcePolicy:"REAL_SWAP_ADMIN_WALLETS_ONLY"});
+  const visible=rows.filter(r=>tm.has(r.traderId));
+
+  // Split each wallet+mint stream into sessions: a gap longer than the idle window, or a full exit,
+  // closes one and starts the next.
+  const streams=new Map<string,any[]>();
+  for(const r of [...visible].sort((a,b)=>a.observedAt.getTime()-b.observedAt.getTime())){
+    const k=`${r.walletAddress}:${r.mint}`;const arr=streams.get(k)||[];arr.push(r);streams.set(k,arr);
+  }
+  const cards:any[]=[];
+  for(const [key,stream] of streams){
+    let current:any[]=[];
+    const flush=()=>{ if(current.length)cards.push({key,rows:current}); current=[]; };
+    for(const r of stream){
+      const prev=current[current.length-1];
+      if(prev&&r.observedAt.getTime()-prev.observedAt.getTime()>=SESSION_IDLE_MS)flush();
+      current.push(r);
+      if(r.action==="SELL"&&r.balanceAfterRaw==="0")flush();
+    }
+    flush();
+  }
+  const events=cards.map(({key,rows:group})=>{
+    const s=summariseSession(group.map((r:any)=>({action:r.action,state:r.state,quoteAmount:r.amountUsd,amountUsd:r.amountUsd,amountRaw:r.amountRaw,decimals:r.decimals,marketCapUsd:r.marketCapUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw})));
+    const head=group[group.length-1],first=group[0];
+    const token=mm.get(head.mint)||null;
+    return {
+      id:`${key}:${first.id}`,sessionKey:key,
+      action:head.action,state:head.state,behaviour:s.behaviour,isLive:s.isLive,
+      trader:tm.get(head.traderId),walletAddress:head.walletAddress,mint:head.mint,token,
+      // entry MC is the session's first observed value and is never replaced by the current one
+      marketCapAtBuy:s.initialMarketCapUsd,currentMarketCapUsd:token?.marketCapUsd??s.latestMarketCapUsd??null,
+      amountUsd:head.amountUsd,netUsdFlow:s.netUsdFlow,grossBoughtUsd:s.grossBoughtUsd,grossSoldUsd:s.grossSoldUsd,
+      swaps:s.tradeCount,buyCount:s.buyCount,sellCount:s.sellCount,remainingPositionPct:s.remainingPositionPct,
+      spanMs:s.spanMs,firstBuyAt:s.firstBuyAt,observedAt:head.observedAt,sourceTx:head.sourceTx
+    };
+  }).sort((a,b)=>new Date(b.observedAt).getTime()-new Date(a.observedAt).getTime()).slice(0,250);
+  res.json({events,sourcePolicy:"REAL_SWAP_ADMIN_WALLETS_ONLY",aggregation:"WALLET_MINT_SESSION"});
 }));

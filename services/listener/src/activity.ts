@@ -2,7 +2,7 @@ import { db, walletEventKey } from "@memecloud/db";
 import type { ParsedTransactionWithMeta } from "@solana/web3.js";
 import { walletTokenActivity } from "./activityParsing.js";
 import { resolveQuoteLeg } from "./quotePrice.js";
-import { isPublicTradeEvent, SESSION_IDLE_MS, type SessionTrade } from "./publicActivity.js";
+import { isPublicTradeEvent, SESSION_IDLE_MS, type SessionTrade } from "@memecloud/shared";
 import { usdcMint, usdtMint } from "./parsing.js";
 
 export async function persistWalletActivity(traderId:string,wallet:string,signature:string,tx:ParsedTransactionWithMeta,notify=true){

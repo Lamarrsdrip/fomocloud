@@ -24,7 +24,11 @@ export type SessionTrade={
   action:string;            // BUY | SELL
   state:string;             // BOUGHT | ADDED | TRIMMED | MOSTLY_EXITED | EXITED
   quoteAmount?:number|null;  // in the quote asset actually spent/received
+  quoteSymbol?:string|null;
   amountUsd?:number|null;
+  amountRaw?:string|null;    // token amount moved, raw units
+  decimals?:number|null;
+  marketCapUsd?:number|null;
   observedAt:Date;
   balanceBeforeRaw?:string;
   balanceAfterRaw?:string;
@@ -53,11 +57,24 @@ export function summariseSession(trades:SessionTrade[],now:Date=new Date()){
   else if(sorted.length>=4&&roundTrips>=2&&netRatio<0.5)behaviour="SCALPING";
   else if(grossSold>grossBought&&sells.length>=2)behaviour="DISTRIBUTING";
   else if(buys.length>=2&&netQuote>0)behaviour="ACTIVE_ACCUMULATION";
+  // Token quantities and the position that is actually still held -- the difference between
+  // "traded a lot" and "is holding something".
+  const tok=(t:SessionTrade)=>{const raw=Number(t.amountRaw??0),d=Number(t.decimals??0);return Number.isFinite(raw)&&d>=0?Math.abs(raw)/10**d:0};
+  const tokenBought=buys.reduce((n,t)=>n+tok(t),0),tokenSold=sells.reduce((n,t)=>n+tok(t),0);
+  const firstBuy=buys[0];
+  const openingBalance=firstBuy?.balanceBeforeRaw!=null?BigInt(firstBuy.balanceBeforeRaw):0n;
+  const currentBalance=last?.balanceAfterRaw!=null?BigInt(last.balanceAfterRaw):0n;
+  const peakBalance=sorted.reduce((mx,t)=>{const v=t.balanceAfterRaw!=null?BigInt(t.balanceAfterRaw):0n;return v>mx?v:mx},openingBalance);
+  const remainingPositionPct=peakBalance>0n?Math.max(0,Math.min(100,Number((currentBalance*10000n)/peakBalance)/100)):null;
+  const withMc=sorted.filter(t=>t.marketCapUsd!=null);
   return {
-    firstTradeAt:sorted[0]?.observedAt??null,lastTradeAt:last?.observedAt??null,
+    firstTradeAt:sorted[0]?.observedAt??null,firstBuyAt:firstBuy?.observedAt??null,lastTradeAt:last?.observedAt??null,
     buyCount:buys.length,sellCount:sells.length,tradeCount:sorted.length,
     grossQuoteBought:grossBought,grossQuoteSold:grossSold,netQuoteFlow:netQuote,
+    quoteSymbol:sorted.find(t=>t.quoteSymbol)?.quoteSymbol??null,
     grossBoughtUsd,grossSoldUsd,netUsdFlow:grossBoughtUsd-grossSoldUsd,
+    tokenBought,tokenSold,remainingPositionPct,
+    initialMarketCapUsd:withMc[0]?.marketCapUsd??null,latestMarketCapUsd:withMc[withMc.length-1]?.marketCapUsd??null,
     roundTrips,spanMs,netRatio,behaviour,exited,
     isLive:Boolean(last&&now.getTime()-last.observedAt.getTime()<SESSION_IDLE_MS)
   };

@@ -478,3 +478,4 @@ export async function pickHealthyRpc(candidates: string[], logPrefix = "[rpc]"):
   }
   return candidates[0];
 }
+export * from "./publicActivity.js";
