@@ -3,7 +3,19 @@
 // nothing new is computed or estimated. No historical time-series exists (that would need its own
 // metrics pipeline, not built) -- this is real-time current state, which is what actually would
 // have surfaced the 1M-credit Helius burn while it was happening instead of only after.
+import {Metric} from "./Metric";
 const RPC_WORKERS=["solana-listener","market-worker","balance-worker","social-hype"];
+// Detection latency is the product's core promise: how many seconds after a tracked wallet's swap
+// lands on chain does MemeCloud have it. Sourced straight from the listener heartbeat.
+function DetectionLatency({services}:{services:any[]}){
+ const l=services.find(s=>s.name==="solana-listener")?.detail?.detectionLatency;
+ if(!l)return null;
+ const fmt=(ms:number|null)=>ms==null?"—":ms<1000?`${Math.round(ms)}ms`:`${(ms/1000).toFixed(1)}s`;
+ return <section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>DETECTION LATENCY</span><h2>Chain timestamp to stored event</h2></div></div>
+  <div className="admin-kpi-row"><Metric label="Median" value={fmt(l.medianMs)}/><Metric label="P95" value={fmt(l.p95Ms)}/><Metric label="Samples" value={l.samples}/></div>
+  {!l.samples&&<p style={{fontSize:12,color:"#8a8fa0"}}>No live swaps measured yet. Replayed history is deliberately excluded so this stays a real detection figure.</p>}
+ </section>;
+}
 function RpcUsage({services}:{services:any[]}){
  const rows=services.filter(s=>RPC_WORKERS.includes(s.name));
  if(!rows.length)return null;
@@ -37,4 +49,4 @@ function healthDetailLine(detail:any){
  if(!entries.length)return null;
  return entries.map(([k,v])=>`${k}: ${typeof v==="object"?JSON.stringify(v):String(v)}`).join(" · ");
 }
-export function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small>{healthDetailLine(h.detail)&&<small style={{display:"block",marginTop:2,color:"#8a8fa0",fontSize:10}}>{healthDetailLine(h.detail)}</small>}</div>)}</div></section><RpcUsage services={d.services||[]}/></>}
+export function Health({d}:{d:any}){return <><div className="app-grid-4"><div className="stat-card"><span>Database</span><b>{d.database||"—"}</b><small>MongoDB</small></div><div className="stat-card"><span>Redis</span><b>{d.redis||"—"}</b><small>Queue/cache</small></div><div className="stat-card"><span>Actual execution</span><b>{d.executionState?.actualRuntimeMode||String(d.executionMode||"—").toUpperCase()}</b><small>{d.executionState?.status?String(d.executionState.status).replaceAll("_"," "):"Resolved backend mode"}</small></div><div className="stat-card"><span>Broadcast queue</span><b>{d.queue?.broadcasts?.waiting??0}</b><small>Waiting jobs</small></div></div><section className="app-card" style={{marginTop:10}}><div className="card-title"><div><span>REAL HEARTBEATS</span><h2>Backend workers</h2></div></div><div className="health-grid">{(d.services||[]).map((h:any)=><div className="health-item" key={h.id}><span>{h.name}</span><b className={h.healthy?"positive":"negative"}>{h.healthy?"Healthy":"Stale"}</b><small>Last beat {new Date(h.lastBeatAt).toLocaleTimeString()}</small>{healthDetailLine(h.detail)&&<small style={{display:"block",marginTop:2,color:"#8a8fa0",fontSize:10}}>{healthDetailLine(h.detail)}</small>}</div>)}</div></section><DetectionLatency services={d.services||[]}/><RpcUsage services={d.services||[]}/></>}

@@ -48,6 +48,23 @@ const FORCED_RECONNECT_MS=15*60_000;
 // cursor, and avoids ever guessing how far back a genuinely cold start should reach).
 const lastSeenSignature=new Map<string,string>();
 let replays=0,replayFailures=0;
+// Detection latency: how long after a swap actually landed on chain did MemeCloud durably record
+// it. Measured from the transaction's own blockTime, so it includes RPC delivery, fetch and write.
+// A bounded ring buffer keeps this free -- no extra storage, no provider calls.
+const detectionLatencies:number[]=[];
+function recordDetectionLatency(blockTimeSec?:number|null){
+  if(!blockTimeSec)return;
+  const ms=Date.now()-blockTimeSec*1000;
+  if(ms<0||ms>15*60_000)return; // replayed/backfilled history is not a live detection measurement
+  detectionLatencies.push(ms);
+  if(detectionLatencies.length>500)detectionLatencies.shift();
+}
+function latencyStats(){
+  if(!detectionLatencies.length)return {samples:0,medianMs:null,p95Ms:null};
+  const a=[...detectionLatencies].sort((x,y)=>x-y);
+  const q=(p:number)=>a[Math.min(a.length-1,Math.floor(a.length*p))];
+  return {samples:a.length,medianMs:q(0.5),p95Ms:q(0.95)};
+}
 async function replayMissedSignatures(traderId:string,address:string,pubkey:PublicKey){
   const cursor=lastSeenSignature.get(address);
   if(!cursor)return;
@@ -94,6 +111,7 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   const tx=await fetchParsedTransactionWithRetry(signature);
   if(!tx||tx.meta?.err){if(!tx)errors++;return;}
 
+  recordDetectionLatency(tx.blockTime);
   await persistWalletActivity(traderId,wallet,signature,tx);
   await db.sourceTransaction.upsert({
     where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}},update:{},
@@ -221,7 +239,7 @@ async function refreshWatchlist(){
   }
 }
 
-startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,lastEventAt:lastEventAt?new Date(lastEventAt).toISOString():null,lastSlotAt:lastSlotAt?new Date(lastSlotAt).toISOString():null,currentSlot,slotPollErrors,reconnects,replays,replayFailures}));
+startHeartbeat("solana-listener",()=>({subscriptions:subscriptions.size,detected,decoded,errors,rpc:currentRpcHost,lastEventAt:lastEventAt?new Date(lastEventAt).toISOString():null,lastSlotAt:lastSlotAt?new Date(lastSlotAt).toISOString():null,currentSlot,slotPollErrors,reconnects,replays,replayFailures,detectionLatency:latencyStats()}));
 await refreshWatchlist();
 setInterval(()=>refreshWatchlist().catch(e=>{errors++;console.error(e)}),30_000);
 setInterval(()=>void pollSlotLiveness(),20_000);void pollSlotLiveness();

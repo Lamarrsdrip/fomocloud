@@ -64,14 +64,36 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
   }
 }
 
+// A brand-new Pump.fun launch is exactly the case DexScreener has not indexed yet, which is why a
+// real buy could still render as a bare mint. Pump.fun's own API knows the token from the moment it
+// is created, so it is the natural fallback for `*pump` mints. One bounded attempt each, cached by
+// the same identityAttemptAt gate, so a burst of swaps on one mint costs one lookup, not forty.
+async function resolveFromDexscreener(mint:string){
+  const response=await fetch(`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`,{signal:AbortSignal.timeout(6000)});
+  if(!response.ok)return null;
+  const pairs=await response.json() as any[];
+  const pair=Array.isArray(pairs)?pairs.find(p=>p.chainId==="solana"&&p.baseToken?.address===mint):null;
+  if(!pair?.baseToken?.symbol&&!pair?.baseToken?.name)return null;
+  return {symbol:pair.baseToken.symbol,name:pair.baseToken.name,marketCapUsd:Number(pair.marketCap||pair.fdv)||undefined,liquidityUsd:Number(pair.liquidity?.usd)||undefined,imageUrl:pair.info?.imageUrl,source:"DEXSCREENER_EXACT_MINT"};
+}
+async function resolveFromPumpFun(mint:string){
+  if(!mint.toLowerCase().endsWith("pump"))return null;
+  const response=await fetch(`https://frontend-api-v3.pump.fun/coins/${encodeURIComponent(mint)}`,{signal:AbortSignal.timeout(6000),headers:{accept:"application/json"}});
+  if(!response.ok)return null;
+  const c=await response.json() as any;
+  if(!c?.symbol&&!c?.name)return null;
+  const mc=Number(c.usd_market_cap??c.market_cap);
+  return {symbol:c.symbol,name:c.name,marketCapUsd:Number.isFinite(mc)&&mc>0?mc:undefined,liquidityUsd:undefined,imageUrl:c.image_uri,source:"PUMP_FUN_COIN_API"};
+}
+
 export async function enrichWalletToken(mint:string){
   const token=await db.discoveryToken.findUnique({where:{chain_mint:{chain:"SOLANA",mint}}}); if(!token||(token.symbol&&token.name))return;
   const meta=(token.metadata??{}) as any,retry=meta.identityAttemptAt&&Date.now()-new Date(meta.identityAttemptAt).getTime()<5*60_000;if(retry)return;
   await db.discoveryToken.update({where:{id:token.id},data:{metadata:{...meta,identityAttemptAt:new Date().toISOString()}}});
-  const response=await fetch(`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`,{signal:AbortSignal.timeout(6000)});if(!response.ok)return;
-  const pairs=await response.json() as any[];const pair=Array.isArray(pairs)?pairs.find(p=>p.chainId==="solana"&&p.baseToken?.address===mint):null;if(!pair?.baseToken)return;
+  const identity=await resolveFromDexscreener(mint).catch(()=>null)??await resolveFromPumpFun(mint).catch(()=>null);
+  if(!identity)return;
   const current=await db.discoveryToken.findUniqueOrThrow({where:{id:token.id}});
-  await db.discoveryToken.update({where:{id:token.id},data:{symbol:pair.baseToken.symbol||current.symbol,name:pair.baseToken.name||current.name,marketCapUsd:Number(pair.marketCap||pair.fdv)||current.marketCapUsd,liquidityUsd:Number(pair.liquidity?.usd)||current.liquidityUsd,metadata:{...((current.metadata??{}) as any),imageUrl:pair.info?.imageUrl,identitySource:"DEXSCREENER_EXACT_MINT",identityResolvedAt:new Date().toISOString()}}});
+  await db.discoveryToken.update({where:{id:token.id},data:{symbol:identity.symbol||current.symbol,name:identity.name||current.name,marketCapUsd:identity.marketCapUsd??current.marketCapUsd,liquidityUsd:identity.liquidityUsd??current.liquidityUsd,metadata:{...((current.metadata??{}) as any),imageUrl:identity.imageUrl,identitySource:identity.source,identityResolvedAt:new Date().toISOString()}}});
 }
 let enriching=false;
 export async function enrichPendingWalletTokens(){if(enriching)return;enriching=true;try{const rows=await db.walletActivity.findMany({where:{public:true,action:{in:["BUY","SELL"]}},orderBy:{observedAt:"desc"},take:250});for(const mint of [...new Set(rows.map(r=>r.mint))])await enrichWalletToken(mint).catch(()=>{});}finally{enriching=false}}
