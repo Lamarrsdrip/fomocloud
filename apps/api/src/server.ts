@@ -181,7 +181,39 @@ app.get("/v1/me/settings", auth, asyncRoute(async (req:AuthedRequest,res) => {
     db.globalTradingSettings.findUnique({where:{userId:req.user.sub}}),
     db.notificationPreference.findUnique({where:{userId:req.user.sub}})
   ]);
-  res.json({trading,notifications});
+  const tradingDefaults={
+    autoCopyEnabled:false,
+    globalBrainEnabled:true,
+    sizingMode:"PERCENT",
+    percentBalance:2,
+    defaultAmountUsd:100,
+    maxAmountPerTradeUsd:0,
+    maxTotalExposureUsd:0,
+    maxConcurrentPositions:0,
+    maxSlippageBps:1500,
+    takeProfitMode:"SIMPLE",
+    simpleTakeProfitPct:100,
+    simpleSellPct:100,
+    tp1Pct:50,
+    tp1SellPct:25,
+    tp2Pct:100,
+    tp2SellPct:25,
+    tp3Pct:200,
+    tp3SellPct:25,
+    runnerPct:25,
+    capitalRecoveryEnabled:true,
+    capitalRecoveryTriggerPct:100,
+    trailingEnabled:false,
+    trailingActivationPct:80,
+    trailingGivebackPct:20,
+    sourceSellBehavior:"BRAIN_DECIDES",
+    scalperCopyEnabled:false
+  };
+
+  res.json({
+    trading:{...tradingDefaults,...(trading||{})},
+    notifications
+  });
 }));
 
 app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,res) => {

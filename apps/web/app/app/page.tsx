@@ -140,7 +140,7 @@ export default function AppPage(){
         <div className="app-top">
           <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Wallet":view==="profile"?"Account":view==="more"?"More":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
-            <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
+            {view!=="trade"&&<button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>}
             <button className="icon-btn notification-button" onClick={()=>navigate("profile","notifications")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
           </div>
         </div>
