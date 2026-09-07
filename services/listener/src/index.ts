@@ -127,10 +127,9 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   // the old chain-wide all-logs firehose for normal production, while preserving the exact flow rows
   // Brain/market/scoring already consume.
   const observedAt=tx.blockTime?new Date(tx.blockTime*1000):new Date();
-  const capitalCandidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}},select:{metadata:true}}).catch(()=>null);
-  const capital=(capitalCandidate?.metadata??{}) as any;
-  const capitalFresh=capital.walletBalanceObservedAt&&Date.now()-new Date(capital.walletBalanceObservedAt).getTime()<7*24*3600_000&&String(capital.walletBalanceSource??"").startsWith("WALLET_CAPITAL_SNAPSHOT:");
-  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"WATCHED_WALLET_LISTENER",walletBalanceUsd:capitalFresh?Number(capital.walletBalanceUsd??0):undefined,walletTier:capitalFresh&&capital.isMemeWhale?capital.whaleTier??"WHALE_MEME_VERIFIED":undefined,observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
+  // Admin curation is the only source authority. The retired SmartWalletCandidate table is no
+  // longer consulted for monitoring priority, whale labels or copy eligibility.
+  await db.chainFlowObservation.create({data:{chain:"SOLANA",mint:tokenMint,walletAddress:wallet,txHash:signature,side:swap.action,amountUsd:swap.amountUsd,knownWallet:true,source:"ADMIN_TRACKED_SWAP",walletTier:"ADMIN_CURATED",observedAt}}).catch((e:any)=>{if(e?.code!=="P2002")throw e});
   // A new monitored-wallet transaction is the event that makes this mint due
   // immediately. The market worker otherwise keeps its five-minute quiet cache.
   await redis.del(`market:due:SOLANA:${tokenMint}`).catch(()=>{});

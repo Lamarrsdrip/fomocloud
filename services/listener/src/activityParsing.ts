@@ -38,9 +38,11 @@ export function walletTokenActivity(tx:ParsedTransactionWithMeta,wallet:string){
     // one, otherwise the native SOL that moved through the recognized swap program. USD conversion
     // happens downstream (quotePrice.ts) so this stays a pure function.
     const splQuoteLeg=quoteDeltas.find(q=>buy?q.raw<0n:q.raw>0n);
+    const tokenQuoteLeg=tokens.find(t=>t.mint!==d.mint&&(buy?t.raw<0n:t.raw>0n));
     const quote=!hasEvidence||!soleLeg?undefined
       :splQuoteLeg?{quoteMint:splQuoteLeg.mint,quoteRaw:(splQuoteLeg.raw<0n?-splQuoteLeg.raw:splQuoteLeg.raw).toString(),quoteDecimals:splQuoteLeg.decimals}
       :nativeEvidence?{quoteMint:NATIVE_SOL_MINT,quoteRaw:(lamportDelta<0n?-lamportDelta:lamportDelta).toString(),quoteDecimals:9}
+      :tokenSwapEvidence&&tokenQuoteLeg?{quoteMint:tokenQuoteLeg.mint,quoteRaw:(tokenQuoteLeg.raw<0n?-tokenQuoteLeg.raw:tokenQuoteLeg.raw).toString(),quoteDecimals:tokenQuoteLeg.decimals}
       :undefined;
     const action:WalletActivityAction=hasEvidence?(buy?"BUY":"SELL"):(buy?"TRANSFER_IN":"TRANSFER_OUT");
     const state=hasEvidence?(buy?(before>0n?"ADDED":"BOUGHT"):(after===0n?"EXITED":before>0n&&after*10n<=before?"MOSTLY_EXITED":"TRIMMED")):action;

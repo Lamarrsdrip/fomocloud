@@ -5,7 +5,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
 import { calculateExitAccounting, decideCopy, walletChasePct, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { JupiterExecution } from "@memecloud/execution";
-import { evaluateEntry } from "@memecloud/strategy";
+import { evaluateEntry, resolveEffectiveTradeSettings } from "@memecloud/strategy";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { startHeartbeat } from "@memecloud/ops";
 import { getConfig, readExecutionState } from "@memecloud/config";
@@ -104,7 +104,7 @@ async function recoverPrivyHash(referenceId:string){
   }catch(e){console.warn("[executor] Privy reference recovery unavailable",referenceId,e);return null}
 }
 
-async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitted:any,signal:any,follow:any,decimals:number){
+async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitted:any,signal:any,follow:any,decimals:number,effective:any){
   if(!solanaRpc)throw Object.assign(new Error("SOLANA_RPC_REQUIRED"),{code:"SOLANA_RPC_REQUIRED"});
   await jupiter.waitConfirmed(solanaRpc,txHash,60_000);
   const fill=await reconcileConfirmedSwap(txHash,permitted.address,usdcSol,signal.outputMint);
@@ -115,7 +115,7 @@ async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitt
   const already=await db.position.findFirst({where:{userId:follow.userId,mode:"LIVE",entryTxHash:txHash}});
   await db.$transaction([
     db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,status:"OPEN",lastMarkedAt:new Date()}})]),
+    ...(already?[]:[db.position.create({data:{userId:follow.userId,sourceTraderId:signal.traderId,chain:"SOLANA",mode:"LIVE",mint:signal.outputMint,quoteMint:usdcSol,entryTxHash:txHash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:effective.takeProfitMode==="SIMPLE"?effective.simpleTakeProfitPct:effective.tp3Pct,stopLossPct:effective.stopLossPct,tradeSettingsSnapshot:effective as any,status:"OPEN",lastMarkedAt:new Date()}})]),
     db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash}}),
     // Real-money accounting audit trail (LedgerEntry) written atomically alongside the state change
     // it documents -- never a separate, un-atomic write that could drift from what actually happened.
@@ -216,6 +216,25 @@ async function handleSourceSell(signal:any){
       continue;
     }
     const fraction=Math.min(1,soldPct/100);
+    const [directFollow,globalSettings]=await Promise.all([
+      db.userFollow.findUnique({where:{userId_traderId:{userId,traderId:signal.traderId}}}),
+      db.globalTradingSettings.findUnique({where:{userId}})
+    ]);
+    const effectiveFor=(p:any)=>p.tradeSettingsSnapshot && typeof p.tradeSettingsSnapshot==="object"
+      ? p.tradeSettingsSnapshot as any
+      : resolveEffectiveTradeSettings(globalSettings,directFollow);
+    const eligiblePositions=userPositions.filter((p:any)=>{
+      const behavior=String(effectiveFor(p).sourceSellBehavior??"BRAIN_DECIDES");
+      if(behavior==="PROPORTIONAL")return true;
+      if(behavior==="FULL_EXIT_ONLY")return soldPct>=99.9;
+      // IGNORE and BRAIN_DECIDES deliberately do not mirror the source sell here. The exits worker
+      // can still use verified source-sell evidence for its independent safety/Brain decision.
+      return false;
+    });
+    if(!eligiblePositions.length){
+      await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:false,action:"SOURCE_SELL_OBSERVED",reason:"SOURCE_SELL_POLICY",explanation:`Verified source sale ${soldPct.toFixed(1)}% observed, but this user's frozen position settings do not request a direct mirror for this event.`}});
+      continue;
+    }
     if(mode==="LIVE"){
       const permitted=await db.wallet.findFirst({where:{userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
       if(!permitted){
@@ -233,7 +252,7 @@ async function handleSourceSell(signal:any){
       }
       const liveDecision=await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:true,action:"SOURCE_SELL_MIRROR",sourcePriceUsd:signal.sourcePriceUsd,explanation:`Source trader sold ${soldPct.toFixed(1)}%; mirroring that verified fraction with a real on-chain sell.`}});
       let liveClosed=0,livePartial=0,liveFailed=0,liveSkipped=0;
-      for(const p of userPositions){
+      for(const p of eligiblePositions){
         try{
           if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0)continue;
           const remaining=BigInt(p.remainingTokenRaw);
@@ -316,7 +335,7 @@ async function handleSourceSell(signal:any){
       }
       await userEvent(userId,liveFailed?"TRADE_SKIPPED":(liveClosed&&!livePartial?"POSITION_CLOSED":"PROFIT_TAKEN"),
         `${signal.trader.displayName} source sell mirrored live`,
-        `Verified source sale ${soldPct.toFixed(1)}% mirrored with real on-chain sells across ${userPositions.length} position(s). Closed ${liveClosed}, partially exited ${livePartial}${liveSkipped?`, ${liveSkipped} left open pending a genuine executable route/reconciliation`:""}${liveFailed?`, ${liveFailed} failed and were left open (protected by fail-safe reconciliation, no funds double-moved)`:""}.`,
+        `Verified source sale ${soldPct.toFixed(1)}% mirrored with real on-chain sells across ${eligiblePositions.length} position(s). Closed ${liveClosed}, partially exited ${livePartial}${liveSkipped?`, ${liveSkipped} left open pending a genuine executable route/reconciliation`:""}${liveFailed?`, ${liveFailed} failed and were left open (protected by fail-safe reconciliation, no funds double-moved)`:""}.`,
         {signalId:signal.id,decisionId:liveDecision.id,sourceSoldPct:soldPct,mode:"LIVE",closed:liveClosed,partial:livePartial,skipped:liveSkipped,failed:liveFailed});
       continue;
     }
@@ -327,7 +346,7 @@ async function handleSourceSell(signal:any){
     }
     const decision=await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:true,action:"SOURCE_SELL_MIRROR",sourcePriceUsd:signal.sourcePriceUsd,executablePriceUsd:market.priceUsd,explanation:`Source trader sold ${soldPct.toFixed(1)}%; simulation mirrors that verified fraction using the latest genuine price mark.`}});
     let totalPnl=0,totalProceeds=0,closed=0,partial=0;
-    for(const p of userPositions){
+    for(const p of eligiblePositions){
       if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0) continue;
       const remaining=BigInt(p.remainingTokenRaw), original=BigInt(p.entryTokenRaw);
       if(remaining<=0n||original<=0n) continue;
@@ -412,18 +431,16 @@ const worker=new Worker("signals",async job=>{
       skippedCount++; continue;
     }
 
-    // SCALPER COPY is opt-in and there is no opt-in yet, so it is off for everyone. Copying a
-    // wallet that is round-tripping the same mint every few seconds is materially different from
-    // copying its conviction entries: our fill lands later, at a worse price, and pays fees on both
-    // sides of a move the source already captured. Verified production example (MARTINSHKRELI,
-    // 2026-09-06) round-tripped one mint 40 times in 7 minutes. Every swap is still recorded and
-    // still counts toward the trader's performance -- it just does not spend a user's real money.
-    if(scalpingSourceMints.has(`${signal.sourceWallet}:${signal.outputMint}`)){
-      await saveDecision({allowed:false,action:"SKIP",reason:"SOURCE_SCALPING_CHURN",explanation:"The source trader is rapidly round-tripping this token rather than accumulating. Copying high-frequency churn is opt-in only (Scalper Copy) and is currently disabled, so no funds were moved."});
+    const global=follow.user.tradingSettings;
+    const effective=resolveEffectiveTradeSettings(global,follow);
+    // High-frequency source churn is real trading, but materially harder to copy at comparable
+    // prices. It is fail-closed unless this user explicitly enabled Scalper Copy globally or for
+    // this exact trader. Every verified source swap remains recorded for performance/accounting.
+    if(scalpingSourceMints.has(`${signal.sourceWallet}:${signal.outputMint}`) && !effective.scalperCopyEnabled){
+      await saveDecision({allowed:false,action:"SKIP",reason:"SOURCE_SCALPING_CHURN",explanation:"The source trader is rapidly round-tripping this token rather than accumulating. Scalper Copy is off for this user/trader, so no funds were moved."});
       skippedCount++; continue;
     }
 
-    const global=follow.user.tradingSettings;
     if(riskCfg?.emergencyNewEntriesPaused===true){
       await saveDecision({allowed:false,action:"SKIP",reason:"PLATFORM_NEW_ENTRIES_PAUSED",explanation:"The platform emergency new-entry switch is active. Existing positions can still be monitored."});
       await userEvent(follow.userId,"TRADE_SKIPPED",`${signal.trader.displayName}: new entries temporarily paused`,`The platform emergency new-entry switch is active.`,{signalId:signal.id});
@@ -443,8 +460,12 @@ const worker=new Worker("signals",async job=>{
     // numbers under the original names right here so remainingCostBasisUsd below (unchanged) keeps
     // working exactly as before.
     const open=(await db.position.findMany({where:{userId:follow.userId,mode,status:{in:["OPEN","PARTIALLY_CLOSED"]}}})).map(p=>({...p,...positionUsdFields(p)}));
-    if(global.maxConcurrentPositions>0 && open.length>=global.maxConcurrentPositions){
+    if(effective.maxConcurrentPositions>0 && open.length>=effective.maxConcurrentPositions){
       await saveDecision({allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_POSITIONS",explanation:"Your own open-position limit is currently reached."});
+      skippedCount++; continue;
+    }
+    if(effective.maxConcurrentFromTrader>0 && open.filter(p=>p.sourceTraderId===signal.traderId).length>=effective.maxConcurrentFromTrader){
+      await saveDecision({allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_FROM_TRADER",explanation:"Your open-position limit for this trader is currently reached."});
       skippedCount++; continue;
     }
 
@@ -454,11 +475,11 @@ const worker=new Worker("signals",async job=>{
     const tokenMint=signal.outputMint;
     const sameOpen=open.filter(p=>p.mint===tokenMint&&p.sourceTraderId===signal.traderId);
     const tokenExposureUsd=open.filter(p=>p.mint===tokenMint).reduce((a,p)=>a+remainingCostBasisUsd(p),0);
-    if(sameOpen.length && !follow.copyAdditionalBuys){
+    if(sameOpen.length && !effective.copyAdditionalBuys){
       await saveDecision({allowed:false,action:"SKIP",reason:"ADDITIONAL_BUY_DISABLED",explanation:"You disabled additional buys for this trader."});
       skippedCount++; continue;
     }
-    if(!sameOpen.length && !follow.copyReentries){
+    if(!sameOpen.length && !effective.copyReentries){
       const prior=await db.position.findFirst({where:{userId:follow.userId,mode,sourceTraderId:signal.traderId,mint:tokenMint,status:"CLOSED"},select:{id:true}});
       if(prior){
         await saveDecision({allowed:false,action:"SKIP",reason:"REENTRY_DISABLED",explanation:"You disabled re-entry copies for this trader."});
@@ -471,17 +492,15 @@ const worker=new Worker("signals",async job=>{
 
     // Daily move is intentionally not used here. Chase = source wallet execution -> our executable entry.
     const positiveMin=(...xs:number[])=>{const on=xs.filter(x=>Number.isFinite(x)&&x>0);return on.length?Math.min(...on):0};
-    const maxChase=positiveMin(Number(follow.maxChasePct??0),globalChaseCap);
-    const globalTradeCap=Number(global.maxAmountPerTradeUsd??0);
-    const fixedAmount=globalTradeCap>0?Math.min(follow.fixedAmountUsd,globalTradeCap):follow.fixedAmountUsd;
+    const maxChase=positiveMin(Number(effective.maxChasePct??0),globalChaseCap);
     const base=decideCopy({
       settings:{
-        enabled:true,sizingMode:(global.sizingMode==="FIXED"?"FIXED":"PERCENT") as any,
-        fixedAmountUsd:fixedAmount,
-        percentBalance:Number(global.percentBalance??2),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
-        maxChasePct:maxChase,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:positiveMin(Number(follow.maxPositionUsd??0),Number(global.maxAmountPerTradeUsd??0)),
-        maxTotalExposureUsd:positiveMin(Number(follow.maxTotalExposureUsd??0),Number(global.maxTotalExposureUsd??0)),
-        minLiquidityUsd:follow.minLiquidityUsd,exitMode:(follow.exitMode==="ADAPTIVE"?"HYBRID":follow.exitMode) as any
+        enabled:true,sizingMode:effective.sizingMode as any,
+        fixedAmountUsd:effective.fixedAmountUsd,
+        percentBalance:effective.percentBalance,takeProfitPct:effective.takeProfitMode==="SIMPLE"?effective.simpleTakeProfitPct:effective.tp3Pct,stopLossPct:effective.stopLossPct,
+        maxChasePct:maxChase,maxSlippageBps:effective.maxSlippageBps,maxPositionUsd:effective.maxAmountPerTradeUsd,
+        maxTotalExposureUsd:effective.maxTotalExposureUsd,
+        minLiquidityUsd:effective.minLiquidityUsd,exitMode:"HYBRID" as any
       },
       // Sizing/risk checks happen here, but chase is deliberately evaluated separately.
       // The authoritative simulation chase comes from the user's actual-size executable quote.
@@ -520,7 +539,7 @@ const worker=new Worker("signals",async job=>{
 
     let amountRaw=String(Math.round(amountUsd*1_000_000));
     try{
-      let quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:follow.maxSlippageBps});
+      let quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:effective.maxSlippageBps});
       const decimals=await tokenDecimals(signal.outputMint);
       let tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
       if(!Number.isFinite(tokenAmount)||tokenAmount<=0)throw Object.assign(new Error("INVALID_EXECUTABLE_QUOTE"),{code:"INVALID_EXECUTABLE_QUOTE"});
@@ -534,7 +553,7 @@ const worker=new Worker("signals",async job=>{
       let sellRouteAvailable=false;
       let reverseImpactPct: number|undefined;
       try{
-        const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:follow.maxSlippageBps});
+        const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:effective.maxSlippageBps});
         sellRouteAvailable=Boolean(reverse.outAmount&&BigInt(reverse.outAmount)>0n);
         reverseImpactPct=Math.abs(Number(reverse.priceImpactPct??0));
       }catch{}
@@ -551,8 +570,9 @@ const worker=new Worker("signals",async job=>{
         await saveDecision({allowed:false,action:"WAIT_DATA",reason:"RICH_INTELLIGENCE_UNAVAILABLE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The executable quote is real, but the liquidity/flow/holder intelligence snapshot is missing or stale. MemeCloud will not invent those inputs."});
         skippedCount++;continue;
       }
-      const candidate=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:"SOLANA",address:signal.sourceWallet}}}).catch(()=>null);
-      const sourceQuality=Number(candidate?.sourceQualityScore??65);
+      // Admin curation is the only source-authority input. Performance may refine this later, but
+      // the retired SmartWalletCandidate table must not affect real-money entry authority.
+      const sourceQuality=70;
       const intelligence=evaluateEntry({
         ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
         priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
@@ -585,14 +605,14 @@ const worker=new Worker("signals",async job=>{
       if(intelligence.action==="BUY_SMALLER"&&intelligence.sizeMultiplier>0&&intelligence.sizeMultiplier<1){
         amountUsd=Math.max(1,Math.round(amountUsd*intelligence.sizeMultiplier*100)/100);
         amountRaw=String(Math.round(amountUsd*1_000_000));
-        quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:follow.maxSlippageBps});
+        quote=await jupiter.quote({inputMint:usdcSol,outputMint:signal.outputMint,amountRaw,slippageBps:effective.maxSlippageBps});
         tokenAmount=Number(BigInt(quote.outAmount))/(10**decimals);
         if(!Number.isFinite(tokenAmount)||tokenAmount<=0)throw Object.assign(new Error("INVALID_REDUCED_EXECUTABLE_QUOTE"),{code:"INVALID_REDUCED_EXECUTABLE_QUOTE"});
         executablePriceUsd=amountUsd/tokenAmount;
         actualChase=walletChasePct(sourceExecutionPriceUsd,executablePriceUsd);
         priceImpactPct=Math.abs(Number(quote.priceImpactPct??0));
         try{
-          const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:follow.maxSlippageBps});
+          const reverse=await jupiter.quote({inputMint:signal.outputMint,outputMint:usdcSol,amountRaw:quote.outAmount,slippageBps:effective.maxSlippageBps});
           sellRouteAvailable=Boolean(reverse.outAmount&&BigInt(reverse.outAmount)>0n);
           reverseImpactPct=Math.abs(Number(reverse.priceImpactPct??0));
         }catch{sellRouteAvailable=false}
@@ -650,7 +670,7 @@ const worker=new Worker("signals",async job=>{
           if(hash){
             await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:hash,submittedAt:order.submittedAt??new Date()}});
             await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"SUBMITTED",txHash:hash}});
-            await finalizeLiveBuy(order,attempt.idempotencyKey,hash,permitted,signal,follow,decimals);
+            await finalizeLiveBuy(order,attempt.idempotencyKey,hash,permitted,signal,follow,decimals,effective);
             allowedCount++;continue;
           }
           // A SIGNING request without a recoverable provider transaction is ambiguous. Never
@@ -666,7 +686,7 @@ const worker=new Worker("signals",async job=>{
           const sent=await privy.signAndSend(permitted.permissionRef!,built,attemptKey.slice(0,64));
           await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:sent.hash,submittedAt:new Date()}});
           await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:sent.hash}});
-          await finalizeLiveBuy(order,attemptKey,sent.hash,permitted,signal,follow,decimals);
+          await finalizeLiveBuy(order,attemptKey,sent.hash,permitted,signal,follow,decimals,effective);
           allowedCount++;continue;
         }catch(e:any){
           // Recover a transaction that Privy accepted even if the HTTP response/process died before
@@ -675,7 +695,7 @@ const worker=new Worker("signals",async job=>{
           if(recovered){
             await db.order.update({where:{id:order.id},data:{status:"SUBMITTED",txHash:recovered,submittedAt:new Date()}}).catch(()=>{});
             await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"SUBMITTED",txHash:recovered}}).catch(()=>{});
-            await finalizeLiveBuy(order,attemptKey,recovered,permitted,signal,follow,decimals);
+            await finalizeLiveBuy(order,attemptKey,recovered,permitted,signal,follow,decimals,effective);
             allowedCount++;continue;
           }
           await db.order.update({where:{id:order.id},data:{status:"FAILED",errorCode:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT")}}).catch(()=>{});
@@ -699,7 +719,7 @@ const worker=new Worker("signals",async job=>{
           data:{
             userId:follow.userId,sourceTraderId:signal.traderId,chain:signal.chain,mode:"SIMULATION",mint:signal.outputMint,quoteMint:usdcSol,
             entryInputRaw:amountRaw,entryTokenRaw:quote.outAmount,remainingTokenRaw:quote.outAmount,costUsdMicros:usdToMicros(amountUsd),
-            avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,
+            avgEntryPriceUsdMicros:usdToMicros(executablePriceUsd),currentPriceUsdMicros:usdToMicros(executablePriceUsd),peakPriceUsdMicros:usdToMicros(executablePriceUsd),takeProfitPct:effective.takeProfitMode==="SIMPLE"?effective.simpleTakeProfitPct:effective.tp3Pct,stopLossPct:effective.stopLossPct,tradeSettingsSnapshot:effective as any,
             status:"OPEN",lastMarkedAt:new Date()
           }
         })

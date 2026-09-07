@@ -9,7 +9,7 @@ export type AppView =
   | "community"
   | "social"
   | "activity"
-  | "smart-wallets";
+  ;
 
 export const MOBILE_NAV_IDS: readonly AppView[] = ["home", "discover", "trade", "positions", "more"];
 
@@ -18,11 +18,12 @@ export const VIEW_ALIASES: Readonly<Record<string, AppView>> = {
   history: "activity",
   notifications: "profile",
   settings: "profile",
+  "smart-wallets": "traders",
 };
 
 const APP_VIEWS = new Set<AppView>([
   "home", "discover", "trade", "positions", "more", "profile", "traders",
-  "community", "social", "activity", "smart-wallets",
+  "community", "social", "activity" ,
 ]);
 
 export function normalizeAppView(requested?: string | null, pathname?: string): AppView {

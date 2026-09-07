@@ -103,7 +103,7 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   const survivorScore=clamp((dd>=45?18:0)+(dd>=65?16:0)+Math.min(24,e.buyers60s*.8)+Math.min(24,breakdown.smartMoney*.24)+Math.min(18,Math.max(0,e.volumeAcceleration1m-1)*9));
   if(dd>=45&&survivorScore>=60&&reawakening){score+=8;reasons.push("Deep-dip token is genuinely re-awakening with quality capital");}
 
-  if((e.provenSmartWallets??0)>0)reasons.push(`${e.provenSmartWallets} PROVEN meme wallet(s) entered recently`);
+  if((e.provenSmartWallets??0)>0)reasons.push(`${e.provenSmartWallets} Admin-tracked trader(s) entered recently`);
   else if((e.trackedSmartWallets??0)>=2)reasons.push(`${e.trackedSmartWallets} verified smart-wallet candidates are converging`);
   if(e.whaleBuyers60s>=1)reasons.push(`${e.whaleBuyers60s} whale-tier or $50K+ tracked buy(s) joined in the last minute`);
   if(e.inflow10sUsd>=10_000)reasons.push(`$${Math.round(e.inflow10sUsd).toLocaleString()} entered in ~10s`);
@@ -177,7 +177,7 @@ export function classifyWalletConvergence(distinctQualifiedWallets:number,strong
   return "NONE";
 }
 
-const CONVERGENCE_WEIGHT:Record<string,number>={PROVEN:2.5,PAPER_TRACKING:1,ANALYZING:.35,DISCOVERED:.2};
+const CONVERGENCE_WEIGHT:Record<string,number>={ADMIN_CURATED:1.5,PROVEN:2.5,PAPER_TRACKING:1,ANALYZING:.35,DISCOVERED:.2};
 export function weightedConvergenceScore(wallets:{stage:string;copyabilityScore?:number|null;currentFormScore?:number|null;earlyRepeatHits?:number|null;source?:string|null;isMemeWhale?:boolean|null;capitalScore?:number|null}[]):number{
   return Number(wallets.reduce((sum,w)=>{
     const base=CONVERGENCE_WEIGHT[w.stage]??0;

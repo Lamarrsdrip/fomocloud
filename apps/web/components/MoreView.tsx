@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, Bell, ChevronRight, ShieldCheck, Sparkles, UserRound, Users, UserSearch,
+  Activity, Bell, ChevronRight, ShieldCheck, UserRound, Users, UserSearch,
 } from "lucide-react";
 import type { AppView } from "../lib/appNavigation";
 
@@ -20,9 +20,8 @@ const groups: { label: string; items: Destination[] }[] = [
     { view: "profile", anchor: "notifications", icon: Bell, title: "Notifications", subtitle: "Alerts and notification inbox" },
   ] },
   { label: "INTELLIGENCE", items: [
-    { view: "smart-wallets", icon: Sparkles, title: "Smart Money", subtitle: "Curated, elite, proven and whale wallets" },
     { view: "activity", icon: Activity, title: "Activity", subtitle: "Decisions, trades and account events" },
-    { view: "traders", icon: UserSearch, title: "Traders", subtitle: "Find and configure tracked traders" },
+    { view: "traders", icon: UserSearch, title: "Traders", subtitle: "Admin-selected traders, performance and copy settings" },
     { view: "community", icon: Users, title: "Copy", subtitle: "Manage Auto Copy and watchlists" },
     { view: "social", icon: UserRound, title: "Community", subtitle: "Discover and follow MemeCloud members" },
   ] },
@@ -30,7 +29,7 @@ const groups: { label: string; items: Destination[] }[] = [
 
 export default function MoreView({ navigate }: { navigate: (view: AppView, anchor?: Destination["anchor"]) => void }) {
   return <div className="more-menu">
-    <section className="more-hero"><span>EVERYTHING IN ONE PLACE</span><h2>Your MemeCloud</h2><p>Account controls, smart-money intelligence, activity and community—without crowding the main navigation.</p></section>
+    <section className="more-hero"><span>EVERYTHING IN ONE PLACE</span><h2>Your MemeCloud</h2><p>Account, traders, activity and community—without crowding the main navigation.</p></section>
     {groups.map(group => <section className="more-group" key={group.label}>
       <h3>{group.label}</h3>
       <div className="more-list">{group.items.map(({ view, anchor, icon: Icon, title, subtitle }) =>

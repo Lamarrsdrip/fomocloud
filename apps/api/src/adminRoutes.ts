@@ -244,51 +244,10 @@ adminRoutes.get("/v1/admin/brain", requireAdmin, asyncRoute(async (_req,res) => 
   res.json({opportunities,flows,outcomes,pipelineDegraded,dataFreshnessSec});
 }));
 
-adminRoutes.get("/v1/admin/discovery/candidates", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
-  const stage=String(req.query.stage??"").toUpperCase();
-  const where:any={}; if(stage)where.stage=stage;
-  const [candidates,mostRecentlyScored]=await Promise.all([
-    db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:500}),
-    // Real gap found by forensic audit (M-46): the user-facing /v1/smart-wallets already computes
-    // pipelineDegraded/dataFreshnessSec (30min threshold, matching scoring-worker's real cadence)
-    // so a stalled scoring-worker reads as "degraded," not falsely-live -- the admin Whales desk,
-    // reading the exact same candidate table, never had it.
-    db.smartWalletCandidate.findFirst({orderBy:{lastScoredAt:"desc"},select:{lastScoredAt:true}})
-  ]);
-  const dataFreshnessSec=mostRecentlyScored?.lastScoredAt?Math.round((Date.now()-mostRecentlyScored.lastScoredAt.getTime())/1000):null;
-  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
-  res.json({candidates:candidates.map((c:any)=>{const m=c.metadata??{};return {...c,walletType:m.walletType??"INSUFFICIENT_EVIDENCE",isMemeWhale:Boolean(m.isMemeWhale),isSmartDegen:Boolean(m.isSmartDegen),capitalScore:m.capitalScore??null,skillScore:m.skillScore??null,currentFormScore:m.currentFormScore??null,evidenceCompleteness:m.evidenceCompleteness??null,lastActivityAt:m.lastObservedTradeAt??null,typicalMemePositionUsd:m.typicalMemePositionUsd??null,largestMemePositionUsd:m.largestMemePositionUsd??null,memeBuyVolume30dUsd:m.memeBuyVolume30dUsd??null,performance90d:m.walletPnl90d??null,adminDesignation:m.adminDesignation??null,monitoringPriority:m.monitoringPriority??null,researchSource:m.researchSource??null,researchReason:m.researchReason??null,researchNotes:m.researchNotes??null,researchProvenanceStatus:m.researchProvenanceStatus??null,providerStatus:m.providerStatus??null,providerEvidenceObservedAt:m.providerEvidenceObservedAt??null}}),pipelineDegraded,dataFreshnessSec});
-}));
-adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
-  const chain=String(req.body?.chain??"").toUpperCase();
-  const address=String(req.body?.address??"").trim();
-  const label=req.body?.label?String(req.body.label):undefined;
-  const additionType=String(req.body?.additionType??(req.body?.curated?"PLATFORM_TRADER":"MANUAL_REVIEW")).toUpperCase();
-  const designation=String(req.body?.designation??(req.body?.curated?"MEMECLOUD_PICK":"NORMAL_WATCH")).toUpperCase();
-  const researchSource=req.body?.researchSource?String(req.body.researchSource):undefined;
-  const researchReason=req.body?.researchReason?String(req.body.researchReason):undefined;
-  const researchNotes=req.body?.researchNotes?String(req.body.researchNotes):undefined;
-  if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return res.status(400).json({error:"INVALID_CHAIN"});
-  if(!address) return res.status(400).json({error:"ADDRESS_REQUIRED"});
-  if(!["MANUAL_REVIEW","PLATFORM_TRADER"].includes(additionType))return res.status(400).json({error:"INVALID_ADDITION_TYPE"});
-  if(!["NORMAL_WATCH","MEMECLOUD_PICK","PRIORITY_WATCH","ADMIN_APPROVED"].includes(designation))return res.status(400).json({error:"INVALID_ADMIN_DESIGNATION"});
-  if(additionType==="PLATFORM_TRADER"&&(!researchSource||!researchReason))return res.status(400).json({error:"PLATFORM_RESEARCH_PROVENANCE_REQUIRED"});
-  const existing=await db.smartWalletCandidate.findUnique({where:{chain_address:{chain:chain as Chain,address}}});
-  if(existing) return res.status(409).json({error:"WALLET_ALREADY_TRACKED"});
-  const platform=additionType==="PLATFORM_TRADER",curated=designation==="MEMECLOUD_PICK";
-  const source=platform?(curated?"MEMECLOUD_CURATED":"PLATFORM_ADDED"):"MANUAL_REVIEW";
-  const candidate=await db.smartWalletCandidate.create({data:{chain:chain as Chain,address,stage:"DISCOVERED",source,label,adminWatched:true,adminWatchedAt:new Date(),metadata:{discoveryReason:researchReason??"Manually submitted for objective identification, history reconstruction and scoring. Addition grants no trust or copy authority.",curatedByPlatform:platform,adminDesignation:designation,monitoringPriority:designation==="PRIORITY_WATCH"||designation==="MEMECLOUD_PICK"||designation==="ADMIN_APPROVED"?"P1":"P2",researchSource:researchSource??null,researchReason:researchReason??null,researchNotes:researchNotes??null,researchAddedAt:new Date().toISOString(),researchProvenanceStatus:platform?"RECORDED":"NOT_APPLICABLE",objectiveStatusOwnedBy:"SCORING_WORKER"}}});
-  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_ADD",candidate.id,{chain,address,label,additionType,designation,researchSource});
-  res.status(201).json({candidate});
-}));
-adminRoutes.patch("/v1/admin/discovery/candidates/:id", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
-  const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
-  const data:any={};
-  if(typeof req.body?.label==="string") data.label=req.body.label;
-  const updated=await db.smartWalletCandidate.update({where:{id:c.id},data});
-  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_UPDATE",c.id,data);
-  res.json({candidate:updated});
-}));
+// Retired candidate-scoring architecture. Admin now adds real PLATFORM traders/wallets directly.
+adminRoutes.get("/v1/admin/discovery/candidates", requireAdmin, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
+adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
+adminRoutes.patch("/v1/admin/discovery/candidates/:id", adminOnly, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
 adminRoutes.get("/v1/admin/discovery/tokens", requireAdmin, asyncRoute(async (_req,res) => {
   const [tokens,mostRecentlySeen]=await Promise.all([
     db.discoveryToken.findMany({orderBy:{lastSeenAt:"desc"},take:500}),
@@ -327,14 +286,7 @@ adminRoutes.get("/v1/admin/risk-incidents", requireAdmin, asyncRoute(async (_req
 // wallet-first listener writes for explicitly monitored wallets -- this route doesn't drive the
 // monitoring itself (that runs in brain-worker's checkWatchlist regardless of whether anyone ever
 // opens this page), it just surfaces what's already been detected.
-adminRoutes.get("/v1/admin/discovery/watchlist", requireAdmin, asyncRoute(async (_req,res) => {
-  const watched=await db.smartWalletCandidate.findMany({where:{adminWatched:true},orderBy:{adminWatchedAt:"desc"}});
-  const addresses=watched.map(w=>w.address);
-  const recentActivity=addresses.length?await db.chainFlowObservation.findMany({where:{walletAddress:{in:addresses},observedAt:{gte:new Date(Date.now()-24*3600_000)}},orderBy:{observedAt:"desc"},take:200}):[];
-  const byAddress=new Map<string,typeof recentActivity>();
-  for(const row of recentActivity){const list=byAddress.get(row.walletAddress)??[];list.push(row);byAddress.set(row.walletAddress,list)}
-  res.json({watchlist:watched.map(w=>({...w,recentActivity:byAddress.get(w.address)??[]}))});
-}));
+adminRoutes.get("/v1/admin/discovery/watchlist", requireAdmin, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
 adminRoutes.get("/v1/admin/alerts", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const unresolvedOnly=String(req.query.unresolved??"")==="true";
   // Real bug found by audit, same class as the RefreshSession one: AdminAlert.resolvedAt is never
@@ -351,28 +303,7 @@ adminRoutes.post("/v1/admin/alerts/:id/resolve", adminOnly, asyncRoute(async (re
   await audit(req.user.sub,"ADMIN","ADMIN_ALERT_RESOLVED",alert.id,{});
   res.json({alert});
 }));
-adminRoutes.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
-  const action=String(req.body?.action??"").toUpperCase();
-  if(!["REJECTED","PAUSED","WATCH","UNWATCH"].includes(action))return res.status(400).json({error:"INVALID_DISCOVERY_ACTION"});
-  const c=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});if(!c)return res.status(404).json({error:"CANDIDATE_NOT_FOUND"});
-  // WATCH/UNWATCH deliberately never touch `stage` -- a separate boolean so admin watch/unwatch can
-  // never fight with or get silently overwritten by the objective scoring-worker pipeline. "WATCH
-  // != PROVEN" holds structurally here, not just as a rule someone has to remember to follow.
-  if(action==="WATCH"||action==="UNWATCH"){
-    const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{adminWatched:action==="WATCH",adminWatchedAt:action==="WATCH"?new Date():null}});
-    await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_DECISION",c.id,{action});
-    return res.json({candidate:updated});
-  }
-  // PROVEN is intentionally not an admin action. The scorer owns promotion from objective evidence.
-  // REJECTED/PAUSED are safety controls only and always remove live-copy eligibility immediately.
-  const updated=await db.smartWalletCandidate.update({where:{id:c.id},data:{stage:action as any,rejectedReason:action==="REJECTED"?String(req.body?.reason??"ADMIN_REJECTED"):undefined}});
-  if(c.traderId){
-    await db.trader.update({where:{id:c.traderId},data:{enabled:false,trackingStatus:action,recommended:false}}).catch(()=>{});
-    await db.traderWallet.updateMany({where:{traderId:c.traderId},data:{monitoringStatus:action}}).catch(()=>{});
-  }
-  await audit(req.user.sub,"ADMIN","DISCOVERY_CANDIDATE_DECISION",c.id,{action,reason:req.body?.reason});
-  res.json({candidate:updated});
-}));
+adminRoutes.post("/v1/admin/discovery/candidates/:id/decision", adminOnly, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
 
 adminRoutes.get("/v1/admin/signals", requireAdmin, asyncRoute(async (_req,res) => {
   const signals=await db.signal.findMany({

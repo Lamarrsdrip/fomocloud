@@ -1,1 +1,0 @@
-import AuthCard from "../../components/AuthCard"; export default function Login(){return <AuthCard mode="login"/>}

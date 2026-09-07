@@ -1,6 +1,0 @@
-{
-  "name":"@memecloud/evm-flow-worker","version":"0.1.0","type":"module",
-  "scripts":{"dev":"tsx watch src/index.ts","build":"tsc -p tsconfig.json","start":"node dist/index.js","typecheck":"tsc -p tsconfig.json --noEmit","lint":"echo evm-flow-worker lint","test":"node --test dist/classify.test.js"},
-  "dependencies":{"@memecloud/brain":"workspace:*","@memecloud/db":"workspace:*","@memecloud/config":"workspace:*","@memecloud/ops":"workspace:*","ethers":"^6.15.0"},
-  "devDependencies":{"@types/node":"^22.18.0","tsx":"^4.20.4","typescript":"^5.9.2"}
-}

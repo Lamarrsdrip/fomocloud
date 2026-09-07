@@ -187,28 +187,51 @@ app.get("/v1/me/settings", auth, asyncRoute(async (req:AuthedRequest,res) => {
 app.patch("/v1/me/settings/trading", auth, asyncRoute(async (req:AuthedRequest,res) => {
   if(req.body?.autoCopyEnabled===true && !(await canEnableAutoCopy(req.user.sub,res))) return;
   const current=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
-  const allowedChains=(Array.isArray(req.body?.allowedChains)?req.body.allowedChains:current.allowedChains).filter((x:string)=>["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(x));
+  const allowedChains=(Array.isArray(req.body?.allowedChains)?req.body.allowedChains:current.allowedChains).filter((x:string)=>["SOLANA"].includes(x));
+  const tpMode=String(req.body?.takeProfitMode??current.takeProfitMode??"SIMPLE").toUpperCase()==="ADVANCED"?"ADVANCED":"SIMPLE";
+  const sellBehavior=String(req.body?.sourceSellBehavior??current.sourceSellBehavior??"BRAIN_DECIDES").toUpperCase();
+  if(!["IGNORE","PROPORTIONAL","FULL_EXIT_ONLY","BRAIN_DECIDES"].includes(sellBehavior)) return res.status(400).json({error:"INVALID_SOURCE_SELL_BEHAVIOR"});
+  const tp1Pct=Math.max(.01,Number(req.body?.tp1Pct??current.tp1Pct??50));
+  const tp2Pct=Math.max(.01,Number(req.body?.tp2Pct??current.tp2Pct??100));
+  const tp3Pct=Math.max(.01,Number(req.body?.tp3Pct??current.tp3Pct??200));
+  if(tpMode==="ADVANCED" && !(tp1Pct<tp2Pct && tp2Pct<tp3Pct)) return res.status(400).json({error:"TAKE_PROFIT_TARGETS_MUST_ASCEND"});
+  const tp1SellPct=Math.max(.01,Math.min(100,Number(req.body?.tp1SellPct??current.tp1SellPct??25)));
+  const tp2SellPct=Math.max(.01,Math.min(100,Number(req.body?.tp2SellPct??current.tp2SellPct??25)));
+  const tp3SellPct=Math.max(.01,Math.min(100,Number(req.body?.tp3SellPct??current.tp3SellPct??25)));
+  const runnerPct=Math.max(0,Math.min(100,Number(req.body?.runnerPct??current.runnerPct??25)));
+  if(tpMode==="ADVANCED" && tp1SellPct+tp2SellPct+tp3SellPct+runnerPct>100.0001) return res.status(400).json({error:"TP_SELLS_PLUS_RUNNER_EXCEED_100"});
+  const capitalRecoveryTriggerPct=Math.max(.01,Math.min(100000,Number(req.body?.capitalRecoveryTriggerPct??current.capitalRecoveryTriggerPct??100)));
   const data={
     autoCopyEnabled:Boolean(req.body?.autoCopyEnabled??current.autoCopyEnabled),
     globalBrainEnabled:Boolean(req.body?.globalBrainEnabled??current.globalBrainEnabled??true),
-    sizingMode:String(req.body?.sizingMode??current.sizingMode??"PERCENT")==="FIXED"?"FIXED":"PERCENT",
+    sizingMode:String(req.body?.sizingMode??current.sizingMode??"PERCENT").toUpperCase()==="FIXED"?"FIXED":"PERCENT",
     percentBalance:Math.max(.01,Math.min(100,Number(req.body?.percentBalance??current.percentBalance??2))),
-    defaultAmountUsd:Math.max(1,Number(req.body?.defaultAmountUsd??current.defaultAmountUsd)),
-    // Zero means the USER deliberately chose no extra platform cap. MemeCloud does not silently
-    // replace the user's risk choice with a smaller hidden limit.
+    defaultAmountUsd:Math.max(1,Number(req.body?.defaultAmountUsd??current.defaultAmountUsd??100)),
     maxAmountPerTradeUsd:Math.max(0,Number(req.body?.maxAmountPerTradeUsd??current.maxAmountPerTradeUsd??0)),
     maxTotalExposureUsd:Math.max(0,Number(req.body?.maxTotalExposureUsd??current.maxTotalExposureUsd??0)),
-    maxConcurrentPositions:Math.max(0,Math.min(10000,Number(req.body?.maxConcurrentPositions??current.maxConcurrentPositions??0))),
+    maxConcurrentPositions:Math.max(0,Math.min(10000,Math.floor(Number(req.body?.maxConcurrentPositions??current.maxConcurrentPositions??0)))),
+    maxSlippageBps:Math.max(1,Math.min(10000,Math.floor(Number(req.body?.maxSlippageBps??current.maxSlippageBps??1500)))),
     adaptiveChase:Boolean(req.body?.adaptiveChase??current.adaptiveChase),
+    takeProfitMode:tpMode,
+    simpleTakeProfitPct:Math.max(.01,Number(req.body?.simpleTakeProfitPct??current.simpleTakeProfitPct??100)),
+    simpleSellPct:Math.max(.01,Math.min(100,Number(req.body?.simpleSellPct??current.simpleSellPct??100))),
+    tp1Pct,tp1SellPct,tp2Pct,tp2SellPct,tp3Pct,tp3SellPct,runnerPct,
     capitalRecoveryEnabled:Boolean(req.body?.capitalRecoveryEnabled??current.capitalRecoveryEnabled??true),
-    capitalRecoveryMultiple:Math.max(1.01,Math.min(100000,Number(req.body?.capitalRecoveryMultiple??current.capitalRecoveryMultiple??3))),
+    capitalRecoveryTriggerPct,
+    // Keep the legacy multiple synchronized while older releases roll forward.
+    capitalRecoveryMultiple:1+capitalRecoveryTriggerPct/100,
+    trailingEnabled:Boolean(req.body?.trailingEnabled??current.trailingEnabled??false),
+    trailingActivationPct:Math.max(.01,Number(req.body?.trailingActivationPct??current.trailingActivationPct??80)),
+    trailingGivebackPct:Math.max(.1,Math.min(99,Number(req.body?.trailingGivebackPct??current.trailingGivebackPct??20))),
+    sourceSellBehavior:sellBehavior,
+    scalperCopyEnabled:Boolean(req.body?.scalperCopyEnabled??current.scalperCopyEnabled??false),
     freshMemeMode:Boolean(req.body?.freshMemeMode??current.freshMemeMode),
     runnerMode:Boolean(req.body?.runnerMode??current.runnerMode),
     allowedChains:allowedChains as Chain[]
   };
   if(data.maxAmountPerTradeUsd>0 && data.defaultAmountUsd>data.maxAmountPerTradeUsd) return res.status(400).json({error:"DEFAULT_EXCEEDS_MAX_TRADE"});
   const row=await db.globalTradingSettings.update({where:{userId:req.user.sub},data});
-  await audit(req.user.sub,"USER","UPDATE_TRADING_SETTINGS",undefined,{autoCopyEnabled:row.autoCopyEnabled});
+  await audit(req.user.sub,"USER","UPDATE_TRADING_SETTINGS",undefined,{autoCopyEnabled:row.autoCopyEnabled,globalBrainEnabled:row.globalBrainEnabled,takeProfitMode:row.takeProfitMode,scalperCopyEnabled:row.scalperCopyEnabled});
   res.json({trading:row});
 }));
 
@@ -580,145 +603,103 @@ app.get("/v1/traders", asyncRoute(async (_req,res) => {
 }));
 
 app.get("/v1/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:routeParam(req.params.id)}}});
   const trader=await db.trader.findFirst({
-    where:{id:routeParam(req.params.id),OR:[{kind:"PLATFORM",enabled:true,trackingStatus:{not:"PAPER_TRACKING"}},{ownerUserId:req.user.sub},{id:follow?.traderId??"000000000000000000000000"}]},
-    include:{wallets:true,_count:{select:{follows:true,signals:true}},signals:{orderBy:{observedAt:"desc"},take:25}}
+    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}},
+    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}},_count:{select:{follows:true,signals:true}},signals:{orderBy:{observedAt:"desc"},take:25}}
   });
   if(!trader) return res.status(404).json({error:"TRADER_NOT_FOUND"});
-  const safeTrader=trader.kind==="CUSTOM"&&follow?{...trader,displayName:follow.customLabel||trader.displayName,xHandle:follow.customXHandle||undefined}:trader;
-  res.json({trader:safeTrader,follow});
+  const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}}});
+  res.json({trader,follow});
 }));
 
 app.get("/v1/me/traders", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const follows=await db.userFollow.findMany({
-    where:{userId:req.user.sub},
-    include:{trader:{include:{wallets:true,_count:{select:{signals:true,follows:true}}}}},
+    where:{userId:req.user.sub,trader:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}}},
+    include:{trader:{include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}},_count:{select:{signals:true,follows:true}}}}},
     orderBy:{updatedAt:"desc"}
   });
-  const personal=follows.map(f=>({
-    ...f,
-    trader:f.trader.kind==="CUSTOM"?{...f.trader,displayName:f.customLabel||f.trader.displayName,xHandle:f.customXHandle||undefined}:f.trader
-  }));
-  res.json({follows:personal});
+  res.json({follows});
 }));
 
 app.put("/v1/me/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const existing=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:routeParam(req.params.id)}}});
-  const trader=await db.trader.findFirst({where:{id:routeParam(req.params.id),OR:[{kind:"PLATFORM",enabled:true,trackingStatus:{not:"PAPER_TRACKING"}},{ownerUserId:req.user.sub},{id:existing?.traderId??"000000000000000000000000"}]},include:{wallets:true}});
-  if(!trader) return res.status(404).json({error:"TRADER_NOT_FOUND"});
+  const trader=await db.trader.findFirst({
+    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}},
+    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}}}
+  });
+  if(!trader) return res.status(404).json({error:"ADMIN_TRACKED_TRADER_NOT_FOUND"});
+  const existing=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}}});
   const mode=String(req.body?.mode??existing?.mode??"FOLLOW_ONLY") as FollowMode;
   if(!["FOLLOW_ONLY","WATCH_ONLY","AUTO_COPY","PAUSED"].includes(mode)) return res.status(400).json({error:"INVALID_FOLLOW_MODE"});
   if(mode==="AUTO_COPY" && !(await canEnableAutoCopy(req.user.sub,res))) return;
-  const hasImplementedSourceWallet=trader.wallets.some(w=>w.verified&&w.chain==="SOLANA");
-  if((mode==="AUTO_COPY"||mode==="WATCH_ONLY") && !hasImplementedSourceWallet){
-    if(!trader.wallets.some(w=>w.verified)) return res.status(409).json({error:"SOURCE_WALLET_REQUIRED"});
-    return res.status(409).json({error:"CHAIN_LISTENER_NOT_IMPLEMENTED"});
-  }
   const defaults=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
+  const custom=Boolean(req.body?.useCustomSettings??existing?.useCustomSettings??false);
+  const strOrNull=(v:any,current:any)=>v===undefined?current:(v===null?null:String(v));
+  const numOrNull=(v:any,current:any,min=0,max=Number.MAX_SAFE_INTEGER)=>v===undefined?current:(v===null?null:Math.max(min,Math.min(max,Number(v))));
+  const boolOrNull=(v:any,current:any)=>v===undefined?current:(v===null?null:Boolean(v));
+  const sellBehavior=strOrNull(req.body?.sourceSellBehavior,existing?.sourceSellBehavior)?.toUpperCase()??null;
+  if(sellBehavior && !["IGNORE","PROPORTIONAL","FULL_EXIT_ONLY","BRAIN_DECIDES"].includes(sellBehavior)) return res.status(400).json({error:"INVALID_SOURCE_SELL_BEHAVIOR"});
+  const takeProfitMode=strOrNull(req.body?.takeProfitMode,existing?.takeProfitMode)?.toUpperCase()??null;
+  if(takeProfitMode && !["SIMPLE","ADVANCED"].includes(takeProfitMode)) return res.status(400).json({error:"INVALID_TAKE_PROFIT_MODE"});
+  const tp1=numOrNull(req.body?.tp1Pct,existing?.tp1Pct,.01),tp2=numOrNull(req.body?.tp2Pct,existing?.tp2Pct,.01),tp3=numOrNull(req.body?.tp3Pct,existing?.tp3Pct,.01);
+  if(custom && takeProfitMode==="ADVANCED" && tp1!=null && tp2!=null && tp3!=null && !(tp1<tp2&&tp2<tp3)) return res.status(400).json({error:"TAKE_PROFIT_TARGETS_MUST_ASCEND"});
   const requestedFixed=Math.max(1,Number(req.body?.fixedAmountUsd??existing?.fixedAmountUsd??defaults.defaultAmountUsd));
   const fixedAmountUsd=defaults.maxAmountPerTradeUsd>0?Math.min(defaults.maxAmountPerTradeUsd,requestedFixed):requestedFixed;
-  const data={
+  const data:any={
     mode,
+    useCustomSettings:custom,
+    sizingMode:strOrNull(req.body?.sizingMode,existing?.sizingMode)?.toUpperCase()==="FIXED"?"FIXED":(strOrNull(req.body?.sizingMode,existing?.sizingMode)?"PERCENT":null),
+    percentBalance:numOrNull(req.body?.percentBalance,existing?.percentBalance,.01,100),
     fixedAmountUsd,
-    takeProfitPct:Number(req.body?.takeProfitPct??existing?.takeProfitPct??100),
-    stopLossPct:req.body?.stopLossPct===null?null:(req.body?.stopLossPct===undefined?(existing?.stopLossPct??null):Number(req.body.stopLossPct)),
+    takeProfitPct:Math.max(.01,Number(req.body?.takeProfitPct??existing?.takeProfitPct??100)),
+    stopLossPct:numOrNull(req.body?.stopLossPct,existing?.stopLossPct,0,100),
     maxChasePct:Math.max(0,Number(req.body?.maxChasePct??existing?.maxChasePct??0)),
-    maxSlippageBps:Math.max(1,Math.min(10000,Number(req.body?.maxSlippageBps??existing?.maxSlippageBps??1500))),
+    maxSlippageBps:Math.max(1,Math.min(10000,Math.floor(Number(req.body?.maxSlippageBps??existing?.maxSlippageBps??defaults.maxSlippageBps??1500)))),
     maxPositionUsd:Math.max(0,Number(req.body?.maxPositionUsd??existing?.maxPositionUsd??0)),
     maxTotalExposureUsd:Math.max(0,Number(req.body?.maxTotalExposureUsd??existing?.maxTotalExposureUsd??0)),
+    maxConcurrentFromTrader:Math.max(0,Math.floor(Number(req.body?.maxConcurrentFromTrader??existing?.maxConcurrentFromTrader??0))),
     minLiquidityUsd:Math.max(0,Number(req.body?.minLiquidityUsd??existing?.minLiquidityUsd??0)),
     exitMode:String(req.body?.exitMode??existing?.exitMode??"ADAPTIVE"),
     copyAdditionalBuys:Boolean(req.body?.copyAdditionalBuys??existing?.copyAdditionalBuys??true),
-    copyReentries:Boolean(req.body?.copyReentries??existing?.copyReentries??true)
+    copyReentries:Boolean(req.body?.copyReentries??existing?.copyReentries??true),
+    takeProfitMode,
+    simpleTakeProfitPct:numOrNull(req.body?.simpleTakeProfitPct,existing?.simpleTakeProfitPct,.01),
+    simpleSellPct:numOrNull(req.body?.simpleSellPct,existing?.simpleSellPct,.01,100),
+    tp1Pct:tp1,tp1SellPct:numOrNull(req.body?.tp1SellPct,existing?.tp1SellPct,.01,100),
+    tp2Pct:tp2,tp2SellPct:numOrNull(req.body?.tp2SellPct,existing?.tp2SellPct,.01,100),
+    tp3Pct:tp3,tp3SellPct:numOrNull(req.body?.tp3SellPct,existing?.tp3SellPct,.01,100),
+    runnerPct:numOrNull(req.body?.runnerPct,existing?.runnerPct,0,100),
+    capitalRecoveryEnabled:boolOrNull(req.body?.capitalRecoveryEnabled,existing?.capitalRecoveryEnabled),
+    capitalRecoveryTriggerPct:numOrNull(req.body?.capitalRecoveryTriggerPct,existing?.capitalRecoveryTriggerPct,.01,100000),
+    trailingEnabled:boolOrNull(req.body?.trailingEnabled,existing?.trailingEnabled),
+    trailingActivationPct:numOrNull(req.body?.trailingActivationPct,existing?.trailingActivationPct,.01,100000),
+    trailingGivebackPct:numOrNull(req.body?.trailingGivebackPct,existing?.trailingGivebackPct,.1,99),
+    sourceSellBehavior:sellBehavior,
+    scalperCopyEnabled:boolOrNull(req.body?.scalperCopyEnabled,existing?.scalperCopyEnabled)
   };
+  if(custom && data.takeProfitMode==="ADVANCED"){
+    const total=Number(data.tp1SellPct??defaults.tp1SellPct??25)+Number(data.tp2SellPct??defaults.tp2SellPct??25)+Number(data.tp3SellPct??defaults.tp3SellPct??25)+Number(data.runnerPct??defaults.runnerPct??25);
+    if(total>100.0001) return res.status(400).json({error:"TP_SELLS_PLUS_RUNNER_EXCEED_100"});
+  }
   const follow=await db.userFollow.upsert({
     where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}},
     create:{userId:req.user.sub,traderId:trader.id,...data},
     update:data
   });
-  await audit(req.user.sub,"USER","UPDATE_TRADER_FOLLOW",trader.id,{mode});
+  await audit(req.user.sub,"USER","UPDATE_TRADER_FOLLOW",trader.id,{mode,useCustomSettings:custom,scalperCopyEnabled:follow.scalperCopyEnabled});
   res.json({follow});
 }));
 
 app.delete("/v1/me/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const trader=await db.trader.findUnique({where:{id:routeParam(req.params.id)},select:{id:true,kind:true,ownerUserId:true}});
   await db.userFollow.deleteMany({where:{userId:req.user.sub,traderId:routeParam(req.params.id)}});
-  if(trader?.kind==="CUSTOM"&&trader.ownerUserId===req.user.sub){
-    const stillUsed=await db.userFollow.count({where:{traderId:trader.id}});
-    if(stillUsed===0) await db.trader.delete({where:{id:trader.id}});
-  }
   await audit(req.user.sub,"USER","UNFOLLOW_TRADER",routeParam(req.params.id));
   res.json({ok:true});
 }));
 
-app.post("/v1/me/traders/custom", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const chain=String(req.body?.chain??"SOLANA") as Chain;
-  if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)) return res.status(400).json({error:"UNSUPPORTED_CHAIN"});
-  const address=String(req.body?.address??"").trim();
-  const displayName=String(req.body?.displayName??"Custom trader").trim().slice(0,80);
-  const xHandle=String(req.body?.xHandle??"").trim().replace(/^@/,"").slice(0,50)||undefined;
-  if(!address && !xHandle) return res.status(400).json({error:"WALLET_OR_X_REQUIRED"});
-  if(address && !validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
-
-  let trader:any;
-  if(address){
-    const existingWallet=await db.traderWallet.findUnique({where:{chain_address:{chain,address}},include:{trader:true}});
-    trader=existingWallet?.trader;
-    if(!trader){
-      const handle=`custom-${chain.toLowerCase()}-${crypto.createHash("sha1").update(address).digest("hex").slice(0,16)}`;
-      const genericName=`Custom ${chain} wallet ${address.slice(0,4)}…${address.slice(-4)}`;
-      trader=await db.trader.create({data:{handle,displayName:genericName,kind:"CUSTOM",trackingStatus:chain==="SOLANA"?"TRACKING":"ADAPTER_READY",wallets:{create:{chain,address,verified:true,source:"USER_PUBLIC_WALLET"}}}});
-    }
-  }else{
-    const handle=`favorite-${req.user.sub.slice(-6)}-${crypto.createHash("sha1").update(xHandle!).digest("hex").slice(0,12)}`;
-    trader=await db.trader.upsert({
-      where:{handle},
-      create:{handle,displayName,kind:"CUSTOM",ownerUserId:req.user.sub,xHandle,trackingStatus:"NEEDS_WALLET"},
-      update:{displayName,xHandle}
-    });
-  }
-  if(address&&chain==="SOLANA")await db.smartWalletCandidate.upsert({
-    where:{chain_address:{chain:"SOLANA",address}},
-    update:{source:"USER_WATCHLIST"},
-    create:{chain:"SOLANA",address,stage:"DISCOVERED",source:"USER_WATCHLIST",metadata:{discoveryReason:"Added by a user for observation. Objective scoring decides whether it earns PAPER_TRACKING or PROVEN status."}}
-  }).catch(()=>{});
-  const defaults=await db.globalTradingSettings.upsert({where:{userId:req.user.sub},create:{userId:req.user.sub},update:{}});
-  const follow=await db.userFollow.upsert({
-    where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}},
-    create:{userId:req.user.sub,traderId:trader.id,mode:address&&chain==="SOLANA"?"WATCH_ONLY":"FOLLOW_ONLY",customLabel:displayName,customXHandle:xHandle,fixedAmountUsd:defaults.defaultAmountUsd,maxPositionUsd:defaults.maxAmountPerTradeUsd,maxTotalExposureUsd:defaults.maxTotalExposureUsd},
-    update:{customLabel:displayName,customXHandle:xHandle}
-  });
-  await audit(req.user.sub,"USER",address?"ADD_CUSTOM_TRADER":"ADD_X_FAVORITE",trader.id,{chain,address:address||undefined,xHandle});
-  res.status(201).json({trader:{...trader,displayName,xHandle},follow,trackingReady:Boolean(address&&chain==="SOLANA"),message:address&&chain!=="SOLANA"?"Wallet saved. This chain is adapter-ready but its live source listener is not implemented yet.":undefined});
-}));
-
-app.post("/v1/me/traders/:id/wallet", auth, asyncRoute(async (req:AuthedRequest,res) => {
-  const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:routeParam(req.params.id)}}});
-  const pending=await db.trader.findFirst({where:{id:routeParam(req.params.id),kind:"CUSTOM",ownerUserId:req.user.sub},include:{wallets:true}});
-  if(!follow||!pending) return res.status(404).json({error:"PERSONAL_TRADER_NOT_FOUND"});
-  if(pending.wallets.length) return res.status(409).json({error:"TRADER_WALLET_ALREADY_SET"});
-  const chain=String(req.body?.chain??"SOLANA") as Chain,address=String(req.body?.address??"").trim();
-  if(!["SOLANA","BASE","ETHEREUM","BNB","ARBITRUM","AVALANCHE"].includes(chain)||!validPublicAddress(chain,address)) return res.status(400).json({error:"INVALID_WALLET"});
-  const existing=await db.traderWallet.findUnique({where:{chain_address:{chain,address}},include:{trader:true}});
-  if(existing){
-    await db.userFollow.upsert({
-      where:{userId_traderId:{userId:req.user.sub,traderId:existing.traderId}},
-      create:{userId:req.user.sub,traderId:existing.traderId,mode:"WATCH_ONLY",fixedAmountUsd:follow.fixedAmountUsd,takeProfitPct:follow.takeProfitPct,stopLossPct:follow.stopLossPct,maxChasePct:follow.maxChasePct,maxSlippageBps:follow.maxSlippageBps,maxPositionUsd:follow.maxPositionUsd,maxTotalExposureUsd:follow.maxTotalExposureUsd,minLiquidityUsd:follow.minLiquidityUsd,exitMode:follow.exitMode,copyAdditionalBuys:follow.copyAdditionalBuys,copyReentries:follow.copyReentries,customLabel:follow.customLabel,customXHandle:follow.customXHandle},
-      update:{customLabel:follow.customLabel,customXHandle:follow.customXHandle}
-    });
-    await db.userFollow.delete({where:{id:follow.id}});
-    await db.trader.delete({where:{id:pending.id}});
-    await audit(req.user.sub,"USER","MAP_FAVORITE_TO_TRACKED_WALLET",existing.traderId,{chain,address});
-    return res.json({ok:true,traderId:existing.traderId,reused:true,trackingReady:existing.chain==="SOLANA",message:existing.chain==="SOLANA"?"Wallet matched an existing tracked source. Tracking is ready.":"Wallet matched an existing source, but this chain's listener is adapter-ready only."});
-  }
-  await db.traderWallet.create({data:{traderId:pending.id,chain,address,verified:true,source:"USER_PUBLIC_WALLET"}});
-  if(chain==="SOLANA")await db.smartWalletCandidate.upsert({where:{chain_address:{chain:"SOLANA",address}},update:{source:"USER_WATCHLIST"},create:{chain:"SOLANA",address,stage:"DISCOVERED",source:"USER_WATCHLIST",metadata:{discoveryReason:"Added by a user for observation. Objective scoring decides whether it earns PAPER_TRACKING or PROVEN status."}}}).catch(()=>{});
-  await db.trader.update({where:{id:pending.id},data:{trackingStatus:chain==="SOLANA"?"TRACKING":"ADAPTER_READY"}});
-  await db.userFollow.update({where:{id:follow.id},data:{mode:chain==="SOLANA"?"WATCH_ONLY":"FOLLOW_ONLY"}});
-  await audit(req.user.sub,"USER","ADD_FAVORITE_TRADER_WALLET",pending.id,{chain,address});
-  res.json({ok:true,traderId:pending.id,reused:false,trackingReady:chain==="SOLANA",message:chain==="SOLANA"?"Wallet mapped. Source tracking is ready.":"Wallet mapped, but this chain's source listener is adapter-ready only."});
-}));
+// Legacy user-added wallet discovery is deliberately retired. MemeCloud's only signal sources are
+// enabled, Admin-curated trader wallets. Keeping explicit 410 responses prevents old clients from
+// silently recreating the retired candidate architecture.
+app.post("/v1/me/traders/custom", auth, (_req,res) => res.status(410).json({error:"ADMIN_CURATED_TRADERS_ONLY"}));
+app.post("/v1/me/traders/:id/wallet", auth, (_req,res) => res.status(410).json({error:"ADMIN_CURATED_TRADERS_ONLY"}));
 
 // ------------------------ COMMUNITY FOLLOWING ------------------------
 app.get("/v1/social/users", auth, asyncRoute(async (req:AuthedRequest,res) => {
@@ -974,40 +955,9 @@ function relationshipRows(flows:any[],signals:any[],candidateByAddress:Map<strin
     return {chain:last.chain,mint:last.mint,token:tokens.get(last.mint)??null,walletAddress:last.walletAddress,label:candidate?.label??null,source:candidate?smartWalletSourceLabel(candidate,meta):"Tracked wallet",stage:candidate?.stage??"UNVERIFIED",skillScore:candidate?Number(meta.skillScore??candidate.copyabilityScore??0):null,isWhale:candidate?smartWalletSummary(candidate).isWhale:false,firstBuyAt:buys[0]?.observedAt??null,latestBuyAt:buys.at(-1)?.observedAt??null,latestActivityAt:last.observedAt,latestSide:last.side,latestTxHash:last.txHash,latestTrimOrSellAt:sells.at(-1)?.observedAt??null,boughtUsd,soldUsd,netFlowUsd:boughtUsd-soldUsd,eventCount:ordered.length,state,remainingPct:soldPct==null?null:Math.max(0,100-soldPct),lastObservedBalanceRaw:signal?.sourceTokenBalanceAfterRaw??null,balanceObservedAt:signal?.sourceTokenBalanceAfterRaw!=null?signal.observedAt:null,holdingVerification:balanceState?"LAST_OBSERVED_TRANSACTION_BALANCE":"PENDING_CURRENT_BALANCE_VERIFICATION",transactionUrl:last.chain==="SOLANA"?`https://solscan.io/tx/${last.txHash}`:null};
   }).sort((a,b)=>b.latestActivityAt.getTime()-a.latestActivityAt.getTime());
 }
-app.get("/v1/smart-wallets", asyncRoute(async (req,res) => {
-  const stageParam=String(req.query.stage??"").toUpperCase();
-  const includeWhalesOnly=String(req.query.whales??"")==="true";
-  const where:any={stage:stageParam&&["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN","PAUSED"].includes(stageParam)?stageParam:{in:["DISCOVERED","ANALYZING","PAPER_TRACKING","PROVEN"]}};
-  const [candidates,mostRecentlyScored]=await Promise.all([
-    db.smartWalletCandidate.findMany({where,orderBy:[{copyabilityScore:"desc"},{updatedAt:"desc"}],take:200}),
-    // Same gap found and fixed on /v1/brain/feed this session, found here too by a full-platform
-    // audit before it ever got reported live: with zero freshness signal, this list looks equally
-    // "live" whether scoring-worker (10min tick, round-robins the whole candidate set) is healthy
-    // or has been stalled for hours -- unfiltered by design (a candidate's score staying visible
-    // while stale is fine, that's just this list's own scores aging normally), but the client
-    // should still be able to tell "not yet run in a while" from "actively scoring."
-    db.smartWalletCandidate.findFirst({orderBy:{lastScoredAt:"desc"},select:{lastScoredAt:true}})
-  ]);
-  const dataFreshnessSec=mostRecentlyScored?.lastScoredAt?Math.round((Date.now()-mostRecentlyScored.lastScoredAt.getTime())/1000):null;
-  // 30 minutes, not brain/feed's 5 -- scoring-worker's own healthy cadence is a 10min tick
-  // round-robining 50 candidates at a time, so normal operation alone can leave any single
-  // candidate's lastScoredAt lagging by more than one tick.
-  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
-  const wallets=candidates.map(smartWalletSummary).filter(w=>!includeWhalesOnly||w.isWhale);
-  res.json({wallets,pipelineDegraded,dataFreshnessSec});
-}));
-app.get("/v1/smart-wallets/:id", asyncRoute(async (req,res) => {
-  const candidate=await db.smartWalletCandidate.findUnique({where:{id:routeParam(req.params.id)}});
-  if(!candidate)return res.status(404).json({error:"SMART_WALLET_NOT_FOUND"});
-  const recentFlow=await db.chainFlowObservation.findMany({where:{chain:candidate.chain,walletAddress:candidate.address},orderBy:{observedAt:"desc"},take:120});
-  const uniqueMints=[...new Set(recentFlow.map(f=>f.mint))].slice(0,20);
-  const tokenRows=uniqueMints.length?await db.discoveryToken.findMany({where:{chain:candidate.chain,mint:{in:uniqueMints}},select:{mint:true,symbol:true,name:true,marketCapUsd:true,liquidityUsd:true}}):[];
-  const tokenMap=new Map<string,any>(tokenRows.map((t:any)=>[t.mint,t]));
-  const signals=await db.signal.findMany({where:{chain:candidate.chain,sourceWallet:candidate.address},orderBy:{observedAt:"desc"},take:150});
-  const relationships=relationshipRows(recentFlow,signals,new Map([[candidate.address,candidate]]),tokenMap);
-  const recentActivity=recentFlow.map(f=>({...f,token:tokenMap.get(f.mint)||null}));
-  res.json({wallet:smartWalletSummary(candidate),recentActivity,relationships,currentTokens:relationships});
-}));
+app.get("/v1/smart-wallets", (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/traders"}));
+app.get("/v1/smart-wallets/:id", (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/traders/:id"}));
+
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   if(err?.message==="CORS_ORIGIN_DENIED") return res.status(403).json({error:"CORS_ORIGIN_DENIED"});
   console.error("[api]",err);

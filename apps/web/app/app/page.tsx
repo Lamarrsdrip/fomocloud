@@ -2,7 +2,7 @@
 import {useEffect,useMemo,useState} from "react";
 import dynamic from "next/dynamic";
 import {
-  Home,WalletCards,Bell,TrendingUp,Zap,Play,Pause,Search,Menu
+  Home,WalletCards,Bell,TrendingUp,Zap,Play,Pause,Menu
 } from "lucide-react";
 import {apiFetch,logout,plainError} from "../../lib/api";
 import {initials} from "../../lib/format";
@@ -13,7 +13,6 @@ import TradeView from "../../components/TradeView";
 import ActivityView from "../../components/ActivityView";
 import CopyView from "../../components/CopyView";
 import PositionsView from "../../components/PositionsView";
-import SmartWalletsView from "../../components/SmartWalletsView";
 import TokenDetail from "../../components/TokenDetail";
 import HomeView from "../../components/HomeView";
 import DiscoverView from "../../components/DiscoverView";
@@ -22,7 +21,7 @@ import ProfileView from "../../components/ProfileView";
 import MoreView from "../../components/MoreView";
 const EmbeddedWalletPanel=dynamic(()=>import("../../components/EmbeddedWalletPanel"),{ssr:false});
 
-const nav:[AppView,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["trade","Trade",Zap],["positions","Wallet",WalletCards],["smart-wallets","Smart Money",Search],["more","More",Menu]];
+const nav:[AppView,string,any][]=[["home","Home",Home],["discover","Hunt",TrendingUp],["trade","Trade",Zap],["positions","Wallet",WalletCards],["more","More",Menu]];
 const navById=new Map(nav.map(item=>[item[0],item]));
 const mobileNav=MOBILE_NAV_IDS.map(id=>navById.get(id)!);
 
@@ -51,7 +50,6 @@ export default function AppPage(){
   // Explicitly separate from `brain` (the qualified feed) -- early/raw intelligence that hasn't
   // cleared the same evidence bar. Kept apart in state, not just filtered client-side, so the two
   // never accidentally get merged back into one undifferentiated list.
-  const[newTokenRadar,setNewTokenRadar]=useState<any[]>([]);
   const[positionsDegraded,setPositionsDegraded]=useState(false);
   const[selectedMint,setSelectedMint]=useState<{chain:string;mint:string}|null>(null);
   // Funding is an overlay action. It must never mutate the current destination.
@@ -72,7 +70,7 @@ export default function AppPage(){
         apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/settings"),apiFetch("/v1/me/notifications"),apiFetch("/v1/me/sessions")
       ]);
       setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
-      apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setNewTokenRadar(x.newTokenRadar||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
+      apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
     }catch(e:any){
       if(e?.status===401){
         // A silent bounce back to a blank login form (no explanation) is exactly the Phantom
@@ -99,7 +97,7 @@ export default function AppPage(){
       if(stopped||document.visibilityState!=="visible")return;
       try{
         const[d,a,pos,t,n,b]=await Promise.all([apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/notifications"),apiFetch<any>("/v1/brain/feed")]);
-        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setNewTokenRadar(b.newTokenRadar||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
+        if(!stopped){setDashboard(d);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setNotifications(n.notifications||[]);setBrain(b.opportunities||[]);setBrainDegraded(Boolean(b.pipelineDegraded))}
       }catch(e:any){if(e?.status===401&&!stopped)location.replace("/login/")}
     };
     const timer=setInterval(()=>void refreshLive(),8000);
@@ -140,7 +138,7 @@ export default function AppPage(){
       <section className="app-main">
         {selectedMint?<TokenDetail sel={selectedMint} opp={brain.find(o=>o.mint===selectedMint.mint)} me={me} close={()=>setSelectedMint(null)} onTraded={load}/>:<>
         <div className="app-top">
-          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Wallet":view==="profile"?"Account":view==="smart-wallets"?"Smart Money":view==="more"?"More":"MemeCloud"}</h1></div>
+          <div><small>YOUR MemeCloud</small><h1>{view==="home"?"Home":view==="discover"?"Hunt":view==="trade"?"Trade":view==="traders"?"Traders":view==="community"?"Copy":view==="social"?"Community":view==="activity"?"Activity":view==="positions"?"Wallet":view==="profile"?"Account":view==="more"?"More":"MemeCloud"}</h1></div>
           <div className="app-top-actions">
             <button className={`auto-toggle ${autoOn?"":"off"}`} onClick={toggleAuto}>{autoOn?<Play size={14}/>:<Pause size={14}/>} Auto Trade {autoOn?"On":"Off"}</button>
             <button className="icon-btn notification-button" onClick={()=>navigate("profile","notifications")} aria-label={`${unread} unread notifications`}><Bell size={17}/>{unread>0&&<span className="notification-count">{unread>99?"99+":unread}</span>}</button>
@@ -150,7 +148,6 @@ export default function AppPage(){
         <EmbeddedWalletPanel me={me} reload={load} openReceiveSignal={fundSignal} showCard={view==="positions"}/>
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint} onFund={openFund}/>}
         {view==="discover"&&<DiscoverView brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
-        {view==="smart-wallets"&&<SmartWalletsView/>}
         {view==="trade"&&<TradeView settings={settings} trades={trades} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
         {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}

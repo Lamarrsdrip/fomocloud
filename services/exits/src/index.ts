@@ -5,7 +5,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "@memecloud/db";
 import { calculateExitAccounting, cachedTokenDecimals, solanaRpcCandidates, pickHealthyRpc, chainSupports, usdToMicros, microsToUsd, positionUsdFields } from "@memecloud/shared";
 import { startHeartbeat } from "@memecloud/ops";
-import { evaluateExit, priceDrawdownFromPeakPct, type MarketSnapshot } from "@memecloud/strategy";
+import { evaluateExit, evaluateUserProfitPlan, resolveEffectiveTradeSettings, priceDrawdownFromPeakPct, type MarketSnapshot } from "@memecloud/strategy";
 import { JupiterExecution } from "@memecloud/execution";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { getConfig } from "@memecloud/config";
@@ -119,7 +119,7 @@ async function positionState(p:any){
   const original=BigInt(p.entryTokenRaw),remaining=BigInt(p.remainingTokenRaw);
   const recovered=Math.max(0,exits.reduce((a,e)=>a+microsToUsd(e.proceedsUsdMicros??0n),0))/Math.max(0.01,p.costUsd)*100;
   const entry=Number(p.avgEntryPriceUsd),peak=Number(p.peakPriceUsd??entry);
-  return {tp1Taken:has("TP1"),tp2Taken:has("TP2"),tp3Taken:has("TP3"),principalRecoveredPct:recovered,peakProfitPct:((peak-entry)/entry)*100,remainingPct:frac(remaining,original)*100};
+  return {tp1Taken:has("USER_TP1"),tp2Taken:has("USER_TP2"),tp3Taken:has("USER_TP3"),simpleTpTaken:has("USER_SIMPLE_TP"),principalRecoveredPct:recovered,peakProfitPct:((peak-entry)/entry)*100,remainingPct:frac(remaining,original)*100};
 }
 
 async function applySimulationExit(p:any,current:number,instruction:any){
@@ -224,7 +224,8 @@ async function executeLiveExit(p:any,instruction:any){
     throw Object.assign(new Error("AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"),{code:"AMBIGUOUS_PRIOR_EXIT_ATTEMPT_REQUIRES_RECONCILIATION"});
   }
 
-  const quote=await jupiter.quote({inputMint:p.mint,outputMint:usdc,amountRaw:rawToSell.toString(),slippageBps:Number(execCfg?.exitSlippageBps??700)});
+  const frozenSettings=(p.tradeSettingsSnapshot&&typeof p.tradeSettingsSnapshot==="object")?p.tradeSettingsSnapshot as any:null;
+  const quote=await jupiter.quote({inputMint:p.mint,outputMint:usdc,amountRaw:rawToSell.toString(),slippageBps:Number(frozenSettings?.maxSlippageBps??execCfg?.exitSlippageBps??700)});
   const impact=Math.abs(Number(quote.priceImpactPct??0));
   const maxImpact=Math.max(1,Math.min(50,Number(riskCfg?.maxExecutablePriceImpactPct??35)));
   if(!Number.isFinite(impact)||impact>maxImpact)throw Object.assign(new Error("EXIT_PRICE_IMPACT_TOO_HIGH"),{code:"EXIT_PRICE_IMPACT_TOO_HIGH",impact});
@@ -290,23 +291,39 @@ async function tick(){
         await db.position.update({where:{id:p.id},data:{unrealizedPnlUsdMicros:usdToMicros(value-remainingCost)}});stale++;continue;
       }
       const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
-      const userSettings=await db.globalTradingSettings.findUnique({where:{userId:p.userId}});
-      const recoveryEnabled=userSettings?.capitalRecoveryEnabled??true;
-      const recoveryMultiple=Math.max(1.01,Number(userSettings?.capitalRecoveryMultiple??3));
-      const currentMultiple=current/entry;
-      let instruction:any;
-      if(recoveryEnabled && state.principalRecoveredPct<100 && currentMultiple>=recoveryMultiple){
+      const [userSettings,follow]=await Promise.all([
+        db.globalTradingSettings.findUnique({where:{userId:p.userId}}),
+        db.userFollow.findUnique({where:{userId_traderId:{userId:p.userId,traderId:p.sourceTraderId}}})
+      ]);
+      // Freeze the resolved plan once per position. This prevents a settings edit from silently
+      // rewriting the exit plan for money already at risk. Older positions are lazily upgraded.
+      let effective:any=(p.tradeSettingsSnapshot&&typeof p.tradeSettingsSnapshot==="object")?p.tradeSettingsSnapshot:null;
+      if(!effective){
+        effective=resolveEffectiveTradeSettings(userSettings,follow);
+        await db.position.update({where:{id:p.id},data:{tradeSettingsSnapshot:effective as any}}).catch(()=>{});
+        p.tradeSettingsSnapshot=effective;
+      }
+      const profitPct=((current-entry)/entry)*100;
+      const drawdownFromPeakPct=priceDrawdownFromPeakPct(current,Math.max(p.peakPriceUsd??entry,current));
+      const adaptive=evaluateExit(market,state);
+      let userPlan:any=evaluateUserProfitPlan(effective,{profitPct,drawdownFromPeakPct},state);
+      // Capital recovery needs the exact fraction of CURRENT position value that returns the still-
+      // unrecovered principal; the shared planner intentionally emits a zero-sized marker here.
+      if(userPlan.action==="PARTIAL_TP"&&userPlan.tag==="USER_CAPITAL_RECOVERY"){
         const alreadyRecovered=p.costUsd*(state.principalRecoveredPct/100);
         const principalStillNeeded=Math.max(0,p.costUsd-alreadyRecovered);
         const remainingCost=p.costUsd*frac(remaining,original);
-        const currentValue=remainingCost*currentMultiple;
+        const currentValue=remainingCost*(current/entry);
         const sellPct=currentValue>0?Math.min(100,(principalStillNeeded/currentValue)*100):0;
-        instruction=sellPct>0.0001
-          ? {action:"PARTIAL_TP",sellPct,reason:`Recover original capital at ${recoveryMultiple.toFixed(2)}x; keep the rest as the evidence-managed runner`}
-          : evaluateExit(market,state);
-      }else instruction=evaluateExit(market,state);
+        userPlan=sellPct>0.0001?{...userPlan,sellPct}:{action:"HOLD",reason:"Capital already recovered"};
+      }
+      if(userPlan.tag) userPlan={...userPlan,reason:`${userPlan.tag}: ${userPlan.reason}`};
+      // Fail-closed safety exits outrank user profit harvesting. Ordinary adaptive harvesting is
+      // secondary to explicit user TP/capital/trailing rules.
+      const emergencyAdaptive=adaptive.action==="EXIT" && /Emergency protection|liquidity|sell route|mint|freeze|dangerous|Source trader exited|broke down/i.test(adaptive.reason);
+      const instruction:any=emergencyAdaptive?adaptive:(userPlan.action!=="HOLD"?userPlan:adaptive);
       if(p.mode==="SIMULATION")await applySimulationExit(p,current,instruction);
-      else if(instruction.action!=="HOLD")await executeLiveExit(p,instruction);
+      else if(instruction.action!=="HOLD")await executeLiveExit({...p,tradeSettingsSnapshot:effective},instruction);
       const freshRaw=await db.position.findUnique({where:{id:p.id}});if(!freshRaw)continue;
       const fresh={...freshRaw,...positionUsdFields(freshRaw)};
       const rr=BigInt(fresh.remainingTokenRaw),remainingCost=fresh.costUsd*frac(rr,BigInt(fresh.entryTokenRaw)),value=remainingCost*(current/entry);

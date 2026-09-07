@@ -6,7 +6,7 @@
 // would have destroyed the product's only input. This version therefore:
 //   * REFUSES to run unless every admin-watched candidate has already been migrated to a real
 //     ADMIN-sourced TraderWallet (see migrate-admin-curated-traders.mjs),
-//   * keeps admin-watched candidate rows as historical provenance,
+//   * deletes the retired SmartWalletCandidate table rows AFTER their Admin-curated wallets have been migrated,
 //   * keeps TRANSFER_IN/TRANSFER_OUT wallet activity as the audit trail proving which "buys" were
 //     actually airdrops (this is evidence, not noise),
 //   * never touches users, wallets, deposits, ledger, orders, positions, exits or source txs.
@@ -22,8 +22,7 @@ const adminSourcedWallets=await db.traderWallet.count({where:{chain:"SOLANA",ver
 const migrationComplete=adminSourcedWallets>=adminWatched&&adminSourcedWallets>0;
 
 const counts={
-  nonAdminCandidatesToDelete:await db.smartWalletCandidate.count({where:{adminWatched:false}}),
-  adminCandidatesPreserved:adminWatched,
+  candidatesToDelete:await db.smartWalletCandidate.count(),
   brainOpportunities:await db.globalBrainOpportunity.count(),
   brainOutcomeSamples:await db.brainOutcomeSample.count(),
   transferActivityPreserved:await db.walletActivity.count({where:{action:{in:["TRANSFER_IN","TRANSFER_OUT"]}}}),
@@ -33,8 +32,8 @@ const counts={
 console.log(JSON.stringify({
   mode:apply?"APPLY":"DRY_RUN",
   migrationComplete,adminWatched,adminSourcedWallets,
-  willDelete:{nonAdminCandidates:counts.nonAdminCandidatesToDelete,brainOpportunities:counts.brainOpportunities,brainOutcomeSamples:counts.brainOutcomeSamples,leftoverObservationWallets:counts.observationTraderWallets},
-  preserved:["User","Wallet","Deposit","LedgerEntry","Order","Position","PositionExit","SourceTransaction","real BUY/SELL WalletActivity","TRANSFER audit trail","admin-watched candidate provenance","Admin TraderWallet"]
+  willDelete:{smartWalletCandidates:counts.candidatesToDelete,brainOpportunities:counts.brainOpportunities,brainOutcomeSamples:counts.brainOutcomeSamples,leftoverObservationWallets:counts.observationTraderWallets},
+  preserved:["User","Wallet","Deposit","LedgerEntry","Order","Position","PositionExit","SourceTransaction","real BUY/SELL WalletActivity","TRANSFER audit trail","Admin TraderWallet"]
 },null,2));
 
 if(!apply){await db.$disconnect();process.exit(0)}
@@ -43,8 +42,10 @@ if(!migrationComplete){
   await db.$disconnect();process.exit(1);
 }
 
-// Auto-discovered candidates that no admin ever watched: no longer a signal source anywhere.
-await db.smartWalletCandidate.deleteMany({where:{adminWatched:false}});
+// All legacy candidate rows are now retired. Admin curation/provenance lives on Trader/TraderWallet.
+await db.smartWalletCandidate.deleteMany({});
+// Old activity remains as an internal forensic audit trail, but cannot reappear in Home/Hunt/push.
+await db.walletActivity.updateMany({where:{swapVerified:false},data:{public:false}});
 // Opportunity/outcome rows were scored under the retired candidate architecture.
 await db.brainOutcomeSample.deleteMany({});
 await db.globalBrainOpportunity.deleteMany({});

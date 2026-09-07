@@ -34,7 +34,7 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
         db.walletActivity.findMany({where:{chain:"SOLANA",walletAddress:wallet,mint:fact.mint,action:{in:["BUY","SELL"]},observedAt:{gte:since,lt:observedAt}},orderBy:{observedAt:"asc"},take:200}),
         db.walletActivity.findMany({where:{chain:"SOLANA",mint:fact.mint,action:"BUY",public:true,walletAddress:{not:wallet},observedAt:{gte:since}},select:{walletAddress:true},take:50})
       ]);
-      const priorTrades:SessionTrade[]=priorRows.map(r=>({action:r.action,state:r.state,quoteAmount:r.amountUsd,amountUsd:r.amountUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw}));
+      const priorTrades:SessionTrade[]=priorRows.map(r=>({action:r.action,state:r.state,quoteAmount:r.quoteAmount??r.amountUsd,quoteSymbol:r.quoteSymbol,amountUsd:r.amountUsd,amountRaw:r.amountRaw,decimals:r.decimals,marketCapUsd:r.marketCapUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw}));
       publicDecision=isPublicTradeEvent({
         walletIsAdminTracked:true,swapVerified:true,
         incoming:{action:fact.action,state:fact.state,quoteAmount:leg?.quoteAmount??amountUsd,amountUsd,observedAt,balanceBeforeRaw:fact.balanceBeforeRaw,balanceAfterRaw:fact.balanceAfterRaw},
@@ -46,6 +46,7 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
     await db.walletActivity.upsert({where:{eventKey},update:{},create:{
       mint:fact.mint,action:fact.action,state:fact.state,amountRaw:fact.amountRaw,decimals:fact.decimals,
       balanceBeforeRaw:fact.balanceBeforeRaw,balanceAfterRaw:fact.balanceAfterRaw,amountUsd,
+      quoteMint:leg?.quoteMint,quoteSymbol:leg?.quoteSymbol,quoteAmount:leg?.quoteAmount,swapVerified:isRealTrade,
       eventKey,chain:"SOLANA",traderId,walletAddress:wallet,walletLabel,sourceTx:signature,
       public:isRealTrade&&isAdminTracked,observedAt,
       // Only a genuinely newsworthy event enters the notification pipeline. Churn inside a live

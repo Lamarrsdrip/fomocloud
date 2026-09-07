@@ -412,3 +412,5 @@ export function evaluateExit(m:MarketSnapshot, p:PositionState):ExitInstruction 
 
   return {action:"HOLD", reason:`${trend.toLowerCase()} trend still supports the runner`, trailPct:trail, trend};
 }
+
+export * from "./tradeSettings.js";

@@ -68,7 +68,9 @@ async function context(chain:Chain,mint:string,s:any){
   const convergentWallets=qualityCandidates.filter((w:any)=>recentSet.has(w.address));
   const convergenceForScore=convergentWallets.map((w:any)=>({stage:w.stage,source:w.source,copyabilityScore:Number(w.copyabilityScore??0),currentFormScore:Number((w.metadata as any)?.currentFormScore??50),isMemeWhale:Boolean((w.metadata as any)?.isMemeWhale),capitalScore:Number((w.metadata as any)?.capitalScore??0)}));
   const smartWalletWeightedScore=weightedConvergenceScore(convergenceForScore);
-  const provenSmartWallets=convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
+  // Legacy field name retained in the Brain evidence interface, but its live meaning is now
+  // "Admin-curated wallets with verified recent buys" — there is no algorithmic PROVEN gate.
+  const provenSmartWallets=convergentWallets.length;
   const trackedNet5m=f5m.filter((r:any)=>qualitySet.has(r.walletAddress)).reduce((sum:any,r:any)=>sum+(String(r.side).toUpperCase()==="BUY"?1:-1)*Number(r.amountUsd??0),0);
   // Real bug found by audit: knownWhaleBuyers60s used to add a raw Signal count (`known`, a
   // platform-tracked-trader BUY signal count from an entirely different source table) directly
@@ -186,7 +188,7 @@ async function notifyDiscoveryUpgrade(row:any,newState:string){
 async function notifyConvergence(row:any,count:number,provenCount:number){
   const subs=await discoverySubscribers();
   const title=count>=5?`🔥 Smart Money Convergence: ${row.symbol||"token"}`:`Smart money entered ${row.symbol||"a token"}`;
-  const body=`${count} independent tracked wallets bought within 10 minutes${provenCount?` · ${provenCount} PROVEN`:""} · MemeCloud is researching the token now · ${row.chain} · ${row.mint}`;
+  const body=`${count} independent tracked wallets bought within 10 minutes${provenCount?` · ${provenCount} Admin-tracked`:""} · MemeCloud is researching the token now · ${row.chain} · ${row.mint}`;
   for(const u of subs){
     const key=`convergence:${row.id}:${count}:${u.id}`;
     const e=await db.userActivityEvent.create({data:{userId:u.id,type:"GLOBAL_BRAIN",title,body,data:{opportunityId:row.id,chain:row.chain,mint:row.mint,convergentWallets:count} as any}}).catch(()=>null);
@@ -232,7 +234,7 @@ async function tick(){
       const existing=await db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain:s.chain,mint:s.mint}}});
       const upgraded=didStateUpgrade(existing?.lastNotifiedState,d.state);
       const convergentCount=c.convergentWallets.length;
-      const provenConvergentCount=c.evidence.provenSmartWallets??c.convergentWallets.filter((w:any)=>w.stage==="PROVEN").length;
+      const provenConvergentCount=c.evidence.provenSmartWallets??c.convergentWallets.length;
       // Convergence is now a first-class Brain input, not merely an explanation string. The context
       // computed a quality/form-weighted score before evaluateOpportunity() ran, so proven/current
       // wallets can materially outrank a swarm of unverified addresses.
@@ -256,7 +258,7 @@ async function tick(){
       const newWhaleActivity=whaleCount>=1&&whaleCount>priorNotifiedWhaleCount;
       // Human explanation mirrors the same quality-weighted convergence that now feeds scoring --
       // no split-brain where UI says "smart money" but the trading decision silently ignores it.
-      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes${provenConvergentCount?` (${provenConvergentCount} PROVEN)`:""}`,...d.reasons]:d.reasons;
+      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes${provenConvergentCount?` (${provenConvergentCount} Admin-tracked)`:""}`,...d.reasons]:d.reasons;
       const convergenceStage=classifyWalletConvergence(convergentCount,provenConvergentCount);
       const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,provenConvergentCount,convergentWeightedScore,convergenceStage,lastNotifiedConvergentCount:priorNotifiedConvergentCount,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown,evidenceChannels:d.evidenceChannels,ageMinutes:c.evidence.ageMinutes,smartWalletWeightedScore:convergentWeightedScore} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});

@@ -333,15 +333,38 @@ model GlobalTradingSettings {
   userId                  String   @unique @db.ObjectId
   autoCopyEnabled         Boolean  @default(false)
   globalBrainEnabled      Boolean  @default(true)
-  sizingMode              String   @default("PERCENT")
+  sizingMode              String   @default("PERCENT") // PERCENT | FIXED
   percentBalance          Float    @default(2)
   defaultAmountUsd        Float    @default(100)
   maxAmountPerTradeUsd    Float    @default(0) // 0 = user chose no platform cap
   maxTotalExposureUsd     Float    @default(0) // 0 = user chose no platform cap
   maxConcurrentPositions  Int      @default(0) // 0 = unlimited by platform
+  maxSlippageBps          Int      @default(1500)
   adaptiveChase           Boolean  @default(false) // evidence only unless user sets a chase ceiling
+
+  // User-owned profit plan. Safety exits remain fail-closed and may still exit earlier when
+  // liquidity/sellability/risk genuinely breaks; these fields control normal profit harvesting.
+  takeProfitMode          String   @default("SIMPLE") // SIMPLE | ADVANCED
+  simpleTakeProfitPct     Float    @default(100)
+  simpleSellPct           Float    @default(100)
+  tp1Pct                  Float    @default(50)
+  tp1SellPct              Float    @default(25)
+  tp2Pct                  Float    @default(100)
+  tp2SellPct              Float    @default(25)
+  tp3Pct                  Float    @default(200)
+  tp3SellPct              Float    @default(25)
+  runnerPct               Float    @default(25)
   capitalRecoveryEnabled  Boolean  @default(true)
-  capitalRecoveryMultiple Float    @default(3)
+  // +100% means 2x entry value. This replaces the old less-obvious x-multiple UI while the
+  // deprecated multiple is kept temporarily so already-deployed code can roll forward safely.
+  capitalRecoveryTriggerPct Float  @default(100)
+  capitalRecoveryMultiple Float    @default(2)
+  trailingEnabled         Boolean  @default(false)
+  trailingActivationPct   Float    @default(80)
+  trailingGivebackPct     Float    @default(20)
+  sourceSellBehavior      String   @default("BRAIN_DECIDES") // IGNORE | PROPORTIONAL | FULL_EXIT_ONLY | BRAIN_DECIDES
+  scalperCopyEnabled      Boolean  @default(false)
+
   freshMemeMode           Boolean  @default(true)
   runnerMode              Boolean  @default(true)
   allowedChains           Chain[]  @default([SOLANA])
@@ -447,17 +470,44 @@ model UserFollow {
   userId              String     @db.ObjectId
   traderId            String     @db.ObjectId
   mode                FollowMode @default(FOLLOW_ONLY)
+
+  // When false, this trader inherits the user's Global Trading Settings exactly. When true,
+  // nullable override fields below replace only the values the user explicitly customized.
+  useCustomSettings   Boolean    @default(false)
+  sizingMode          String?
+  percentBalance      Float?
   fixedAmountUsd      Float      @default(100)
-  takeProfitPct       Float      @default(200)
+  takeProfitPct       Float      @default(200) // legacy compatibility; resolved plan uses fields below
   stopLossPct         Float?
   maxChasePct         Float      @default(0) // 0 = no user chase ceiling
   maxSlippageBps      Int        @default(1500)
   maxPositionUsd      Float      @default(0) // 0 = unlimited
   maxTotalExposureUsd Float      @default(0) // 0 = unlimited
+  maxConcurrentFromTrader Int    @default(0) // 0 = unlimited
   minLiquidityUsd     Float      @default(0)
   exitMode            String     @default("ADAPTIVE")
   copyAdditionalBuys  Boolean    @default(true)
   copyReentries       Boolean    @default(true)
+
+  takeProfitMode          String?
+  simpleTakeProfitPct     Float?
+  simpleSellPct           Float?
+  tp1Pct                  Float?
+  tp1SellPct              Float?
+  tp2Pct                  Float?
+  tp2SellPct              Float?
+  tp3Pct                  Float?
+  tp3SellPct              Float?
+  runnerPct               Float?
+  capitalRecoveryEnabled  Boolean?
+  capitalRecoveryTriggerPct Float?
+  trailingEnabled         Boolean?
+  trailingActivationPct   Float?
+  trailingGivebackPct     Float?
+  sourceSellBehavior      String?
+  // null = inherit the global default. A user must explicitly opt this trader into scalper copy.
+  scalperCopyEnabled      Boolean?
+
   customLabel         String?
   customXHandle       String?
   createdAt           DateTime   @default(now())
@@ -605,6 +655,9 @@ model Position {
   profitTakenUsdMicros    BigInt         @default(0)
   takeProfitPct     Float
   stopLossPct       Float?
+  // Resolved Global + per-trader settings frozen when the position opens. Later settings edits
+  // never retroactively change the plan for money already in a trade.
+  tradeSettingsSnapshot Json?
   status            PositionStatus @default(OPEN)
   openedAt          DateTime       @default(now())
   lastMarkedAt      DateTime?
@@ -1288,6 +1341,12 @@ model WalletActivity {
   amountRaw       String
   decimals        Int
   amountUsd       Float?
+  // The real economic quote leg of a VERIFIED swap. Storing both native amount and USD mark makes
+  // the alert auditable ("6.23 SOL · ~$1,498") instead of collapsing every trade into dollars.
+  quoteMint       String?
+  quoteSymbol     String?
+  quoteAmount     Float?
+  swapVerified   Boolean @default(false)
   balanceBeforeRaw String
   balanceAfterRaw  String
   marketCapUsd    Float?

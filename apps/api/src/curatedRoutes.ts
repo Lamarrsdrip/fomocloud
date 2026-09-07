@@ -34,7 +34,7 @@ async function curatedTraderRows(userId?:string){
   });
   const ids=traders.map(t=>t.id), since90=new Date(Date.now()-90*86400_000);
   const [activity,follows]=await Promise.all([
-    ids.length?db.walletActivity.findMany({where:{traderId:{in:ids},action:{in:["BUY","SELL"]},public:true,observedAt:{gte:since90}},orderBy:{observedAt:"asc"},take:20000}):[],
+    ids.length?db.walletActivity.findMany({where:{traderId:{in:ids},action:{in:["BUY","SELL"]},public:true,swapVerified:true,observedAt:{gte:since90}},orderBy:{observedAt:"asc"},take:20000}):[],
     userId&&ids.length?db.userFollow.findMany({where:{userId,traderId:{in:ids}}}):Promise.resolve([] as any[])
   ]);
   const byTrader=new Map<string,any[]>();for(const r of activity){const a=byTrader.get(r.traderId)||[];a.push(r);byTrader.set(r.traderId,a)}
@@ -58,8 +58,10 @@ curatedRoutes.get("/v1/curated/traders",auth,asyncRoute(async(req:AuthedRequest,
 // wallet round-tripping one mint 40 times renders as one live card carrying the aggregate, rather
 // than 40 rows. Every underlying swap is still stored and still counts toward PNL.
 curatedRoutes.get("/v1/curated/flow",auth,asyncRoute(async(_req:AuthedRequest,res)=>{
-  const since=new Date(Date.now()-24*3600_000);
-  const rows=await db.walletActivity.findMany({where:{public:true,action:{in:["BUY","SELL"]},observedAt:{gte:since}},orderBy:{observedAt:"desc"},take:1000});
+  // Hunt is a LIVE tape, not historical wallet inventory. Keep enough lookback to reconstruct a
+  // current session, then discard sessions whose last verified swap is outside the live window.
+  const since=new Date(Date.now()-2*3600_000);
+  const rows=await db.walletActivity.findMany({where:{public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:since}},orderBy:{observedAt:"desc"},take:1500});
   const traderIds=[...new Set(rows.map(r=>r.traderId))],mints=[...new Set(rows.map(r=>r.mint))];
   const [traders,tokens]=await Promise.all([
     traderIds.length?db.trader.findMany({where:{id:{in:traderIds},kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true}}},select:{id:true,displayName:true,handle:true,avatarUrl:true}}):[],
@@ -87,7 +89,7 @@ curatedRoutes.get("/v1/curated/flow",auth,asyncRoute(async(_req:AuthedRequest,re
     flush();
   }
   const events=cards.map(({key,rows:group})=>{
-    const s=summariseSession(group.map((r:any)=>({action:r.action,state:r.state,quoteAmount:r.amountUsd,amountUsd:r.amountUsd,amountRaw:r.amountRaw,decimals:r.decimals,marketCapUsd:r.marketCapUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw})));
+    const s=summariseSession(group.map((r:any)=>({action:r.action,state:r.state,quoteAmount:r.quoteAmount??r.amountUsd,quoteSymbol:r.quoteSymbol,amountUsd:r.amountUsd,amountRaw:r.amountRaw,decimals:r.decimals,marketCapUsd:r.marketCapUsd,observedAt:r.observedAt,balanceBeforeRaw:r.balanceBeforeRaw,balanceAfterRaw:r.balanceAfterRaw})));
     const head=group[group.length-1],first=group[0];
     const token=mm.get(head.mint)||null;
     return {
@@ -96,10 +98,11 @@ curatedRoutes.get("/v1/curated/flow",auth,asyncRoute(async(_req:AuthedRequest,re
       trader:tm.get(head.traderId),walletAddress:head.walletAddress,mint:head.mint,token,
       // entry MC is the session's first observed value and is never replaced by the current one
       marketCapAtBuy:s.initialMarketCapUsd,currentMarketCapUsd:token?.marketCapUsd??s.latestMarketCapUsd??null,
-      amountUsd:head.amountUsd,netUsdFlow:s.netUsdFlow,grossBoughtUsd:s.grossBoughtUsd,grossSoldUsd:s.grossSoldUsd,
+      amountUsd:head.amountUsd,quoteAmount:head.quoteAmount,quoteSymbol:head.quoteSymbol,quoteMint:head.quoteMint,
+      netUsdFlow:s.netUsdFlow,grossBoughtUsd:s.grossBoughtUsd,grossSoldUsd:s.grossSoldUsd,
       swaps:s.tradeCount,buyCount:s.buyCount,sellCount:s.sellCount,remainingPositionPct:s.remainingPositionPct,
       spanMs:s.spanMs,firstBuyAt:s.firstBuyAt,observedAt:head.observedAt,sourceTx:head.sourceTx
     };
-  }).sort((a,b)=>new Date(b.observedAt).getTime()-new Date(a.observedAt).getTime()).slice(0,250);
+  }).filter(e=>e.isLive).sort((a,b)=>new Date(b.observedAt).getTime()-new Date(a.observedAt).getTime()).slice(0,250);
   res.json({events,sourcePolicy:"REAL_SWAP_ADMIN_WALLETS_ONLY",aggregation:"WALLET_MINT_SESSION"});
 }));
