@@ -84,7 +84,7 @@ for(const c of candidates){
   await db.smartWalletCandidate.update({where:{id:c.id},data:{traderId:trader.id}}).catch(()=>{});
 }
 
-const adminWalletsAfter=await db.traderWallet.count({where:{chain:"SOLANA",verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}}});
+const adminWalletsAfter=await db.traderWallet.count({where:{chain:"SOLANA",verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}}});
 console.log(JSON.stringify({mode:apply?"APPLY":"DRY_RUN",adminWatchedCandidates:candidates.length,plan,adminSourcedWalletsAfter:adminWalletsAfter},null,2));
 await db.$disconnect();
 process.exit(0);

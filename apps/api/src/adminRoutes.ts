@@ -3,7 +3,6 @@ import bcrypt from "bcryptjs";
 import { db, type Chain } from "@memecloud/db";
 import { microsToUsd, tradingCashUsdFields, positionUsdFields, readProviderMetrics } from "@memecloud/shared";
 import { getConfig, setConfig, redactedConfig, maskHint, recordProviderResults, fingerprintOf, ackRestart, readExecutionState } from "@memecloud/config";
-import { shouldProve } from "@memecloud/discovery";
 import { sendEmail, sendPush, ensureVapid } from "@memecloud/notifications";
 import { asyncRoute, routeParam, normalizeEmail, safeUser, validPublicAddress, audit, ensureUserDefaults } from "./auth.js";
 import { requireAdmin, adminOnly, type AuthedRequest } from "./middleware.js";
@@ -40,77 +39,33 @@ adminRoutes.post("/v1/admin/bootstrap", asyncRoute(async (req,res) => {
 }));
 
 adminRoutes.get("/v1/admin/overview", requireAdmin, asyncRoute(async (_req:AuthedRequest,res) => {
-  const nowDate=new Date(), today=new Date(Date.UTC(nowDate.getUTCFullYear(),nowDate.getUTCMonth(),nowDate.getUTCDate())), week=new Date(today.getTime()-6*24*60*60_000);
-  const [registeredUsers,activeUsers,newToday,newWeek,verifiedUsers,walletUsers,autoCopyUsers,platformTraders,openPositions,ordersToday,buyOrders,sellOrders,liveOrders,simulationOrders,livePnl,cash,candidates,paperCandidates,provenCandidates,rejectedCandidates,averageCopyability,discoveryTokens,newTokensToday,signals,signalsToday,buyDecisions,waitDecisions,skipDecisions,broadcasts,heartbeats]=await Promise.all([
-    db.user.count(),
-    db.user.count({where:{role:"USER",status:"ACTIVE"}}),
-    db.user.count({where:{createdAt:{gte:today}}}),
-    db.user.count({where:{createdAt:{gte:week}}}),
-    db.user.count({where:{emailVerifiedAt:{not:null}}}),
-    db.user.count({where:{wallets:{some:{}}}}),
-    db.user.count({where:{tradingSettings:{is:{autoCopyEnabled:true}}}}),
-    db.trader.count({where:{kind:"PLATFORM"}}),
-    db.position.count({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),
-    db.order.count({where:{createdAt:{gte:today}}}),
-    db.order.count({where:{createdAt:{gte:today},side:"BUY"}}),
-    db.order.count({where:{createdAt:{gte:today},side:"SELL"}}),
-    db.order.count({where:{mode:"LIVE"}}),
-    db.order.count({where:{mode:"SIMULATION"}}),
-    db.position.aggregate({where:{mode:"LIVE"},_sum:{realizedPnlUsdMicros:true,unrealizedPnlUsdMicros:true}}),
-    db.tradingCashAllocation.aggregate({_sum:{availableUsdMicros:true,inTradesUsdMicros:true}}),
-    db.smartWalletCandidate.count(),
-    db.smartWalletCandidate.count({where:{stage:"PAPER_TRACKING"}}),
-    db.smartWalletCandidate.count({where:{stage:"PROVEN"}}),
-    db.smartWalletCandidate.count({where:{stage:"REJECTED"}}),
-    db.smartWalletCandidate.aggregate({_avg:{copyabilityScore:true}}),
-    db.discoveryToken.count(),
-    db.discoveryToken.count({where:{discoveredAt:{gte:today}}}),
-    db.signal.count(),
-    db.signal.count({where:{observedAt:{gte:today}}}),
-    db.copyDecision.count({where:{createdAt:{gte:today},action:"BUY"}}),
-    db.copyDecision.count({where:{createdAt:{gte:today},action:"WAIT"}}),
-    db.copyDecision.count({where:{createdAt:{gte:today},action:"SKIP"}}),
-    db.broadcast.findMany({orderBy:{createdAt:"desc"},take:10}),
-    db.workerHeartbeat.findMany({orderBy:{name:"asc"}})
+  const nowDate=new Date(),today=new Date(Date.UTC(nowDate.getUTCFullYear(),nowDate.getUTCMonth(),nowDate.getUTCDate())),week=new Date(today.getTime()-6*24*60*60_000);
+  const [registeredUsers,activeUsers,newToday,newWeek,verifiedUsers,walletUsers,autoCopyUsers,trackedTraders,trackedWallets,openPositions,ordersToday,buyOrders,sellOrders,liveOrders,simulationOrders,livePnl,cash,verifiedActivity,signals,signalsToday,buyDecisions,waitDecisions,skipDecisions,broadcasts,heartbeats]=await Promise.all([
+    db.user.count(),db.user.count({where:{role:"USER",status:"ACTIVE"}}),db.user.count({where:{createdAt:{gte:today}}}),db.user.count({where:{createdAt:{gte:week}}}),
+    db.user.count({where:{emailVerifiedAt:{not:null}}}),db.user.count({where:{wallets:{some:{}}}}),db.user.count({where:{tradingSettings:{is:{autoCopyEnabled:true}}}}),
+    db.trader.count({where:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}}}),
+    db.traderWallet.count({where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}}}),
+    db.position.count({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}}}),db.order.count({where:{createdAt:{gte:today}}}),db.order.count({where:{createdAt:{gte:today},side:"BUY"}}),db.order.count({where:{createdAt:{gte:today},side:"SELL"}}),
+    db.order.count({where:{mode:"LIVE"}}),db.order.count({where:{mode:"SIMULATION"}}),db.position.aggregate({where:{mode:"LIVE"},_sum:{realizedPnlUsdMicros:true,unrealizedPnlUsdMicros:true}}),db.tradingCashAllocation.aggregate({_sum:{availableUsdMicros:true,inTradesUsdMicros:true}}),
+    db.walletActivity.findMany({where:{chain:"SOLANA",public:true,swapVerified:true,action:{in:["BUY","SELL"]}},select:{mint:true,observedAt:true},orderBy:{observedAt:"desc"},take:10000}),
+    db.signal.count(),db.signal.count({where:{observedAt:{gte:today}}}),db.copyDecision.count({where:{createdAt:{gte:today},action:"BUY"}}),db.copyDecision.count({where:{createdAt:{gte:today},action:"WAIT"}}),db.copyDecision.count({where:{createdAt:{gte:today},action:"SKIP"}}),
+    db.broadcast.findMany({orderBy:{createdAt:"desc"},take:10}),db.workerHeartbeat.findMany({orderBy:{name:"asc"}})
   ]);
-  const now=Date.now();
-  // Same authoritative status computeLiveReadiness/Settings uses -- the overview hero must never
-  // show its own separately-derived guess of execution state again (that's exactly how "Execution:
-  // SIMULATION" / "Live trading enabled" ended up contradicting each other in production: two
-  // different endpoints each doing their own partial read of the underlying gates).
   const liveReadiness=await computeLiveReadiness();
-  // Real gap found by audit: "opportunitiesToday" was actually newTokensToday -- every raw
-  // wallet-triggered DiscoveryToken, most of which never become a scored, evidence-backed Hunt
-  // opportunity. Labeled as "opportunities" it reads as if Hunt should be full when it's genuinely
-  // empty, which is exactly the confusion that happened live. qualifiedOpportunitiesNow uses the
-  // identical qualification bar GET /v1/brain/feed shows real users, so this number and what a
-  // user actually sees on Hunt can never silently drift apart again.
-  const scanningOpportunities=await db.globalBrainOpportunity.findMany({
-    where:{lastEvaluatedAt:{gte:new Date(Date.now()-48*60*60_000)},score:{gte:58},state:{in:["BUILDING","BREAKOUT_FLOW","MONEY_RUSH"]}},
-    select:{evidence:true,whaleBuyers60s:true,knownWhaleBuyers60s:true,smartMoneyNetFlow5mUsd:true,liquidityUsd:true}
-  });
-  const qualifiedOpportunitiesNow=scanningOpportunities.filter((o:any)=>{
-    const ev=(o.evidence??{}) as any;
-    const weighted=Number(ev.convergentWeightedScore??ev.smartWalletWeightedScore??0);
-    const whales=Number(o.whaleBuyers60s??0)+Number(o.knownWhaleBuyers60s??0);
-    const smartNet=Number(o.smartMoneyNetFlow5mUsd??0);
-    const materialSmartNet=smartNet>=Math.max(2500,Number(o.liquidityUsd??0)*.03);
-    return weighted>=1||whales>=1||materialSmartNet;
-  }).length;
+  const verifiedSwapTokens=new Set(verifiedActivity.map(x=>x.mint)).size;
+  const verifiedSwapTokensToday=new Set(verifiedActivity.filter(x=>x.observedAt>=today).map(x=>x.mint)).size;
+  const now=Date.now();
   res.json({
     metrics:{
       users:{registered:registeredUsers,active:activeUsers,newToday,newWeek,verified:verifiedUsers,walletConnected:walletUsers,autoCopyEnabled:autoCopyUsers},
       trading:{openPositions,ordersToday,buysToday:buyOrders,sellsToday:sellOrders,liveOrders,simulationOrders,realizedPnlUsd:microsToUsd(livePnl._sum.realizedPnlUsdMicros??0n),unrealizedPnlUsd:microsToUsd(livePnl._sum.unrealizedPnlUsdMicros??0n),allocatedCashUsd:microsToUsd((cash._sum.availableUsdMicros??0n)+(cash._sum.inTradesUsdMicros??0n))},
-      smartTraders:{platform:platformTraders,candidates,paperTracked:paperCandidates,proven:provenCandidates,rejected:rejectedCandidates,averageCopyability:averageCopyability._avg.copyabilityScore},
-      discovery:{watchedTokens:discoveryTokens,newTokensToday,qualifiedOpportunitiesNow},
+      // Compatibility name retained for the current Admin UI; contents are ONLY Admin-curated.
+      smartTraders:{platform:trackedTraders,trackedWallets},
+      discovery:{verifiedSwapTokens,verifiedSwapTokensToday,sourcePolicy:"ADMIN_VERIFIED_SWAPS_ONLY"},
       engine:{signals,signalsToday,buyDecisions,waitDecisions,skipDecisions}
     },
-    executionMode:liveReadiness.actualRuntimeMode.toLowerCase(),
-    liveExecutionEnabled:liveReadiness.newEntriesLive,
-    liveTradingRequested:liveReadiness.liveTradingEnabled,
-    liveReadiness,
-    broadcasts,
-    health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
+    executionMode:liveReadiness.actualRuntimeMode.toLowerCase(),liveExecutionEnabled:liveReadiness.newEntriesLive,liveTradingRequested:liveReadiness.liveTradingEnabled,liveReadiness,
+    broadcasts,health:heartbeats.map(h=>({...h,healthy:now-h.lastBeatAt.getTime()<45_000}))
   });
 }));
 
@@ -192,7 +147,7 @@ adminRoutes.post("/v1/admin/traders", adminOnly, asyncRoute(async (req:AuthedReq
       handle,displayName,xHandle:String(req.body?.xHandle??handle).replace(/^@/,"")||undefined,bio:req.body?.bio||undefined,category:req.body?.category||undefined,
       kind:"PLATFORM",enabled:req.body?.enabled!==false,featured:Boolean(req.body?.featured),recommended:Boolean(req.body?.recommended),
       defaultSelected:Boolean(req.body?.defaultSelected),verification:req.body?.verification??"UNVERIFIED",
-      wallets:{create:wallets.map((w:any)=>({chain:w.chain,address:String(w.address),verified:Boolean(w.verified),source:w.source||"ADMIN"}))}
+      wallets:{create:wallets.map((w:any)=>({chain:w.chain,address:String(w.address),verified:Boolean(w.verified),source:w.source||"ADMIN",monitoringStatus:"ACTIVE"}))}
     },
     include:{wallets:true}
   });
@@ -216,7 +171,7 @@ adminRoutes.post("/v1/admin/traders/:id/wallets", adminOnly, asyncRoute(async (r
     if(mapped.traderId===trader.id) return res.json({wallet:mapped,alreadyMapped:true});
     return res.status(409).json({error:"SOURCE_WALLET_ALREADY_MAPPED",traderId:mapped.traderId});
   }
-  const wallet=await db.traderWallet.create({data:{traderId:trader.id,chain,address,verified:Boolean(req.body?.verified),source:"ADMIN"}});
+  const wallet=await db.traderWallet.create({data:{traderId:trader.id,chain,address,verified:Boolean(req.body?.verified),source:"ADMIN",monitoringStatus:"ACTIVE"}});
   await audit(req.user.sub,"ADMIN","ADD_TRADER_WALLET",wallet.id,{traderId:trader.id,chain,address});
   res.status(201).json({wallet});
 }));
@@ -249,20 +204,21 @@ adminRoutes.get("/v1/admin/discovery/candidates", requireAdmin, (_req,res) => re
 adminRoutes.post("/v1/admin/discovery/candidates", adminOnly, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
 adminRoutes.patch("/v1/admin/discovery/candidates/:id", adminOnly, (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/admin/traders"}));
 adminRoutes.get("/v1/admin/discovery/tokens", requireAdmin, asyncRoute(async (_req,res) => {
-  const [tokens,mostRecentlySeen]=await Promise.all([
-    db.discoveryToken.findMany({orderBy:{lastSeenAt:"desc"},take:500}),
-    // Real gap found by forensic audit (M-46): same pipelineDegraded/dataFreshnessSec pattern
-    // already applied to admin Brain/Whales this session -- discovery-worker writing lastSeenAt
-    // is what actually keeps this table live; a stalled worker should read as degraded, not silently
-    // look like "no new tokens right now."
-    db.discoveryToken.findFirst({orderBy:{lastSeenAt:"desc"},select:{lastSeenAt:true}})
-  ]);
-  const dataFreshnessSec=mostRecentlySeen?Math.round((Date.now()-mostRecentlySeen.lastSeenAt.getTime())/1000):null;
-  // discovery-worker's default tick is 15 minutes (DISCOVERY_SCAN_INTERVAL_MS); 30 minutes gives a
-  // full missed-tick margin before calling it degraded, same discipline as /v1/smart-wallets' 30min
-  // bar against scoring-worker's 10min tick.
-  const pipelineDegraded=dataFreshnessSec===null||dataFreshnessSec>1800;
-  res.json({tokens,pipelineDegraded,dataFreshnessSec});
+  // Compatibility URL, new semantics: this is NOT a token-discovery database browser anymore.
+  // A token appears only because an enabled Admin trader executed a verified economic swap.
+  const traders=await db.trader.findMany({where:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}},select:{id:true}});
+  const traderIds=traders.map(t=>t.id);
+  const activity=traderIds.length?await db.walletActivity.findMany({
+    where:{chain:"SOLANA",traderId:{in:traderIds},public:true,swapVerified:true,action:{in:["BUY","SELL"]}},
+    select:{mint:true,observedAt:true,action:true,amountUsd:true,marketCapUsd:true},orderBy:{observedAt:"desc"},take:5000
+  }):[];
+  const latestByMint=new Map<string,(typeof activity)[number]>();
+  for(const row of activity)if(!latestByMint.has(row.mint))latestByMint.set(row.mint,row);
+  const mints=[...latestByMint.keys()].slice(0,500);
+  const tokens=mints.length?await db.discoveryToken.findMany({where:{chain:"SOLANA",mint:{in:mints}},take:500}):[];
+  const tokenByMint=new Map(tokens.map(t=>[t.mint,t]));
+  const rows=mints.map(mint=>({...(tokenByMint.get(mint)||{chain:"SOLANA",mint}),lastVerifiedSwapAt:latestByMint.get(mint)!.observedAt,lastVerifiedAction:latestByMint.get(mint)!.action,lastVerifiedAmountUsd:latestByMint.get(mint)!.amountUsd,marketCapAtLastVerifiedSwap:latestByMint.get(mint)!.marketCapUsd}));
+  res.json({tokens:rows,sourcePolicy:"ADMIN_VERIFIED_SWAPS_ONLY",pipelineDegraded:false,dataFreshnessSec:activity[0]?.observedAt?Math.round((Date.now()-activity[0].observedAt.getTime())/1000):null});
 }));
 adminRoutes.get("/v1/admin/positions", requireAdmin, asyncRoute(async (req:AuthedRequest,res) => {
   const status=String(req.query.status??"").toUpperCase();
@@ -320,13 +276,13 @@ adminRoutes.get("/v1/admin/trades", requireAdmin, asyncRoute(async (_req,res) =>
   res.json({orders});
 }));
 
-const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","discovery","brain"]);
+const allowedConfigKeys=new Set(["push","email","chains","execution","fees","risk","marketData","social","branding","signer","brain"]);
 const secretConfigKeys=new Set(["push","email","execution","marketData","social","signer"]);
 // Verified 2026-08-29 against every current consumer (services/listener, executor, exits,
-// market-worker, balance-worker, paper-worker, discovery-worker, scoring-worker, brain-worker):
+// market-worker, balance-worker, listener, brain-worker):
 // every key that once required a restart is now re-read on a live timer or fresh every cycle/tick
-// (executor/exits/paper-worker on a 60s reloadConfig timer; market-worker, balance-worker, listener
-// per-cycle; discovery-worker, scoring-worker fresh inside
+// (executor/exits on a 60s reloadConfig timer; market-worker, balance-worker and listener
+// refresh their relevant configuration per cycle
 // each scan; brain-worker fresh every 750ms tick). "chains" was never cached anywhere -- only
 // /v1/public/config reads it, fresh on every request. This set is intentionally empty; if a future
 // worker introduces a genuinely startup-only config read, add its key back here (and say why).
@@ -353,7 +309,7 @@ function sanitizeForClient(cfg:any){
 }
 adminRoutes.get("/v1/admin/config", requireAdmin, asyncRoute(async (_req,res) => {
   const rows=await db.appConfig.findMany({orderBy:{key:"asc"}});
-  res.json({config:rows.map(r=>sanitizeForClient(redactedConfig(r as any,SECRET_FIELDS[r.key]??[],PROVIDER_FINGERPRINT_FIELDS[r.key])))});
+  res.json({config:rows.filter(r=>allowedConfigKeys.has(r.key)).map(r=>sanitizeForClient(redactedConfig(r as any,SECRET_FIELDS[r.key]??[],PROVIDER_FINGERPRINT_FIELDS[r.key])))});
 }));
 adminRoutes.put("/v1/admin/config/:key", adminOnly, asyncRoute(async (req:AuthedRequest,res) => {
   const key=routeParam(req.params.key);

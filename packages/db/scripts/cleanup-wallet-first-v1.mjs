@@ -18,7 +18,7 @@ const db=new PrismaClient();
 const apply=process.argv.includes("--apply");
 
 const adminWatched=await db.smartWalletCandidate.count({where:{adminWatched:true}});
-const adminSourcedWallets=await db.traderWallet.count({where:{chain:"SOLANA",verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}}});
+const adminSourcedWallets=await db.traderWallet.count({where:{chain:"SOLANA",verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}}});
 const migrationComplete=adminSourcedWallets>=adminWatched&&adminSourcedWallets>0;
 
 const counts={

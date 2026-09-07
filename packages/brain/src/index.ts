@@ -64,7 +64,7 @@ function scoreBreakdown(e:BrainEvidence,flowRatio:number,whaleDensity:number):Br
  * Professional-degen opportunity scoring.
  *
  * A token does not become a recommendation merely because a few tiny buys refreshed it. The main
- * score is driven by independent quality-capital evidence (PROVEN/PAPER smart wallets, whales,
+ * score is driven by independent quality-capital evidence (Admin-tracked trader flow, whales,
  * smart-money net flow) plus accelerating organic flow. Meme culture is allowed to help, never used
  * as a substitute for money. Old/dead coins can re-awaken, but they must prove it with genuinely new
  * capital and acceleration rather than one small buy touching an old pool.
@@ -104,7 +104,7 @@ export function evaluateOpportunity(e:BrainEvidence):BrainDecision{
   if(dd>=45&&survivorScore>=60&&reawakening){score+=8;reasons.push("Deep-dip token is genuinely re-awakening with quality capital");}
 
   if((e.provenSmartWallets??0)>0)reasons.push(`${e.provenSmartWallets} Admin-tracked trader(s) entered recently`);
-  else if((e.trackedSmartWallets??0)>=2)reasons.push(`${e.trackedSmartWallets} verified smart-wallet candidates are converging`);
+  else if((e.trackedSmartWallets??0)>=2)reasons.push(`${e.trackedSmartWallets} Admin-tracked traders are converging`);
   if(e.whaleBuyers60s>=1)reasons.push(`${e.whaleBuyers60s} whale-tier or $50K+ tracked buy(s) joined in the last minute`);
   if(e.inflow10sUsd>=10_000)reasons.push(`$${Math.round(e.inflow10sUsd).toLocaleString()} entered in ~10s`);
   else if(e.inflow60sUsd>=5_000)reasons.push(`$${Math.round(e.inflow60sUsd).toLocaleString()} entered in ~60s`);

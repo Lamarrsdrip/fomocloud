@@ -36,7 +36,6 @@ export default function AppPage(){
   const[error,setError]=useState("");
   const[me,setMe]=useState<any>(null);
   const[dashboard,setDashboard]=useState<any>(null);
-  const[platform,setPlatform]=useState<any[]>([]);
   const[follows,setFollows]=useState<any[]>([]);
   const[activity,setActivity]=useState<any>({events:[],decisions:[]});
   const[positions,setPositions]=useState<any[]>([]);
@@ -65,11 +64,11 @@ export default function AppPage(){
   async function load(){
     setLoading(true);setError("");
     try{
-      const [m,d,p,f,a,pos,t,s,n,ss]=await Promise.all([
-        apiFetch("/v1/me"),apiFetch("/v1/me/dashboard"),apiFetch("/v1/traders"),apiFetch("/v1/me/traders"),
+      const [m,d,f,a,pos,t,s,n,ss]=await Promise.all([
+        apiFetch("/v1/me"),apiFetch("/v1/me/dashboard"),apiFetch("/v1/me/traders"),
         apiFetch("/v1/me/activity"),apiFetch("/v1/me/positions"),apiFetch("/v1/me/trades"),apiFetch("/v1/me/settings"),apiFetch("/v1/me/notifications"),apiFetch("/v1/me/sessions")
       ]);
-      setMe(m.user);setDashboard(d);setPlatform(p.traders||[]);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
+      setMe(m.user);setDashboard(d);setFollows(f.follows||[]);setActivity(a);setPositions(pos.positions||[]);setPositionsDegraded(Boolean(pos.pipelineDegraded));setTrades(t.orders||[]);setSettings(s);setNotifications(n.notifications||[]);setSessions(ss.sessions||[]);
       apiFetch<any>("/v1/brain/feed").then(x=>{setBrain(x.opportunities||[]);setBrainDegraded(Boolean(x.pipelineDegraded))}).catch(()=>{});
     }catch(e:any){
       if(e?.status===401){
@@ -149,7 +148,7 @@ export default function AppPage(){
         {view==="home"&&<HomeView d={dashboard} activity={activity} brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint} onFund={openFund}/>}
         {view==="discover"&&<DiscoverView brain={brain} brainDegraded={brainDegraded} setView={setView} openToken={setSelectedMint}/>}
         {view==="trade"&&<TradeView settings={settings} trades={trades} patchTrading={async(body:any)=>{try{const r=await apiFetch<any>("/v1/me/settings/trading",{method:"PATCH",body:JSON.stringify(body)});setSettings((x:any)=>({...x,trading:r.trading}))}catch(e){setError(plainError(e))}}} setView={setView}/>}
-        {view==="traders"&&<TradersView platform={platform} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
+        {view==="traders"&&<TradersView platform={[]} follows={follows} followMap={followMap} setMode={setTraderMode} customOpen={customOpen} setCustomOpen={setCustomOpen} reload={load}/>}
         {view==="community"&&<CopyView follows={follows} setMode={setTraderMode} setView={setView}/>}
         {view==="social"&&<CommunityView/>}
         {view==="activity"&&<ActivityView activity={activity} trades={trades}/>}

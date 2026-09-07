@@ -12,7 +12,7 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
     db.traderWallet.findUnique({where:{chain_address:{chain:"SOLANA",address:wallet}}})
   ]);
   // Admin-added verified platform wallets are the only public platform signal source.
-  const isAdminTracked=trader.kind==="PLATFORM"&&trader.enabled&&traderWalletRow?.source==="ADMIN"&&traderWalletRow.verified;
+  const isAdminTracked=trader.kind==="PLATFORM"&&trader.enabled&&traderWalletRow?.source==="ADMIN"&&traderWalletRow.verified&&traderWalletRow.monitoringStatus==="ACTIVE";
   const walletLabel=trader.displayName||`@${trader.handle}`; const observedAt=tx.blockTime?new Date(tx.blockTime*1000):new Date();
   for(const fact of facts){
     const eventKey=walletEventKey("SOLANA",signature,wallet,fact.mint,fact.action);
@@ -39,7 +39,10 @@ export async function persistWalletActivity(traderId:string,wallet:string,signat
         walletIsAdminTracked:true,swapVerified:true,
         incoming:{action:fact.action,state:fact.state,quoteAmount:leg?.quoteAmount??amountUsd,amountUsd,observedAt,balanceBeforeRaw:fact.balanceBeforeRaw,balanceAfterRaw:fact.balanceAfterRaw},
         priorTrades,
-        otherTrackedTradersOnMint:new Set(otherTraders.map(o=>o.walletAddress)).size
+        otherTrackedTradersOnMint:new Set(otherTraders.map(o=>o.walletAddress)).size,
+        // Product default: the public notification stream is verified BUY intelligence. SELLs are
+        // still persisted and drive PNL/Brain/direct-copy exit logic, but do not create phone spam.
+        sellAlertsEnabled:false
       });
     }
 

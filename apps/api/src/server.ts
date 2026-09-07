@@ -51,7 +51,7 @@ app.get("/health", asyncRoute(async (_req,res) => {
   try {
     await db.$runCommandRaw({ping:1});
     const [redisStatus,executionState]=await Promise.all([redis.ping().then(()=>"healthy").catch(()=>"unavailable"),readExecutionState()]);
-    res.json({ok:true,database:"healthy",redis:redisStatus,executionMode:executionState.actualRuntimeMode.toLowerCase(),executionStatus:executionState.status});
+    res.json({ok:true,database:"healthy",redis:redisStatus,executionMode:executionState.actualRuntimeMode.toLowerCase(),executionStatus:executionState.status,release:process.env.MEMECLOUD_RELEASE_SHA||process.env.RELEASE_SHA||process.cwd().split(/[\\/]/).filter(Boolean).at(-1)||null});
   } catch {
     res.status(503).json({ok:false,database:"unavailable",apiSafetyGate:String(process.env.EXECUTION_MODE??"simulation").toLowerCase()});
   }
@@ -406,7 +406,7 @@ app.get("/v1/me/positions", auth, asyncRoute(async (req:AuthedRequest,res) => {
   // M-30: BigInt micro-USD storage -- convert every position AND every included exit row before
   // this reaches res.json() below, which would otherwise throw on the raw BigInt fields.
   const positions=positionRows.map(p=>({...p,...positionUsdFields(p),exits:p.exits.map(e=>({...e,proceedsUsd:e.proceedsUsdMicros==null?null:microsToUsd(e.proceedsUsdMicros),pnlUsd:e.pnlUsdMicros==null?null:microsToUsd(e.pnlUsdMicros),proceedsUsdMicros:undefined as unknown as bigint|null,pnlUsdMicros:undefined as unknown as bigint|null}))}));
-  // Same pattern as /v1/brain/feed and /v1/smart-wallets: freshness measured against the most
+  // Same freshness pattern as /v1/brain/feed: freshness measured against the most
   // recently marked-to-market position across the WHOLE table (not just this user's), so a
   // genuinely stalled exits mark loop is visible even to a user whose own positions haven't
   // updated in a while for an unrelated reason (e.g. all closed, or all on illiquid mints).
@@ -627,8 +627,8 @@ app.get("/v1/traders", asyncRoute(async (_req,res) => {
     // algorithmic scoring. `wallets:{some:{source:"ADMIN"}}` requires at least one wallet Admin
     // actually added on this trader, so an auto-promoted trader (which the listener no longer
     // even subscribes to) can't still surface as a followable "platform trader" here.
-    where:{kind:"PLATFORM",enabled:true,trackingStatus:{not:"PAPER_TRACKING"},wallets:{some:{source:"ADMIN"}}},
-    include:{wallets:{where:{verified:true}},_count:{select:{follows:true,signals:true}}},
+    where:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}},
+    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}},_count:{select:{follows:true,signals:true}}},
     orderBy:[{featured:"desc"},{recommended:"desc"},{createdAt:"desc"}],take:200
   });
   res.json({traders});
@@ -636,8 +636,8 @@ app.get("/v1/traders", asyncRoute(async (_req,res) => {
 
 app.get("/v1/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const trader=await db.trader.findFirst({
-    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}},
-    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}},_count:{select:{follows:true,signals:true}},signals:{orderBy:{observedAt:"desc"},take:25}}
+    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}},
+    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}},_count:{select:{follows:true,signals:true}},signals:{orderBy:{observedAt:"desc"},take:25}}
   });
   if(!trader) return res.status(404).json({error:"TRADER_NOT_FOUND"});
   const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}}});
@@ -646,8 +646,8 @@ app.get("/v1/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
 
 app.get("/v1/me/traders", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const follows=await db.userFollow.findMany({
-    where:{userId:req.user.sub,trader:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}}},
-    include:{trader:{include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}},_count:{select:{signals:true,follows:true}}}}},
+    where:{userId:req.user.sub,trader:{kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}}},
+    include:{trader:{include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}},_count:{select:{signals:true,follows:true}}}}},
     orderBy:{updatedAt:"desc"}
   });
   res.json({follows});
@@ -655,8 +655,8 @@ app.get("/v1/me/traders", auth, asyncRoute(async (req:AuthedRequest,res) => {
 
 app.put("/v1/me/traders/:id", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const trader=await db.trader.findFirst({
-    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA"}}},
-    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA"}}}
+    where:{id:routeParam(req.params.id),kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}},
+    include:{wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}}
   });
   if(!trader) return res.status(404).json({error:"ADMIN_TRACKED_TRADER_NOT_FOUND"});
   const existing=await db.userFollow.findUnique({where:{userId_traderId:{userId:req.user.sub,traderId:trader.id}}});
@@ -901,92 +901,70 @@ app.get("/v1/brain/feed", asyncRoute(async (_req,res) => {
 app.get("/v1/brain/token/:chain/:mint", asyncRoute(async (req:Request,res) => {
   const chain=routeParam(req.params.chain) as Chain;
   const mint=routeParam(req.params.mint);
-  const [opportunity,flows,catalyst]=await Promise.all([
+  const since=new Date(Date.now()-24*60*60_000);
+  const [opportunity,flows,catalyst,token,activity]=await Promise.all([
     db.globalBrainOpportunity.findUnique({where:{chain_mint:{chain,mint}}}),
-    db.chainFlowObservation.findMany({where:{chain,mint},orderBy:{observedAt:"desc"},take:40}),
-    db.catalystEvent.findFirst({where:{chain,mint},orderBy:{announcedAt:"desc"}})
+    db.chainFlowObservation.findMany({where:{chain,mint},orderBy:{observedAt:"desc"},take:80}),
+    db.catalystEvent.findFirst({where:{chain,mint},orderBy:{announcedAt:"desc"}}),
+    db.discoveryToken.findFirst({where:{chain,mint}}),
+    db.walletActivity.findMany({where:{chain,mint,public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:since}},orderBy:{observedAt:"asc"},take:1000})
   ]);
-  const addresses=[...new Set(flows.map(f=>f.walletAddress))];
-  const [candidates,signals,tokens]=await Promise.all([
-    addresses.length?db.smartWalletCandidate.findMany({where:{chain,address:{in:addresses}},take:200}):Promise.resolve([]),
-    addresses.length?db.signal.findMany({where:{chain,sourceWallet:{in:addresses},OR:[{outputMint:mint},{inputMint:mint}]},orderBy:{observedAt:"desc"},take:300}):Promise.resolve([]),
-    db.discoveryToken.findMany({where:{chain,mint},take:1})
-  ]);
-  const relationships=relationshipRows(flows,signals,new Map(candidates.map((c:any)=>[c.address,c])),new Map(tokens.map((t:any)=>[t.mint,t])));
-  const summary={distinctTrackedWallets:new Set(relationships.map(r=>r.walletAddress)).size,memeCloudPicks:relationships.filter(r=>r.source==="MemeCloud Pick").length,elite:relationships.filter(r=>r.stage==="PROVEN"&&Number(r.skillScore??0)>=90).length,proven:relationships.filter(r=>r.stage==="PROVEN").length,whales:relationships.filter(r=>r.isWhale).length,trackedBuyFlowUsd:relationships.reduce((n,r)=>n+r.boughtUsd,0),trackedSellFlowUsd:relationships.reduce((n,r)=>n+r.soldUsd,0),netTrackedInflowUsd:relationships.reduce((n,r)=>n+r.netFlowUsd,0),lastObservedHolding:relationships.filter(r=>r.state==="LAST_OBSERVED_HOLDING").length,partialExits:relationships.filter(r=>["TRIMMED","MOSTLY_EXITED"].includes(r.state)).length,fullExits:relationships.filter(r=>r.state==="EXITED").length};
-  res.json({opportunity,flows,catalyst,token:tokens[0]??null,smartMoney:{relationships,summary}});
+
+  // Token detail uses the same absolute source invariant as Hunt: an activity row only earns
+  // tracked-money authority when its trader STILL owns an enabled, verified Admin Solana wallet.
+  // No SmartWalletCandidate stage/score can make a wallet appear here.
+  const traderIds=[...new Set(activity.map(a=>a.traderId))];
+  const traders=traderIds.length?await db.trader.findMany({
+    where:{id:{in:traderIds},kind:"PLATFORM",enabled:true,wallets:{some:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"}}},
+    select:{id:true,displayName:true,handle:true,avatarUrl:true,wallets:{where:{source:"ADMIN",verified:true,chain:"SOLANA",monitoringStatus:"ACTIVE"},select:{address:true}}}
+  }):[];
+  const traderById=new Map(traders.map(t=>[t.id,t]));
+  const activeAdminAddresses=new Set(traders.flatMap(t=>t.wallets.map(w=>w.address)));
+  const verifiedFlows=flows.filter(f=>activeAdminAddresses.has(f.walletAddress));
+  const verified=activity.filter(a=>traderById.has(a.traderId)&&activeAdminAddresses.has(a.walletAddress));
+  const groups=new Map<string,typeof verified>();
+  for(const a of verified){const key=`${a.traderId}:${a.walletAddress}`;const rows=groups.get(key)||[];rows.push(a);groups.set(key,rows)}
+  const relationships=[...groups.values()].map(rows=>{
+    const ordered=[...rows].sort((a,b)=>a.observedAt.getTime()-b.observedAt.getTime()),first=ordered[0],last=ordered[ordered.length-1];
+    const trader=traderById.get(last.traderId)!;
+    const buys=ordered.filter(a=>a.action==="BUY"),sells=ordered.filter(a=>a.action==="SELL");
+    const boughtUsd=buys.reduce((n,a)=>n+Number(a.amountUsd??0),0),soldUsd=sells.reduce((n,a)=>n+Number(a.amountUsd??0),0);
+    const exited=last.action==="SELL"&&last.balanceAfterRaw==="0";
+    const state=exited?"EXITED":last.action==="SELL"?"TRIMMED":buys.length>1?"ADDING":"BOUGHT";
+    return {
+      traderId:trader.id,traderName:trader.displayName,handle:trader.handle,avatarUrl:trader.avatarUrl,
+      walletAddress:last.walletAddress,mint:last.mint,state,source:"Admin tracked",stage:"ADMIN_TRACKED",
+      firstBuyAt:buys[0]?.observedAt??null,latestBuyAt:buys[buys.length-1]?.observedAt??null,
+      latestActivityAt:last.observedAt,latestSide:last.action,latestTxHash:last.sourceTx,
+      latestTrimOrSellAt:sells[sells.length-1]?.observedAt??null,
+      boughtUsd,soldUsd,netFlowUsd:boughtUsd-soldUsd,eventCount:ordered.length,
+      remainingPct:last.balanceBeforeRaw&&last.balanceAfterRaw?(()=>{try{const before=BigInt(last.balanceBeforeRaw),after=BigInt(last.balanceAfterRaw);return before>0n?Math.max(0,Math.min(100,Number(after*10000n/before)/100)):null}catch{return null}})():null,
+      holdingVerification:last.balanceAfterRaw!=null?"LAST_OBSERVED_TRANSACTION_BALANCE":"PENDING_CURRENT_BALANCE_VERIFICATION",
+      transactionUrl:chain==="SOLANA"?`https://solscan.io/tx/${last.sourceTx}`:null
+    };
+  }).sort((a,b)=>new Date(b.latestActivityAt).getTime()-new Date(a.latestActivityAt).getTime());
+
+  const summary={
+    distinctTrackedTraders:new Set(relationships.map(r=>r.traderId)).size,
+    distinctTrackedWallets:new Set(relationships.map(r=>r.walletAddress)).size,
+    trackedBuyFlowUsd:relationships.reduce((n,r)=>n+r.boughtUsd,0),
+    trackedSellFlowUsd:relationships.reduce((n,r)=>n+r.soldUsd,0),
+    netTrackedInflowUsd:relationships.reduce((n,r)=>n+r.netFlowUsd,0),
+    activeWallets:relationships.filter(r=>r.state!=="EXITED").length,
+    partialExits:relationships.filter(r=>r.state==="TRIMMED").length,
+    fullExits:relationships.filter(r=>r.state==="EXITED").length,
+    // Rolling-deploy compatibility for a briefly cached older web bundle. These are not candidate
+    // grades; every relationship in this route already passed the Admin-tracked invariant above.
+    memeCloudPicks:relationships.length,elite:0,proven:0,whales:0
+  };
+  const trackedMoney={relationships,summary,sourcePolicy:"ADMIN_VERIFIED_SWAP_ACTIVITY_ONLY",windowHours:24};
+  res.setHeader("cache-control","no-store");
+  res.json({opportunity,flows:verifiedFlows,catalyst,token:token??null,trackedMoney,smartMoney:trackedMoney});
 }));
 
-// ------------------------ SMART WALLETS (public) ------------------------
-// Real evidence only, from packages/discovery's sample-size-aware scoring (shouldPaperTrack
-// requires >=15 observed trades, shouldProve requires >=20 forward signals) -- never a label from
-// one lucky trade. Whale status (when independently verified) is a separate signal from trading skill
-// and is surfaced as its own field, not conflated with copyabilityScore.
-function smartWalletSummary(c:any){
-  const winRatePct=c.sampleTrades>0?Math.round((c.profitableTrades/c.sampleTrades)*1000)/10:null;
-  const meta=(c.metadata??{}) as any;
-  // A label or a stale historical observation is not whale evidence.  Only a
-  // fresh, timestamped balance observation may render a whale badge.
-  const balanceObservedAt=meta.walletBalanceObservedAt??null;
-  const balanceFresh=balanceObservedAt&&Date.now()-new Date(balanceObservedAt).getTime()<=7*24*60*60_000;
-  // Stablecoin capital alone is not meme-whale evidence. The scorer requires fresh, meaningful
-  // meme positions/volume and persists that separate classification.
-  const isWhale=Boolean(meta.isMemeWhale&&String(meta.whaleTier??"").startsWith("WHALE_MEME_"));
-  const whaleTier=isWhale?meta.whaleTier:null;
-  const lastObservedTradeAt=meta.lastObservedTradeAt??null;
-  return {
-    id:c.id,chain:c.chain,address:c.address,stage:c.stage,traderId:c.traderId??null,
-    intelligenceTier:c.stage==="PROVEN"&&Number(meta.skillScore??c.copyabilityScore)>=90&&Number(c.riskScore)<=30&&Number(meta.evidenceCompleteness??0)>=85&&Number(meta.currentFormScore??0)>=60?"ELITE":c.stage==="PROVEN"?"PROVEN":c.stage==="PAPER_TRACKING"?"WATCHING":"CANDIDATE",
-    copyEligible:c.stage==="PROVEN"&&Boolean(c.traderId),
-    isWhale,whaleTier,walletBalanceUsd:balanceFresh?meta.walletBalanceUsd:null,walletBalanceObservedAt:balanceFresh?balanceObservedAt:null,
-    walletType:meta.walletType??"INSUFFICIENT_EVIDENCE",isSmartDegen:Boolean(meta.isSmartDegen),capitalScore:meta.capitalScore??null,typicalMemePositionUsd:meta.typicalMemePositionUsd??null,largestMemePositionUsd:meta.largestMemePositionUsd??null,memeBuyVolume30dUsd:meta.memeBuyVolume30dUsd??null,
-    copyabilityScore:c.copyabilityScore,sourceQualityScore:c.sourceQualityScore,riskScore:c.riskScore,consistencyScore:c.consistencyScore,entryQualityScore:c.entryQualityScore,
-    skillScore:meta.skillScore??null,currentFormScore:meta.currentFormScore??null,activityScore:meta.activityScore??null,forwardHitRatePct:meta.forwardHitRatePct??null,forwardMeanPct:meta.forwardMeanPct??null,distinctTokens30d:meta.distinctTokens30d??null,
-    sampleTrades:c.sampleTrades,profitableTrades:c.profitableTrades,
-    winRatePct,
-    realizedPnlUsd:c.realizedPnlUsd,totalPnlUsd:c.totalPnlUsd,volumeUsd:c.volumeUsd,
-    realizedPnl7dUsd:c.realizedPnl7dUsd??null,winRate7dPct:c.winRate7dPct??null,
-    averageWinnerPct:c.averageWinnerPct??null,averageLoserPct:c.averageLoserPct??null,averageChasePct:c.averageChasePct??null,
-    verifiedRugExposurePct:meta.verifiedRugExposurePct??null,catastrophicLossRatePct:meta.catastrophicLossRatePct??null,insiderRiskPct:c.insiderRiskPct??null,evidenceCompleteness:meta.evidenceCompleteness??null,riskEvidenceCompleteness:meta.riskEvidenceCompleteness??null,
-    performance90d:meta.walletPnl90d?.tradeCount>=10?meta.walletPnl90d:null,earlyEntry:meta.earlyEntryProvenance?.sampleSize>=10?{edgePct:meta.earlyEntryEdgePct,provenance:meta.earlyEntryProvenance}:null,
-    source:c.source,sourceLabel:smartWalletSourceLabel(c,meta),sourceToken:c.sourceToken,discoveryReason:meta.discoveryReason??null,adminDesignation:meta.adminDesignation??null,monitoringPriority:meta.monitoringPriority??null,researchSource:meta.researchSource??null,researchReason:meta.researchReason??null,researchNotes:meta.researchNotes??null,researchAddedAt:meta.researchAddedAt??null,researchProvenanceStatus:meta.researchProvenanceStatus??null,providerStatus:meta.providerStatus??null,providerEvidenceObservedAt:meta.providerEvidenceObservedAt??null,providerEvidenceFresh:Boolean(meta.providerEvidenceFresh),
-    // Never use a database update/scoring timestamp as blockchain activity.
-    firstDiscoveredAt:c.createdAt,lastScoredAt:c.lastScoredAt,lastActivityAt:lastObservedTradeAt,
-    paperStartedAt:c.paperStartedAt,provenAt:c.provenAt
-  };
-}
-function smartWalletSourceLabel(c:any,meta:any){
-  if(meta?.curatedByPlatform||c.source==="MEMECLOUD_CURATED")return "MemeCloud Pick";
-  if(c.source==="PLATFORM_ADDED")return "Platform Added";
-  if(c.source==="TRADER_LEADERBOARD")return "Highly Followed Trader";
-  if(c.source==="TRUSTED_WALLET_NEIGHBORHOOD")return "Platform Tracked";
-  if(c.source==="PUMPFUN_HIGH_EARNER")return "Pump.fun High Earner";
-  if(c.source==="MANUAL_REVIEW")return "Manual Review";
-  if(c.source==="LAUNCHPAD_COUNTERPARTY")return "Launchpad Trader Lead";
-  return "Platform Tracked";
-}
-function rawBalanceState(raw:any){
-  if(raw==null||raw==="")return null;
-  try{return BigInt(String(raw))===0n?"EXITED":"LAST_OBSERVED_HOLDING"}catch{return null}
-}
-// A transaction balance is only an observed-at-that-transaction balance. It is
-// intentionally never presented as a current holding without a later balance
-// verification. This keeps wallet activity useful without inventing custody.
-function relationshipRows(flows:any[],signals:any[],candidateByAddress:Map<string,any>,tokens=new Map<string,any>()){
-  const grouped=new Map<string,any[]>();for(const f of flows){const k=`${f.walletAddress}:${f.mint}`;const a=grouped.get(k)??[];a.push(f);grouped.set(k,a);}
-  const byTx=new Map(signals.map((s:any)=>[`${s.sourceWallet}:${s.sourceTx}:${s.action}`,s]));
-  return [...grouped.values()].map(rows=>{
-    const ordered=[...rows].sort((a,b)=>a.observedAt.getTime()-b.observedAt.getTime()),last=ordered.at(-1)!;
-    const candidate=candidateByAddress.get(last.walletAddress),meta=candidate?.metadata??{};
-    const signal=byTx.get(`${last.walletAddress}:${last.txHash}:${last.side}`);
-    const balanceState=rawBalanceState(signal?.sourceTokenBalanceAfterRaw);
-    const buys=ordered.filter(x=>x.side==="BUY"),sells=ordered.filter(x=>x.side==="SELL");
-    const soldPct=signal?.sourceSoldPct==null?null:Number(signal.sourceSoldPct);
-    const state=balanceState??(last.side==="BUY"?(buys.length>1?"ADDED":"BOUGHT"):(soldPct!=null&&soldPct>=95?"EXITED":soldPct!=null&&soldPct>=75?"MOSTLY_EXITED":"TRIMMED"));
-    const boughtUsd=buys.reduce((n,x)=>n+Number(x.amountUsd??0),0),soldUsd=sells.reduce((n,x)=>n+Number(x.amountUsd??0),0);
-    return {chain:last.chain,mint:last.mint,token:tokens.get(last.mint)??null,walletAddress:last.walletAddress,label:candidate?.label??null,source:candidate?smartWalletSourceLabel(candidate,meta):"Tracked wallet",stage:candidate?.stage??"UNVERIFIED",skillScore:candidate?Number(meta.skillScore??candidate.copyabilityScore??0):null,isWhale:candidate?smartWalletSummary(candidate).isWhale:false,firstBuyAt:buys[0]?.observedAt??null,latestBuyAt:buys.at(-1)?.observedAt??null,latestActivityAt:last.observedAt,latestSide:last.side,latestTxHash:last.txHash,latestTrimOrSellAt:sells.at(-1)?.observedAt??null,boughtUsd,soldUsd,netFlowUsd:boughtUsd-soldUsd,eventCount:ordered.length,state,remainingPct:soldPct==null?null:Math.max(0,100-soldPct),lastObservedBalanceRaw:signal?.sourceTokenBalanceAfterRaw??null,balanceObservedAt:signal?.sourceTokenBalanceAfterRaw!=null?signal.observedAt:null,holdingVerification:balanceState?"LAST_OBSERVED_TRANSACTION_BALANCE":"PENDING_CURRENT_BALANCE_VERIFICATION",transactionUrl:last.chain==="SOLANA"?`https://solscan.io/tx/${last.txHash}`:null};
-  }).sort((a,b)=>b.latestActivityAt.getTime()-a.latestActivityAt.getTime());
-}
+// ------------------------ RETIRED SMART-WALLET COMPATIBILITY ------------------------
+// No candidate lifecycle or scoring helpers remain active. Old clients get an explicit retirement
+// response rather than silently rebuilding the old architecture.
 app.get("/v1/smart-wallets", (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/traders"}));
 app.get("/v1/smart-wallets/:id", (_req,res) => res.status(410).json({error:"RETIRED",replacement:"/v1/traders/:id"}));
 

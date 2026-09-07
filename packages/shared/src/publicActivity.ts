@@ -103,13 +103,16 @@ export function isPublicTradeEvent(input:{
 
   const live=priorTrades.filter(t=>incoming.observedAt.getTime()-t.observedAt.getTime()<SESSION_IDLE_MS);
   // 1. First verified buy of a session always alerts immediately.
-  if(!live.length)return {push:true,reason:incoming.action==="BUY"?"FIRST_VERIFIED_BUY":"FIRST_VERIFIED_SELL",aggregate:false};
+  if(!live.length){
+    if(incoming.action==="SELL"&&input.sellAlertsEnabled===false)return {push:false,reason:"SELL_ALERTS_DISABLED",aggregate:true};
+    return {push:true,reason:incoming.action==="BUY"?"FIRST_VERIFIED_BUY":"FIRST_VERIFIED_SELL",aggregate:false};
+  }
 
   const prior=summariseSession(live,incoming.observedAt);
   const beforeRaw=BigInt(incoming.balanceBeforeRaw??"0"),afterRaw=BigInt(incoming.balanceAfterRaw??"0");
 
   // 3. Breakthrough events -- always push even if the previous alert was seconds ago.
-  if(incoming.action==="SELL"&&afterRaw===0n)return {push:true,reason:"FULL_EXIT",aggregate:false};
+  if(incoming.action==="SELL"&&afterRaw===0n)return {push:input.sellAlertsEnabled!==false,reason:"FULL_EXIT",aggregate:input.sellAlertsEnabled===false};
   if(incoming.action==="SELL"&&beforeRaw>0n&&afterRaw*2n<=beforeRaw)
     return {push:input.sellAlertsEnabled!==false,reason:"MAJOR_SELL_50PCT_PLUS",aggregate:input.sellAlertsEnabled===false};
   if((input.otherTrackedTradersOnMint??0)>=2)return {push:true,reason:"MULTI_TRADER_CONVERGENCE",aggregate:false};

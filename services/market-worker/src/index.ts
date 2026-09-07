@@ -87,7 +87,7 @@ async function trackedMints(){
   const [positions,qualityWallets,signals]=await Promise.all([
     db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
     // Wallet-first v1: the priced universe follows Admin-curated wallets, not candidate stages.
-    db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1000}),
+    db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1000}),
     db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"},take:1500})
   ]);
   const addresses=[...new Set(qualityWallets.map((w:any)=>w.address))];

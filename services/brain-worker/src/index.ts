@@ -25,7 +25,7 @@ const TICK_STALE_MS=5*60_000;
 async function systemTrader(){
   const handle="memecloud-global-brain";
   let t=await db.trader.findUnique({where:{handle}});
-  if(!t)t=await db.trader.create({data:{handle,displayName:"MemeCloud Global Brain",bio:"Autonomous wallet-first smart-money intelligence",category:"GLOBAL_BRAIN",verification:"VERIFIED",kind:"PLATFORM",enabled:true,featured:true,recommended:true,trackingStatus:"PROVEN"}});
+  if(!t)t=await db.trader.create({data:{handle,displayName:"MemeCloud Global Brain",bio:"Autonomous Admin-trader flow intelligence",category:"GLOBAL_BRAIN",verification:"VERIFIED",kind:"PLATFORM",enabled:true,featured:true,recommended:true,trackingStatus:"TRACKING"}});
   return t;
 }
 async function ensureBrainFollowers(traderId:string){
@@ -60,7 +60,7 @@ async function context(chain:Chain,mint:string,s:any){
   // Wallet-first v1: smart-money authority comes from Admin curation, not from an algorithmic
   // candidate stage. An Admin-added, enabled platform wallet is the ONLY thing that votes here.
   const qualityCandidates=flowAddresses.length?(await db.traderWallet.findMany({
-    where:{chain,address:{in:flowAddresses},verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},
+    where:{chain,address:{in:flowAddresses},verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},
     select:{address:true}
   })).map((w:any)=>({address:w.address,stage:"ADMIN_CURATED",source:"ADMIN",copyabilityScore:0,metadata:{}})):[];
   const recentSet=new Set(recentAddresses);
@@ -213,7 +213,7 @@ async function tick(){
     const triggerWindowMin=Math.max(5,Number(cfg?.walletTriggerWindowMinutes??30));
     const sinceTrigger=new Date(Date.now()-triggerWindowMin*60_000);
     const [qualityWallets,openPositions]=await Promise.all([
-      db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1500}),
+      db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1500}),
       db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{chain:true,mint:true},take:2000})
     ]);
     const qualityAddresses=[...new Set(qualityWallets.map(w=>w.address))];
@@ -258,7 +258,7 @@ async function tick(){
       const newWhaleActivity=whaleCount>=1&&whaleCount>priorNotifiedWhaleCount;
       // Human explanation mirrors the same quality-weighted convergence that now feeds scoring --
       // no split-brain where UI says "smart money" but the trading decision silently ignores it.
-      const reasons=newConvergence?[`${convergentCount} tracked smart wallet(s) entered within 10 minutes${provenConvergentCount?` (${provenConvergentCount} Admin-tracked)`:""}`,...d.reasons]:d.reasons;
+      const reasons=newConvergence?[`${convergentCount} Admin-tracked trader wallet(s) bought within 10 minutes${provenConvergentCount?` (${provenConvergentCount} Admin-tracked)`:""}`,...d.reasons]:d.reasons;
       const convergenceStage=classifyWalletConvergence(convergentCount,provenConvergentCount);
       const data:any={symbol:c.token?.symbol,name:c.token?.name,state:d.state,score:d.score,action:d.action,marketCapUsd:s.marketCapUsd,liquidityUsd:s.liquidityUsd,inflow10sUsd:c.evidence.inflow10sUsd,inflow60sUsd:c.evidence.inflow60sUsd,buyers10s:c.evidence.buyers10s,buyers60s:c.evidence.buyers60s,whaleBuyers60s:c.evidence.whaleBuyers60s,knownWhaleBuyers60s:c.evidence.knownWhaleBuyers60s,smartMoneyNetFlow5mUsd:s.smartMoneyNetFlow5mUsd,volumeAcceleration1m:s.volumeAcceleration1m,holderGrowth5mPct:s.holderGrowth5mPct,socialVelocity:s.socialVelocity,drawdownFromRecentPeakPct:c.evidence.drawdownFromRecentPeakPct,survivorScore:d.survivorScore,reasons:reasons as any,evidence:{warnings:d.warnings,catalyst:c.catalyst?.type,convergentCount,provenConvergentCount,convergentWeightedScore,convergenceStage,lastNotifiedConvergentCount:priorNotifiedConvergentCount,platformSignals60s:c.evidence.platformSignals60s,breakdown:d.breakdown,evidenceChannels:d.evidenceChannels,ageMinutes:c.evidence.ageMinutes,smartWalletWeightedScore:convergentWeightedScore} as any,evidenceObservedAt:s.observedAt,lastEvaluatedAt:new Date()};
       const row=await db.globalBrainOpportunity.upsert({where:{chain_mint:{chain:s.chain,mint:s.mint}},create:{chain:s.chain,mint:s.mint,...data},update:data});
@@ -301,53 +301,10 @@ async function tick(){
     await sampleOutcomes();
   }catch(e){errors++;console.error("[brain-worker]",e)}finally{running=false}
 }
-// Platform-watch notifications are product intelligence, not a trading permission. When the owner
-// adds a wallet to the platform watchlist, every active user who has the single master notification
-// switch enabled should hear about that wallet's actual BUY/SELL activity -- even with no wallet,
-// no Auto Trade, and no open browser. Stable delivery keys make the 5-minute restart replay safe.
-let lastWatchlistCheckAt=new Date(Date.now()-5*60_000),watchlistAlerts=0,watchlistErrors=0,watchlistPushes=0;
-let watchedSubscribers:any[]|null=null,watchedSubscribersAt=0;
-async function watchedWalletSubscribers(){
-  if(watchedSubscribers&&Date.now()-watchedSubscribersAt<60_000)return watchedSubscribers;
-  watchedSubscribers=await db.user.findMany({where:{status:"ACTIVE"},select:{id:true,notificationPrefs:true}});
-  watchedSubscribersAt=Date.now();
-  return watchedSubscribers;
-}
-async function notifyWatchedWalletTrade(flow:any,label:string|undefined,tokenSymbol:string|undefined){
-  const side=String(flow.side).toUpperCase()==="SELL"?"sold":"bought";
-  const walletName=label||`${flow.walletAddress.slice(0,4)}…${flow.walletAddress.slice(-4)}`;
-  const token=tokenSymbol||`${flow.mint.slice(0,5)}…${flow.mint.slice(-4)}`;
-  const amount=Number(flow.amountUsd??0)>0?` · ~$${Math.round(Number(flow.amountUsd)).toLocaleString()}`:"";
-  const title=`Watched wallet ${side} ${token}`;
-  const body=`${walletName} ${side} ${token}${amount}`;
-  for(const u of await watchedWalletSubscribers()){
-    if(u.notificationPrefs?.pushEnabled===false)continue;
-    const key=`watched:${flow.chain}:${flow.txHash}:${flow.walletAddress}:${flow.mint}:${u.id}`;
-    await notificationQueue.add("notify",{userId:u.id,type:"WATCHED_WALLET_TRADE",title,body,data:{url:"/app/?view=smart-wallets",chain:flow.chain,mint:flow.mint,walletAddress:flow.walletAddress,txHash:flow.txHash},deliveryKey:key},{jobId:key,removeOnComplete:2000,attempts:3,backoff:{type:"exponential",delay:500}}).then(()=>{watchlistPushes++}).catch(()=>{});
-  }
-}
-async function checkWatchlist(){
-  const since=lastWatchlistCheckAt,now=new Date();
-  lastWatchlistCheckAt=now;
-  try{
-    const watched=(await db.traderWallet.findMany({where:{verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},select:{address:true,trader:{select:{displayName:true}}}})).map((w:any)=>({address:w.address,label:w.trader?.displayName??null,stage:"ADMIN_CURATED"}));
-    if(!watched.length)return;
-    const byAddress=new Map<string,any>(watched.map((w:any)=>[w.address,w]));
-    const flows=await db.chainFlowObservation.findMany({where:{walletAddress:{in:[...byAddress.keys()]},observedAt:{gt:since,lte:now}},orderBy:{observedAt:"asc"},take:1000});
-    const mints=[...new Set(flows.map(f=>f.mint))];
-    const tokens=mints.length?await db.discoveryToken.findMany({where:{mint:{in:mints}},select:{mint:true,symbol:true}}):[];
-    const symbols=new Map<string,string|undefined>(tokens.map((t:any)=>[t.mint,t.symbol??undefined]));
-    for(const f of flows){
-      const watchedWallet=byAddress.get(f.walletAddress);
-      const side=String(f.side).toUpperCase();
-      await db.adminAlert.create({data:{type:`WATCHED_WALLET_${side}`,chain:f.chain,mint:f.mint,walletAddress:f.walletAddress,message:`Watched wallet ${f.walletAddress.slice(0,4)}…${f.walletAddress.slice(-4)} ${side==="SELL"?"sold":"entered"} ${symbols.get(f.mint)||f.mint}${f.amountUsd?` (~$${Math.round(f.amountUsd).toLocaleString()})`:""}`,metadata:{amountUsd:f.amountUsd,txHash:f.txHash,side}}}).catch(()=>{});
-      await notifyWatchedWalletTrade(f,watchedWallet?.label??undefined,symbols.get(f.mint)).catch(e=>console.error("[brain-worker] watched-wallet notify",e));
-      watchlistAlerts++;
-    }
-  }catch(e){watchlistErrors++;console.error("[brain-worker] watchlist check failed",e)}
-}
+// Raw Admin-wallet trade alerts are owned exclusively by the listener WalletActivity outbox.
+// Global Brain consumes that verified flow for research/execution decisions, but never emits a
+// second raw-wallet notification under a different delivery key.
 const brainLoopMs=Math.max(1_000,Number(process.env.BRAIN_LOOP_MS??3_000));
-startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:brainLoopMs,watchlistAlerts,watchlistPushes,watchlistErrors,lastTickAt,lastEligibleCount}));
+startHeartbeat("global-brain",()=>({scans,opportunities,signals,errors,lastBest,running,loopMs:brainLoopMs,lastTickAt,lastEligibleCount,publicWalletNotificationOwner:"listener-wallet-activity-outbox"}));
 setInterval(()=>void tick(),brainLoopMs);void tick();
-setInterval(()=>void checkWatchlist(),10_000);void checkWatchlist();
 console.log("[brain-worker] Global Brain online");

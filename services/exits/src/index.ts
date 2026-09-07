@@ -9,6 +9,7 @@ import { evaluateExit, evaluateUserProfitPlan, resolveEffectiveTradeSettings, pr
 import { JupiterExecution } from "@memecloud/execution";
 import { PrivySolanaSigner } from "@memecloud/providers";
 import { getConfig } from "@memecloud/config";
+import { unresolvedRiskIncidentWhere } from "./riskIncidentDedup.js";
 
 const redis=new Redis(process.env.REDIS_URL??"redis://localhost:6379",{maxRetriesPerRequest:null});
 const notificationQueue=new Queue("user-notifications",{connection:redis});
@@ -342,7 +343,10 @@ async function tick(){
       // Mongo (only `{isSet:false}` does), which is exactly why the dedup this comment describes
       // was never actually working: `recent` was always null, so a new incident was still created
       // every 3s tick regardless.
-      const recent=await db.riskIncident.findFirst({where:{positionId:p.id,code,resolvedAt:{isSet:false},createdAt:{gte:new Date(Date.now()-10*60_000)}},select:{id:true}}).catch(()=>null);
+      const recent=await db.riskIncident.findFirst({
+        where:unresolvedRiskIncidentWhere(p.id,code,new Date(Date.now()-10*60_000)),
+        select:{id:true}
+      }).catch(()=>null);
       if(!recent)await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code,detail:{message:String(e?.message??e)}}}).catch(()=>{});
     }
   }

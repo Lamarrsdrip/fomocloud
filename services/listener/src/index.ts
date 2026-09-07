@@ -211,7 +211,7 @@ async function refreshWatchlist(){
   // are platform signal sources. User-added public wallets and auto-discovered candidates never
   // enter the platform-wide listener.
   const wallets=await db.traderWallet.findMany({
-    where:{chain:"SOLANA",verified:true,source:"ADMIN",trader:{kind:"PLATFORM",enabled:true}},
+    where:{chain:"SOLANA",verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},
     include:{trader:true}
   });
   const wanted=new Set(wallets.map(w=>w.address));

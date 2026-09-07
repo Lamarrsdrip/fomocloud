@@ -70,7 +70,7 @@ export default function ProfileView({me,setMe,settings,notifications,sessions,se
    <section className="settings-block" id="profile-notifications"><h3>Notifications</h3>
     <div className="switch-row"><div><b>MemeCloud alerts</b><small>{
      !masterNotifications?"Paused — no push alerts will be sent.":
-     pushState==="on"?"On — smart-wallet trades, whales, alpha discoveries, trades and security alerts are included automatically.":
+     pushState==="on"?"On — verified tracked-trader buys, Global Brain trade updates and security alerts are included automatically.":
      pushState==="ios-need-install"?"Add MemeCloud to your Home Screen first to receive iPhone alerts.":
      pushState==="denied"?"Notification permission is blocked on this device.":pushState==="unsupported"?"Push notifications are unavailable in this browser.":"Turn on once — MemeCloud handles the alert types for you."
     }</small></div>
