@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { db } from "@memecloud/db";
 
 const jwtSecret = process.env.AUTH_JWT_SECRET ?? "development-only-change-me";
@@ -15,7 +15,7 @@ export const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 60, standar
 // authenticated account hammering it is both a real-money risk and a way to exhaust the whole
 // platform's shared Jupiter quota (the same 429 pressure fixed in market-worker/discovery-worker
 // this session). Keyed by user, not IP, since this is auth-gated.
-export const tradeLimiter = rateLimit({ windowMs: 60_000, limit: 6, standardHeaders: "draft-7", legacyHeaders: false, keyGenerator:(req:any)=>req.user?.sub||req.ip });
+export const tradeLimiter = rateLimit({ windowMs: 60_000, limit: 6, standardHeaders: "draft-7", legacyHeaders: false, keyGenerator:(req:any)=>req.user?.sub||ipKeyGenerator(req.ip ?? "") });
 
 export function auth(req:Request,res:Response,next:NextFunction) {
   const token=String(req.headers.authorization??"").replace(/^Bearer\s+/i,"");
