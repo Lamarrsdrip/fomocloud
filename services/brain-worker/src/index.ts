@@ -128,7 +128,7 @@ async function maybeSignal(opp:any,trader:any,users:any[]){
 function horizonToleranceMs(h:number){return Math.min(5*60_000,Math.max(15_000,h*1000*0.25))}
 async function sampleOutcomes(){
   const horizons=[5,30,60,300,3600];
-  const rows=await db.globalBrainOpportunity.findMany({where:{createdAt:{gte:new Date(Date.now()-2*60*60_000)}},take:300});
+  const rows=await db.globalBrainOpportunity.findMany({where:{createdAt:{gte:new Date(Date.now()-2*60*60_000)}}});
   for(const o of rows){for(const h of horizons){
     const targetAt=new Date(o.firstSeenAt.getTime()+h*1000);
     if(Date.now()<targetAt.getTime())continue;
@@ -213,19 +213,20 @@ async function tick(){
     const triggerWindowMin=Math.max(5,Number(cfg?.walletTriggerWindowMinutes??30));
     const sinceTrigger=new Date(Date.now()-triggerWindowMin*60_000);
     const [qualityWallets,openPositions]=await Promise.all([
-      db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1500}),
-      db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{chain:true,mint:true},take:2000})
+      db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true}}),
+      db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{chain:true,mint:true}})
     ]);
     const qualityAddresses=[...new Set(qualityWallets.map(w=>w.address))];
     const triggerFlows=qualityAddresses.length?await db.chainFlowObservation.findMany({
       where:{side:"BUY",walletAddress:{in:qualityAddresses},observedAt:{gte:sinceTrigger}},
-      select:{chain:true,mint:true,walletAddress:true},take:4000
+      select:{chain:true,mint:true,walletAddress:true}
     }):[];
     const eligible=new Set<string>([...triggerFlows.map(f=>`${f.chain}:${f.mint}`),...openPositions.map(p=>`${p.chain}:${p.mint}`)]);
     // Wallet-first invariant: Global Brain does not spend cycles ranking arbitrary new mints. A token
     // enters deep research only after a tracked smart wallet bought it (or because real user money is
     // already in an open position and must keep being risk-managed).
-    const snaps=eligible.size?await db.memeMarketSnapshot.findMany({where:{observedAt:{gte:new Date(Date.now()-maxAge)}},orderBy:{observedAt:"desc"},take:800}):[];
+    const eligiblePairs=[...eligible].map(k=>{const i=k.indexOf(":");return {chain:k.slice(0,i) as any,mint:k.slice(i+1)}});
+    const snaps=eligiblePairs.length?await db.memeMarketSnapshot.findMany({where:{observedAt:{gte:new Date(Date.now()-maxAge)},OR:eligiblePairs},orderBy:{observedAt:"desc"}}):[];
     const latest=new Map<string,any>();for(const s of snaps){const k=`${s.chain}:${s.mint}`;if(eligible.has(k)&&!latest.has(k))latest.set(k,s)}
     lastEligibleCount=eligible.size;
     const trader=await systemTrader(),users=await ensureBrainFollowers(trader.id);

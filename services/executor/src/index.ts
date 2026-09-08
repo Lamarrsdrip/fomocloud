@@ -94,6 +94,22 @@ async function userEvent(userId:string,type:string,title:string,body:string,data
 }
 
 
+
+async function acquireRedisLease(redis:any,key:string,ttlMs=180_000,waitMs=0){
+  const token=crypto.randomBytes(16).toString("hex");
+  const deadline=Date.now()+Math.max(0,waitMs);
+  do{
+    const ok=await (redis as any).set(key,token,"PX",ttlMs,"NX");
+    if(ok==="OK")return async()=>{
+      const script='if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end';
+      await (redis as any).eval(script,1,key,token).catch(()=>{});
+    };
+    if(Date.now()>=deadline)break;
+    await new Promise(r=>setTimeout(r,75+Math.floor(Math.random()*75)));
+  }while(true);
+  return null;
+}
+
 async function recoverPrivyHash(referenceId:string){
   if(!privy)return null;
   try{
@@ -121,7 +137,8 @@ async function finalizeLiveBuy(order:any,attemptKey:string,txHash:string,permitt
     // it documents -- never a separate, un-atomic write that could drift from what actually happened.
     // Only written once per real confirmed buy (`already` guards the position create above the same
     // way; this entry is skipped on the idempotent-resume path where it would already exist).
-    ...(already?[]:[db.ledgerEntry.create({data:{userId:follow.userId,type:"BUY_SPEND",amountUsdMicros:usdToMicros(-actualUsd),chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Live copy buy confirmed on-chain, tx ${txHash}`}})])
+    ...(already?[]:[db.ledgerEntry.create({data:{userId:follow.userId,type:"BUY_SPEND",amountUsdMicros:usdToMicros(-actualUsd),chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Live copy buy confirmed on-chain, tx ${txHash}`}})]),
+    ...(already?[]:[db.tradingCashAllocation.update({where:{userId_chain:{userId:follow.userId,chain:"SOLANA"}},data:{availableUsdMicros:{decrement:usdToMicros(actualUsd)},inTradesUsdMicros:{increment:usdToMicros(actualUsd)},lastSyncedAt:new Date(),source:"LIVE_EXECUTION_PENDING_RECONCILE"}})])
   ]);
   if(!already)await userEvent(follow.userId,"TRADE_COPIED",`${signal.trader.displayName}: live trade confirmed`,`Bought $${actualUsd.toFixed(2)} of the token. The transaction is confirmed on Solana.`,{signalId:signal.id,orderId:order.id,txHash,mode:"LIVE"});
   return {actualUsd,actualEntry};
@@ -253,7 +270,12 @@ async function handleSourceSell(signal:any){
       const liveDecision=await db.copyDecision.create({data:{signalId:signal.id,userId,allowed:true,action:"SOURCE_SELL_MIRROR",sourcePriceUsd:signal.sourcePriceUsd,explanation:`Source trader sold ${soldPct.toFixed(1)}%; mirroring that verified fraction with a real on-chain sell.`}});
       let liveClosed=0,livePartial=0,liveFailed=0,liveSkipped=0;
       for(const p of eligiblePositions){
+        const releaseSellLease=await acquireRedisLease(connection,`live:position-sell:${p.id}`,180_000,60_000);
+        if(!releaseSellLease){liveSkipped++;continue}
         try{
+          const freshForSell=await db.position.findUnique({where:{id:p.id}});
+          if(!freshForSell||!(["OPEN","PARTIALLY_CLOSED"] as string[]).includes(freshForSell.status))continue;
+          Object.assign(p,freshForSell,positionUsdFields(freshForSell));
           if(!p.avgEntryPriceUsd||p.avgEntryPriceUsd<=0)continue;
           const remaining=BigInt(p.remainingTokenRaw);
           if(remaining<=0n)continue;
@@ -331,7 +353,7 @@ async function handleSourceSell(signal:any){
         }catch(e:any){
           console.error("[executor] live source-sell mirror failed for position",p.id,e);
           liveFailed++;
-        }
+        }finally{await releaseSellLease()}
       }
       await userEvent(userId,liveFailed?"TRADE_SKIPPED":(liveClosed&&!livePartial?"POSITION_CLOSED":"PROFIT_TAKEN"),
         `${signal.trader.displayName} source sell mirrored live`,
@@ -470,6 +492,10 @@ const worker=new Worker("signals",async job=>{
     }
 
     const allocation=follow.user.cashAllocations.find(a=>a.chain===signal.chain);
+    if(mode==="LIVE"&&(!allocation?.lastSyncedAt||Date.now()-new Date(allocation.lastSyncedAt).getTime()>120_000)){
+      await saveDecision({allowed:false,action:"WAIT_BALANCE_SYNC",reason:"TRADING_CASH_STALE",explanation:"Live entry is waiting for a fresh on-chain USDC reconciliation. No funds were moved."});
+      skippedCount++;continue;
+    }
     const availableUsd=allocation?microsToUsd(allocation.availableUsdMicros):0;
     const currentExposureUsd=open.reduce((a,p)=>a+remainingCostBasisUsd(p),0);
     const tokenMint=signal.outputMint;
@@ -564,7 +590,7 @@ const worker=new Worker("signals",async job=>{
 
       // Rich intelligence is mandatory for an automatic live entry. We never invent missing volume,
       // liquidity, holder, creator or social values.
-      const rich=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:signal.outputMint},orderBy:{observedAt:"desc"}});
+      const rich=await db.memeMarketSnapshot.findFirst({where:{chain:"SOLANA",mint:signal.outputMint,source:"JUPITER+BIRDEYE"},orderBy:{observedAt:"desc"}});
       const richFresh=rich&&Date.now()-rich.observedAt.getTime()<=Number(riskCfg?.maxIntelligenceAgeMs??30_000);
       if(!richFresh){
         await saveDecision({allowed:false,action:"WAIT_DATA",reason:"RICH_INTELLIGENCE_UNAVAILABLE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,explanation:"The executable quote is real, but the liquidity/flow/holder intelligence snapshot is missing or stale. MemeCloud will not invent those inputs."});
@@ -573,7 +599,7 @@ const worker=new Worker("signals",async job=>{
       // Admin curation is the only source-authority input. Performance may refine this later, but
       // the retired SmartWalletCandidate table must not affect real-money entry authority.
       const sourceQuality=70;
-      const intelligence=evaluateEntry({
+      let intelligence=evaluateEntry({
         ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
         priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
         volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,
@@ -620,6 +646,22 @@ const worker=new Worker("signals",async job=>{
           await saveDecision({allowed:false,action:"SKIP",reason:"NO_EXECUTABLE_SELL_ROUTE",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:"The reduced entry size still has no verified executable route back to USDC."});
           skippedCount++;continue;
         }
+        // A reduced order is a different executable setup. Re-run the actual intelligence inputs
+        // that depend on executable size instead of carrying the original verdict forward.
+        intelligence=evaluateEntry({
+          ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,sourceMarketCapUsd:signal.sourceMarketCapUsd??undefined,
+          priceFromSourcePct:actualChase,priceFromEntryPct:0,peakProfitPct:0,drawdownFromPeakPct:0,
+          volume1mUsd:rich.volume1mUsd,volume5mUsd:rich.volume5mUsd,volume15mUsd:rich.volume15mUsd,volumeAcceleration1m:rich.volumeAcceleration1m,volumeAcceleration5m:rich.volumeAcceleration5m,
+          buys1m:rich.buys1m,sells1m:rich.sells1m,buys5m:rich.buys5m,sells5m:rich.sells5m,buyVolume5mUsd:rich.buyVolume5mUsd,sellVolume5mUsd:rich.sellVolume5mUsd,
+          uniqueBuyers1m:rich.uniqueBuyers1m,uniqueBuyers5m:rich.uniqueBuyers5m,uniqueSellers5m:rich.uniqueSellers5m,holderCount:rich.holderCount??undefined,holderGrowth5mPct:rich.holderGrowth5mPct??undefined,top10EffectivePct:rich.top10EffectivePct??undefined,
+          bundledSupplyPct:rich.bundledSupplyPct??undefined,creatorHoldingPct:rich.creatorHoldingPct??undefined,creatorNetSell5mPct:rich.creatorNetSell5mPct??undefined,smartMoneyNetFlow5mUsd:rich.smartMoneyNetFlow5mUsd??undefined,
+          mintAuthorityActive:rich.mintAuthorityActive??undefined,freezeAuthorityActive:rich.freezeAuthorityActive??undefined,token2022DangerousExtension:rich.dangerousExtension??undefined,sellRouteAvailable,executablePriceImpactPct:Math.max(priceImpactPct,reverseImpactPct??0),
+          exitLiquidityForPositionUsd:rich.exitLiquidityUsd??undefined,liquidityChange5mPct:rich.liquidityChange5mPct??undefined,lpRiskScore:rich.lpRiskScore??undefined,socialMentions5m:rich.socialMentions5m??undefined,socialUniqueAuthors5m:rich.socialUniqueAuthors5m??undefined,socialVelocity:rich.socialVelocity??undefined,socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,influencerQualityScore:rich.influencerQualityScore??undefined,narrativeScore:rich.narrativeScore??undefined,sourceTraderStillHolding:true,sourceTraderSoldPct:0
+        },sourceQuality);
+        if(intelligence.action==="SKIP"||intelligence.action==="WAIT_PULLBACK"){
+          await saveDecision({allowed:false,action:intelligence.action,reason:"REDUCED_SIZE_INTELLIGENCE_REJECTED",amountUsd,sourcePriceUsd:sourceExecutionPriceUsd,executablePriceUsd,walletChasePct:actualChase,confidence:intelligence.confidence,explanation:[...intelligence.reasons,...intelligence.warnings].join(" · ")||"The reduced executable setup is no longer qualified."});
+          skippedCount++;continue;
+        }
       }
 
       if(effectiveChase>0 && actualChase>effectiveChase){
@@ -650,6 +692,24 @@ const worker=new Worker("signals",async job=>{
         skippedCount++;continue;
       }
       if(executionState.nextQualifiedSignalAction==="LIVE_TRANSACTION"){
+        const releaseEntryLease=await acquireRedisLease(connection,`live:user-entry:${follow.userId}`,180_000,30_000);
+        if(!releaseEntryLease)throw Object.assign(new Error("USER_LIVE_ENTRY_BUSY"),{code:"USER_LIVE_ENTRY_BUSY"});
+        try{
+        // Re-read money/exposure while holding the per-user lease. This is the authoritative
+        // second check that closes the concurrency window between sizing and actual submission.
+        const [freshAllocation,freshOpenRows]=await Promise.all([
+          db.tradingCashAllocation.findUnique({where:{userId_chain:{userId:follow.userId,chain:signal.chain}}}),
+          db.position.findMany({where:{userId:follow.userId,mode:"LIVE",status:{in:["OPEN","PARTIALLY_CLOSED"]}}})
+        ]);
+        if(!freshAllocation?.lastSyncedAt||Date.now()-freshAllocation.lastSyncedAt.getTime()>120_000){
+          await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"WAIT_BALANCE_SYNC",reason:"TRADING_CASH_STALE",explanation:"Live entry waited for a fresh on-chain USDC reconciliation. No transaction was constructed."}});skippedCount++;continue;
+        }
+        const freshAvailable=microsToUsd(freshAllocation.availableUsdMicros),freshOpen=freshOpenRows.map(p=>({...p,...positionUsdFields(p)}));
+        const freshExposure=freshOpen.reduce((a,p)=>a+remainingCostBasisUsd(p),0);
+        if(freshAvailable+1e-9<amountUsd){await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"INSUFFICIENT_TRADING_CASH",explanation:"Available on-chain USDC changed before submission, so the live buy was cancelled."}});skippedCount++;continue}
+        if(effective.maxConcurrentPositions>0&&freshOpen.length>=effective.maxConcurrentPositions){await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_POSITIONS",explanation:"The open-position limit was reached before live submission."}});skippedCount++;continue}
+        if(effective.maxConcurrentFromTrader>0&&freshOpen.filter(p=>p.sourceTraderId===signal.traderId).length>=effective.maxConcurrentFromTrader){await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"MAX_CONCURRENT_FROM_TRADER",explanation:"The trader position limit was reached before live submission."}});skippedCount++;continue}
+        if(effective.maxTotalExposureUsd>0&&freshExposure+amountUsd>effective.maxTotalExposureUsd+1e-9){await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"MAX_TOTAL_EXPOSURE",explanation:"Total live exposure changed before submission and now exceeds the configured ceiling."}});skippedCount++;continue}
         const permitted=await db.wallet.findFirst({where:{userId:follow.userId,chain:signal.chain,tradingEnabled:true,permissionRef:{not:null},OR:[{permissionExpiry:{isSet:false}},{permissionExpiry:{gt:new Date()}}]}});
         if(!permitted){
           await db.copyDecision.update({where:{id:decision.id},data:{allowed:false,action:"SKIP",reason:"TRADING_PERMISSION_REQUIRED",explanation:"This account has no active delegated trading permission for this chain."}});
@@ -703,6 +763,7 @@ const worker=new Worker("signals",async job=>{
           await db.riskIncident.create({data:{severity:"CRITICAL",scope:"LIVE_EXECUTION",userId:follow.userId,chain:"SOLANA",mint:signal.outputMint,code:String(e?.code??"AMBIGUOUS_LIVE_BUY_ATTEMPT"),detail:{orderId:order.id,message:String(e?.message??e),referenceId:attemptKey.slice(0,64)}}}).catch(()=>{});
           throw e;
         }
+        } finally { await releaseEntryLease(); }
       }
 
       const orderKey=decisionKey(signal.id,follow.userId);

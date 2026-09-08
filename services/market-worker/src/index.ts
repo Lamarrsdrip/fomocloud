@@ -48,7 +48,9 @@ async function reloadConfig(){
 await reloadConfig();
 
 async function tokenMeta(mint:string){
-  const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<60*60_000)return c;
+  // Decimals are immutable and separately shared in Redis, but total supply is mutable. Never
+  // keep market-cap supply frozen for an hour.
+  const c=decimalsCache.get(mint);if(c&&Date.now()-c.at<5*60_000)return c;
   const shared=await sharedRpcBudget.tryAcquire("P2");
   if(!shared.granted){
     sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();
@@ -85,16 +87,16 @@ async function trackedMints(){
   const since=new Date(Date.now()-2*60*60_000);
   dbReads+=3;
   const [positions,qualityWallets,signals]=await Promise.all([
-    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true},take:2000}),
+    db.position.findMany({where:{chain:"SOLANA",status:{in:["OPEN","PARTIALLY_CLOSED"]}},select:{mint:true}}),
     // Wallet-first v1: the priced universe follows Admin-curated wallets, not candidate stages.
-    db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true},take:1000}),
-    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"},take:1500})
+    db.traderWallet.findMany({where:{verified:true,source:"ADMIN",monitoringStatus:"ACTIVE",trader:{kind:"PLATFORM",enabled:true}},select:{address:true}}),
+    db.signal.findMany({where:{chain:"SOLANA",action:"BUY",observedAt:{gte:since}},select:{outputMint:true,sourceWallet:true},orderBy:{observedAt:"desc"}})
   ]);
   const addresses=[...new Set(qualityWallets.map((w:any)=>w.address))];
   if(addresses.length)dbReads++;
   const flows=addresses.length?await db.chainFlowObservation.findMany({
     where:{chain:"SOLANA",side:"BUY",walletAddress:{in:addresses},observedAt:{gte:since}},
-    select:{mint:true,walletAddress:true,amountUsd:true,observedAt:true},orderBy:{observedAt:"desc"},take:2500
+    select:{mint:true,walletAddress:true,amountUsd:true,observedAt:true},orderBy:{observedAt:"desc"}
   }):[];
   const excluded=new Set([usdc,"So11111111111111111111111111111111111111112"]);
   const positionMints=[...new Set(positions.map(p=>p.mint))];
@@ -154,6 +156,18 @@ async function basicSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number
   return snap;
 }
 
+async function tokenSecurity(mint:string){
+  const key=`token-security:SOLANA:${mint}`;const cached=await redis.get(key).catch(()=>null);if(cached){try{return JSON.parse(cached)}catch{}}
+  try{
+    const account:any=await conn.getParsedAccountInfo(new PublicKey(mint),"confirmed");
+    const info=(account?.value?.data as any)?.parsed?.info;if(!info)return {};
+    const extensions=Array.isArray(info.extensions)?info.extensions.map((x:any)=>String(x?.extension??x?.type??x).toLowerCase()):[];
+    const dangerousNames=["transferfeeconfig","transferhook","permanentdelegate","confidentialtransfermint","nontransferable","defaultaccountstate"];
+    const value={mintAuthorityActive:Boolean(info.mintAuthority),freezeAuthorityActive:Boolean(info.freezeAuthority),dangerousExtension:extensions.some((x:string)=>dangerousNames.some(d=>x.replace(/[^a-z]/g,"").includes(d)))};
+    await redis.set(key,JSON.stringify(value),"EX",600).catch(()=>{});return value;
+  }catch{return {}}
+}
+
 async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;priceImpactPct:number}){
   if(!birdeye)return null;
   // Deep structure is not price data.  Cache one complete Birdeye enrichment
@@ -171,6 +185,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
   birdeyeRequests+=4;
   const x=birdeye.normalizeMarket(m,t,h,l);
   const tokenInfo=birdeye.normalizeToken(m);
+  const security=await tokenSecurity(mint);
   // Jupiter's actual executable mark is preferred for price. Birdeye provides the deeper context.
   const observedAt=new Date();
   const snap=await db.memeMarketSnapshot.create({data:{
@@ -182,6 +197,7 @@ async function richSnapshot(mint:string,j:{priceUsd:number;marketCapUsd?:number;
     uniqueBuyers1m:Number(x.uniqueBuyers1m??0),uniqueBuyers5m:Number(x.uniqueBuyers5m??0),uniqueSellers5m:Number(x.uniqueSellers5m??0),
     holderCount:x.holderCount,holderGrowth5mPct:x.holderGrowth5mPct,top10EffectivePct:x.top10EffectivePct,bundledSupplyPct:x.bundledSupplyPct,
     creatorHoldingPct:x.creatorHoldingPct,liquidityChange5mPct:x.liquidityChange5mPct,
+    mintAuthorityActive:security.mintAuthorityActive,freezeAuthorityActive:security.freezeAuthorityActive,dangerousExtension:security.dangerousExtension,
     source:"JUPITER+BIRDEYE",provenance:{jupiter:{priceImpactPct:j.priceImpactPct},birdeye:{marketData:true,tradeData:true,holderProfile:true,exitLiquidity:true}},observedAt
   }});
   await redis.set(`meme:SOLANA:${mint}`,JSON.stringify(snap),"EX",45);

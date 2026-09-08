@@ -179,27 +179,46 @@ async function reconcileDeposits(wallet:{id:string;userId:string;address:string;
   const budget=await sharedRpcBudget.tryAcquire("P2");
   if(!budget.granted){sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();return}
   try{
-    const [state,sigs,currentSlot]=await Promise.all([
+    const owner=new PublicKey(wallet.address);
+    const [state,currentSlot]=await Promise.all([
       db.walletSyncState.findUnique({where:{walletId:wallet.id}}),
-      conn.getSignaturesForAddress(new PublicKey(wallet.address),{limit:100},"confirmed"),
       conn.getSlot("confirmed").catch(()=>null)
     ]);
+    const first=await conn.getSignaturesForAddress(owner,{limit:100},"confirmed");
     depositWalletsScanned++;
-    // Refresh finality/confirmation counts for already-known recent transfers without reparsing.
-    for(const sig of sigs.slice(0,25)){
+    for(const sig of first.slice(0,25)){
       const confirmations=currentSlot===null?1:Math.max(1,Math.min(2_147_483_647,currentSlot-Number(sig.slot)+1));
-      await db.deposit.updateMany({where:{walletId:wallet.id,txHash:sig.signature},data:{confirmations,lastCheckedAt:new Date(),...(sig.confirmationStatus==="finalized"?{status:"FINALIZED",finalizedAt:new Date()}: {})}});
+      await db.deposit.updateMany({where:{walletId:wallet.id,txHash:sig.signature},data:{confirmations,lastCheckedAt:new Date(),...(sig.confirmationStatus==="finalized"?{status:"FINALIZED",finalizedAt:new Date()}:{})}});
     }
-    const cursorIndex=state?.lastScannedSignature?sigs.findIndex(s=>s.signature===state.lastScannedSignature):-1;
-    // On first deployment index a bounded recent history. Old records are useful in Wallet history
-    // but deliberately do not send surprise notifications; recordDeposit only notifies <10m rows.
-    const unseen=(state?.lastScannedSignature?(cursorIndex>=0?sigs.slice(0,cursorIndex):sigs):sigs.slice(0,50)).filter(s=>!s.err).reverse();
-    for(const sig of unseen){
+
+    let unseen:any[]=[];
+    if(!state?.lastScannedSignature){
+      // First tracking pass intentionally indexes only recent history; this is a baseline policy,
+      // not an outage catch-up path.
+      unseen=first.slice(0,50);
+    }else{
+      let page=first;
+      while(page.length){
+        const cursorIndex=page.findIndex(s=>s.signature===state.lastScannedSignature);
+        if(cursorIndex>=0){unseen.push(...page.slice(0,cursorIndex));break}
+        unseen.push(...page);
+        if(page.length<100)break;
+        const nextBudget=await sharedRpcBudget.tryAcquire("P2");
+        if(!nextBudget.granted){sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();throw new Error("SHARED_RPC_BUDGET_DEFERRED")}
+        page=await conn.getSignaturesForAddress(owner,{before:page[page.length-1].signature,limit:100},"confirmed");
+      }
+    }
+
+    for(const sig of unseen.filter(s=>!s.err).reverse()){
       const callBudget=await sharedRpcBudget.tryAcquire("P2");if(!callBudget.granted){sharedBudgetDenied++;lastSharedBudgetDenyAt=Date.now();throw new Error("SHARED_RPC_BUDGET_DEFERRED")}
-      const tx=await conn.getParsedTransaction(sig.signature,{commitment:"confirmed",maxSupportedTransactionVersion:0});
-      if(tx)await recordDeposit(wallet,sig,tx,currentSlot);
+      let tx:any=null;
+      for(const wait of [0,150,500,1200]){if(wait)await new Promise(r=>setTimeout(r,wait));tx=await conn.getParsedTransaction(sig.signature,{commitment:"confirmed",maxSupportedTransactionVersion:0});if(tx)break}
+      // Never advance the durable cursor past an unresolved transaction. Already-recorded earlier
+      // rows are idempotent, so retrying the whole gap is safe and lossless.
+      if(!tx)throw Object.assign(new Error("DEPOSIT_TX_TEMPORARILY_UNAVAILABLE"),{code:"DEPOSIT_TX_TEMPORARILY_UNAVAILABLE",signature:sig.signature});
+      await recordDeposit(wallet,sig,tx,currentSlot);
     }
-    const newest=sigs[0];
+    const newest=first[0];
     await db.walletSyncState.upsert({where:{walletId:wallet.id},create:{walletId:wallet.id,lastScannedSignature:newest?.signature,lastScannedSlot:newest?BigInt(newest.slot):undefined,lastSuccessfulAt:new Date()},update:{lastScannedSignature:newest?.signature,lastScannedSlot:newest?BigInt(newest.slot):undefined,lastSuccessfulAt:new Date(),lastError:null,lastErrorAt:null}});
   }catch(e:any){
     depositScanErrors++;if(isRateLimitErr(e)){rateLimited=true;lastRateLimitAt=Date.now()}
@@ -207,11 +226,19 @@ async function reconcileDeposits(wallet:{id:string;userId:string;address:string;
   }
 }
 function isRateLimitErr(e:any):boolean{return /429|too many requests|rate.?limit/i.test(String(e?.message??e??""))}
+async function allSolanaWallets(){
+  const out:any[]=[];let cursor:string|undefined;
+  do{
+    const page=await db.wallet.findMany({where:{chain:"SOLANA"},select:{id:true,userId:true,address:true,createdAt:true},orderBy:{id:"asc"},take:1000,...(cursor?{cursor:{id:cursor},skip:1}:{})});
+    out.push(...page);if(page.length<1000)break;cursor=page[page.length-1]?.id;
+  }while(cursor);
+  return out;
+}
 async function cycle(){
   if(running&&Date.now()-runningSince<CYCLE_STALE_MS)return; running=true;runningSince=Date.now(); const started=Date.now();
   try{
     await reloadConfig().catch(e=>console.error("[balance-worker] config reload failed, keeping previous connection",e));
-    const wallets=await db.wallet.findMany({where:{chain:"SOLANA"},select:{id:true,userId:true,address:true,createdAt:true},take:10_000,orderBy:{createdAt:"asc"}});
+    const wallets=await allSolanaWallets();
     // A user may link multiple Solana wallets. Sum is handled by grouping before syncing.
     const byUser=new Map<string,string[]>();
     for(const w of wallets){const a=byUser.get(w.userId)??[];a.push(w.address);byUser.set(w.userId,a)}

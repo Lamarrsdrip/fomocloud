@@ -83,8 +83,23 @@ async function reconcile(signature:string,owner:string,inputMint:string,outputMi
   return {actualInputRaw:(-input).toString(),actualOutputRaw:output.toString()};
 }
 
+async function exitRouteProbe(p:any){
+  const remaining=String(p.remainingTokenRaw??"0");if(BigInt(remaining)<=0n)return {available:false,impact:100};
+  const key=`exit-route-probe:${p.id}:${remaining}`;
+  const cached=await redis.get(key).catch(()=>null);if(cached){try{return JSON.parse(cached)}catch{}}
+  try{
+    const frozen=(p.tradeSettingsSnapshot&&typeof p.tradeSettingsSnapshot==="object")?p.tradeSettingsSnapshot as any:null;
+    const q=await jupiter.quote({inputMint:p.mint,outputMint:usdc,amountRaw:remaining,slippageBps:Number(frozen?.maxSlippageBps??execCfg?.exitSlippageBps??700)});
+    const out=Boolean(q.outAmount&&BigInt(q.outAmount)>0n),impact=Math.abs(Number(q.priceImpactPct??0));
+    const value={available:out,impact:Number.isFinite(impact)?impact:100};await redis.set(key,JSON.stringify(value),"EX",15).catch(()=>{});return value;
+  }catch(e:any){
+    if(e?.code==="INVALID_QUOTE_RESPONSE"){const value={available:false,impact:100};await redis.set(key,JSON.stringify(value),"EX",10).catch(()=>{});return value}
+    return null;
+  }
+}
+
 async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
-  const rich=await db.memeMarketSnapshot.findFirst({where:{chain:p.chain,mint:p.mint},orderBy:{observedAt:"desc"}});
+  const rich=await db.memeMarketSnapshot.findFirst({where:{chain:p.chain,mint:p.mint,source:"JUPITER+BIRDEYE"},orderBy:{observedAt:"desc"}});
   if(!rich||Date.now()-rich.observedAt.getTime()>maxSnapshotAge)return null;
   const entry=Number(p.avgEntryPriceUsd);
   const peak=Math.max(Number(p.peakPriceUsd??entry),current);
@@ -92,6 +107,7 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
   const peakProfit=((peak-entry)/entry)*100;
   const recentSourceSell=await db.signal.findFirst({where:{traderId:p.sourceTraderId,chain:p.chain,action:"SELL",inputMint:p.mint,observedAt:{gt:new Date(Date.now()-15*60_000)}},orderBy:{observedAt:"desc"},select:{sourceSoldPct:true}});
   const sourceSold=recentSourceSell?.sourceSoldPct==null?undefined:Number(recentSourceSell.sourceSoldPct);
+  const route=await exitRouteProbe(p);if(!route)return null;
   return {
     ageMinutes:rich.ageMinutes,liquidityUsd:rich.liquidityUsd,marketCapUsd:rich.marketCapUsd??undefined,
     priceFromEntryPct:profit,peakProfitPct:peakProfit,drawdownFromPeakPct:priceDrawdownFromPeakPct(peak,current),
@@ -105,7 +121,7 @@ async function richMarket(p:any,current:number):Promise<MarketSnapshot|null>{
     creatorHoldingPct:rich.creatorHoldingPct??undefined,creatorNetSell5mPct:rich.creatorNetSell5mPct??undefined,
     smartMoneyNetFlow5mUsd:rich.smartMoneyNetFlow5mUsd??undefined,mintAuthorityActive:rich.mintAuthorityActive??undefined,
     freezeAuthorityActive:rich.freezeAuthorityActive??undefined,token2022DangerousExtension:rich.dangerousExtension??undefined,
-    sellRouteAvailable:true,executablePriceImpactPct:0,exitLiquidityForPositionUsd:rich.exitLiquidityUsd??undefined,
+    sellRouteAvailable:route.available,executablePriceImpactPct:route.impact,exitLiquidityForPositionUsd:rich.exitLiquidityUsd??undefined,
     liquidityChange5mPct:rich.liquidityChange5mPct??undefined,lpRiskScore:rich.lpRiskScore??undefined,
     socialMentions5m:rich.socialMentions5m??undefined,socialUniqueAuthors5m:rich.socialUniqueAuthors5m??undefined,
     socialVelocity:rich.socialVelocity??undefined,socialSentiment:rich.socialSentiment??undefined,socialSpamRatio:rich.socialSpamRatio??undefined,
@@ -149,6 +165,22 @@ async function findEntryDecisionId(p:any){
   return o?.decisionId??null;
 }
 
+
+
+async function acquireRedisLease(redis:any,key:string,ttlMs=180_000,waitMs=0){
+  const token=crypto.randomBytes(16).toString("hex");
+  const deadline=Date.now()+Math.max(0,waitMs);
+  do{
+    const ok=await (redis as any).set(key,token,"PX",ttlMs,"NX");
+    if(ok==="OK")return async()=>{
+      const script='if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end';
+      await (redis as any).eval(script,1,key,token).catch(()=>{});
+    };
+    if(Date.now()>=deadline)break;
+    await new Promise(r=>setTimeout(r,75+Math.floor(Math.random()*75)));
+  }while(true);
+  return null;
+}
 
 async function recoverPrivyExitHash(referenceId:string){
   if(!signer)return null;
@@ -274,7 +306,9 @@ async function tick(){
   // unavailable on Prisma+MongoDB). positionUsdFields() converts them to plain numbers under their
   // original names right here, once, so every line below -- already correct, already tested --
   // reads exactly the same shape it always has.
-  const positionRows=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},take:1000});scanned+=positionRows.length;
+  let positionCursor:string|undefined;
+  do{
+  const positionRows=await db.position.findMany({where:{status:{in:["OPEN","PARTIALLY_CLOSED"]}},orderBy:{id:"asc"},take:500,...(positionCursor?{cursor:{id:positionCursor},skip:1}:{})});scanned+=positionRows.length;
   const positions=positionRows.map(p=>({...p,...positionUsdFields(p)}));
   for(const p of positions){
     try{
@@ -285,12 +319,9 @@ async function tick(){
       if(original<=0n||remaining<=0n)continue;
       await db.position.update({where:{id:p.id},data:{currentPriceUsdMicros:usdToMicros(current),peakPriceUsdMicros:usdToMicros(Math.max(p.peakPriceUsd??entry,current)),lastMarkedAt:new Date()}});
       const market=await richMarket({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)},current);
-      if(!market){
-        // No fabricated flow/holder/liquidity data. Mark-to-market continues, but automatic adaptive
-        // exits wait for a fresh rich snapshot. A configured emergency source-sell path remains separate.
-        const remainingCost=p.costUsd*frac(remaining,original);const value=remainingCost*(current/entry);
-        await db.position.update({where:{id:p.id},data:{unrealizedPnlUsdMicros:usdToMicros(value-remainingCost)}});stale++;continue;
-      }
+      // Rich market intelligence is optional for adaptive exits. Deterministic user protection
+      // (SL/TP/capital recovery/trailing) continues from the genuine executable mark regardless.
+      if(!market)stale++;
       const state=await positionState({...p,peakPriceUsd:Math.max(p.peakPriceUsd??entry,current)});
       const [userSettings,follow]=await Promise.all([
         db.globalTradingSettings.findUnique({where:{userId:p.userId}}),
@@ -305,8 +336,8 @@ async function tick(){
         p.tradeSettingsSnapshot=effective;
       }
       const profitPct=((current-entry)/entry)*100;
-      const drawdownFromPeakPct=priceDrawdownFromPeakPct(current,Math.max(p.peakPriceUsd??entry,current));
-      const adaptive=evaluateExit(market,state);
+      const drawdownFromPeakPct=priceDrawdownFromPeakPct(Math.max(p.peakPriceUsd??entry,current),current);
+      const adaptive=market?evaluateExit(market,state):{action:"HOLD",reason:"Adaptive intelligence unavailable; deterministic user protection remains active",trailPct:0,trend:"COOLING"};
       let userPlan:any=evaluateUserProfitPlan(effective,{profitPct,drawdownFromPeakPct},state);
       // Capital recovery needs the exact fraction of CURRENT position value that returns the still-
       // unrecovered principal; the shared planner intentionally emits a zero-sized marker here.
@@ -324,7 +355,10 @@ async function tick(){
       const emergencyAdaptive=adaptive.action==="EXIT" && /Emergency protection|liquidity|sell route|mint|freeze|dangerous|Source trader exited|broke down/i.test(adaptive.reason);
       const instruction:any=emergencyAdaptive?adaptive:(userPlan.action!=="HOLD"?userPlan:adaptive);
       if(p.mode==="SIMULATION")await applySimulationExit(p,current,instruction);
-      else if(instruction.action!=="HOLD")await executeLiveExit({...p,tradeSettingsSnapshot:effective},instruction);
+      else if(instruction.action!=="HOLD"){
+        const releaseSellLease=await acquireRedisLease(redis,`live:position-sell:${p.id}`,180_000,0);
+        if(releaseSellLease){try{await executeLiveExit({...p,tradeSettingsSnapshot:effective},instruction)}finally{await releaseSellLease()}}
+      }
       const freshRaw=await db.position.findUnique({where:{id:p.id}});if(!freshRaw)continue;
       const fresh={...freshRaw,...positionUsdFields(freshRaw)};
       const rr=BigInt(fresh.remainingTokenRaw),remainingCost=fresh.costUsd*frac(rr,BigInt(fresh.entryTokenRaw)),value=remainingCost*(current/entry);
@@ -350,6 +384,8 @@ async function tick(){
       if(!recent)await db.riskIncident.create({data:{severity:"CRITICAL",scope:"EXIT_ENGINE",userId:p.userId,chain:p.chain,mint:p.mint,positionId:p.id,code,detail:{message:String(e?.message??e)}}}).catch(()=>{});
     }
   }
+  if(positionRows.length<500)break;positionCursor=positionRows[positionRows.length-1]?.id;
+  }while(positionCursor);
 }
 async function guardedTick(){if(ticking&&Date.now()-tickingSince<TICK_STALE_MS)return;ticking=true;tickingSince=Date.now();try{await tick()}catch(e){errors++;console.error("[exits]",e)}finally{ticking=false}}
 startHeartbeat("exits",()=>({scanned,marked,stale,errors,profitEvents,liveSubmitted,liveConfirmed,ticking,adaptiveExit:true,signerConfigured:Boolean(signer)}));

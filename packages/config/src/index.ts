@@ -60,7 +60,7 @@ export async function isLiveTradingEnabled(): Promise<boolean> {
 const EXECUTION_HEARTBEAT_MAX_AGE_MS=45_000;
 const EXECUTION_PROVIDER_HEALTH_MAX_AGE_MS=60*60_000;
 const EXECUTION_CHAIN_DATA_MAX_AGE_MS=5*60_000;
-const EXECUTION_WORKERS=["executor","exits","market-worker","solana-listener"] as const;
+const EXECUTION_WORKERS=["executor","exits","market-worker","solana-listener","balance-worker"] as const;
 const EXECUTION_PROVIDER_FIELDS={
   marketData:{rpc:["solanaRpc","heliusRpc","fallbackRpc"],helius:["heliusApiKey"]},
   execution:{jupiter:["jupiterBaseUrl","jupiterApiKey"]},

@@ -62,12 +62,13 @@ export function resolveEffectiveTradeSettings(global:any,follow:any):EffectiveTr
     maxTotalExposureUsd:Math.max(0,num(pick("maxTotalExposureUsd",0),0)),
     maxConcurrentPositions:Math.max(0,Math.floor(num(g?.maxConcurrentPositions,0))),
     maxConcurrentFromTrader:Math.max(0,Math.floor(num(custom?follow?.maxConcurrentFromTrader:0,0))),
-    maxSlippageBps:Math.round(clamp(num(pick("maxSlippageBps",1500),1500),1,10000)),
+    // Platform hard ceiling: a user setting can never authorize effectively-unbounded execution.
+    maxSlippageBps:Math.round(clamp(num(pick("maxSlippageBps",1500),1500),1,5000)),
     maxChasePct:Math.max(0,num(custom?follow?.maxChasePct:0,0)),
     minLiquidityUsd:Math.max(0,num(custom?follow?.minLiquidityUsd:0,0)),
     copyAdditionalBuys:custom?bool(follow?.copyAdditionalBuys,true):true,
     copyReentries:custom?bool(follow?.copyReentries,true):true,
-    stopLossPct:custom&&follow?.stopLossPct!==null&&follow?.stopLossPct!==undefined?Math.max(0,num(follow.stopLossPct,0)):null,
+    stopLossPct:(()=>{const raw=pick("stopLossPct",null);if(raw===null||raw===undefined||raw==="")return null;const n=num(raw,0);return n>0?Math.max(0.01,n):null})(),
     takeProfitMode:tpMode(pick("takeProfitMode","SIMPLE")),
     simpleTakeProfitPct:Math.max(0.01,num(pick("simpleTakeProfitPct",legacyTp),legacyTp)),
     simpleSellPct:clamp(num(pick("simpleSellPct",100),100),0.01,100),
@@ -114,6 +115,11 @@ function sellOriginalPctAsCurrent(remainingPct:number,originalPct:number,runnerF
 export function evaluateUserProfitPlan(settings:EffectiveTradeSettings,market:UserProfitMarket,state:UserProfitState):UserProfitInstruction{
   const profit=Number(market.profitPct),remaining=Math.max(0,Number(state.remainingPct));
   if(!Number.isFinite(profit)||remaining<=0)return {action:"HOLD",reason:"No active position quantity"};
+
+  // Stop-loss is a real protective instruction, not display-only configuration. It outranks
+  // profit harvesting/trailing because it limits downside on whatever quantity still remains.
+  if(settings.stopLossPct!==null&&settings.stopLossPct>0&&profit<=-settings.stopLossPct)
+    return {action:"EXIT",sellPct:100,tag:"USER_STOP_LOSS",reason:`User stop-loss reached -${settings.stopLossPct.toFixed(1)}%`};
 
   // A user-defined trail protects whatever remains, including the runner.
   if(settings.trailingEnabled&&state.peakProfitPct>=settings.trailingActivationPct&&market.drawdownFromPeakPct>=settings.trailingGivebackPct)

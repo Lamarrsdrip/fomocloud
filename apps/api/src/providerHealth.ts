@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { getConfig, fingerprintOf, type ProviderRecord } from "@memecloud/config";
 
 // A single raw test attempt, before a config fingerprint is attached (see withFingerprints below).
@@ -130,8 +131,18 @@ async function testX(cfg:any):Promise<TestResult>{
   const state=classifyHttp(r!.status);
   return result(state,stateMessage(state,"X API",r!.status,state==="INVALID_CREDENTIALS"?"Check the bearer token.":undefined),{httpStatus:r!.status,latencyMs});
 }
+function privyAuthorizationPublicKey(raw:unknown){
+  const value=String(raw??"").trim();if(!value)return null;
+  const candidates=[value];
+  try{const decoded=Buffer.from(value,"base64").toString("utf8");if(decoded.includes("PRIVATE KEY"))candidates.push(decoded)}catch{}
+  for(const candidate of candidates){try{const key=crypto.createPrivateKey(candidate);const curve=(key.asymmetricKeyDetails as any)?.namedCurve;if(key.asymmetricKeyType!=="ec"||!["prime256v1","P-256","secp256r1"].includes(String(curve)))continue;return crypto.createPublicKey(key).export({type:"spki",format:"der"}).toString("base64")}catch{}}
+  return null;
+}
 async function testPrivy(cfg:any):Promise<TestResult>{
-  if(!cfg?.privyAppId||!cfg?.privyAppSecret) return result("NOT_CONFIGURED","Privy App ID and App Secret are both required.");
+  const missing=["privyAppId","privyAppSecret","privyAuthorizationPrivateKey","privySignerId","privyPolicyId"].filter(f=>!cfg?.[f]);
+  if(missing.length) return result("NOT_CONFIGURED",`Privy delegated signing is incomplete: missing ${missing.join(", ")}.`);
+  const expectedPublicKey=privyAuthorizationPublicKey(cfg.privyAuthorizationPrivateKey);
+  if(!expectedPublicKey) return result("INVALID_CREDENTIALS","Privy authorization private key is not a valid P-256 private key.");
   const auth=Buffer.from(`${cfg.privyAppId}:${cfg.privyAppSecret}`).toString("base64");
   // Privy rejects every request with HTTP 400 unless privy-app-id is ALSO set as its own header,
   // in addition to the Basic-auth credentials — Basic auth alone is not sufficient. This mirrors
@@ -141,9 +152,21 @@ async function testPrivy(cfg:any):Promise<TestResult>{
   const {r,latencyMs,error}=await timedFetch(`https://api.privy.io/v1/apps/${cfg.privyAppId}`,{headers:{authorization:`Basic ${auth}`,"privy-app-id":cfg.privyAppId}});
   if(error) return result(classifyError(error),stateMessage(classifyError(error),"Privy",undefined,error.message),{latencyMs});
   if(r!.ok){
-    const missing=["privyAuthorizationPrivateKey","privySignerId","privyPolicyId"].filter(f=>!cfg?.[f]);
-    const note=missing.length?` Delegated signing also needs ${missing.join(", ")} — the signer ID and policy ID can only be fully verified once a real user connects a wallet and grants them, not from this app-level check.`:" Authorization key, signer ID, and policy ID are saved but can only be fully verified once a real user connects a wallet and grants them (they're scoped per-wallet, not per-app).";
-    return result("CONNECTED",`Privy accepted the App ID and Secret.${note}`,{httpStatus:r!.status,latencyMs});
+    const headers={authorization:`Basic ${auth}`,"privy-app-id":cfg.privyAppId};
+    const [signerCheck,policyCheck]=await Promise.all([
+      timedFetch(`https://api.privy.io/v1/key_quorums/${encodeURIComponent(cfg.privySignerId)}`,{headers}),
+      timedFetch(`https://api.privy.io/v1/policies/${encodeURIComponent(cfg.privyPolicyId)}`,{headers})
+    ]);
+    for(const [label,check] of [["signer key quorum",signerCheck],["policy",policyCheck]] as const){
+      if(check.error)return result(classifyError(check.error),stateMessage(classifyError(check.error),`Privy ${label}`,undefined,check.error.message),{latencyMs:Math.max(latencyMs,check.latencyMs)});
+      if(!check.r?.ok){const state=classifyHttp(check.r?.status??0);return result(state,stateMessage(state,`Privy ${label}`,check.r?.status),{httpStatus:check.r?.status,latencyMs:Math.max(latencyMs,check.latencyMs)})}
+    }
+    const quorum:any=await signerCheck.r!.json().catch(()=>null),policy:any=await policyCheck.r!.json().catch(()=>null);
+    const normalizedExpected=expectedPublicKey.replace(/\s+/g,"");
+    const registered=(quorum?.authorization_keys??[]).some((x:any)=>String(x?.public_key??"").replace(/\s+/g,"")===normalizedExpected);
+    if(!registered)return result("INVALID_CREDENTIALS","Privy signer key quorum exists, but it does not contain the public key derived from MemeCloud's saved authorization private key.",{httpStatus:200,latencyMs});
+    if(String(policy?.chain_type??"").toLowerCase()!=="solana")return result("INVALID_CREDENTIALS","Privy policy exists but is not a Solana policy.",{httpStatus:200,latencyMs});
+    return result("CONNECTED","Privy app credentials, P-256 authorization key, signer key quorum, and Solana policy were all verified with Privy. Active per-wallet delegated permission is checked separately at execution time.",{httpStatus:r!.status,latencyMs:Math.max(latencyMs,signerCheck.latencyMs,policyCheck.latencyMs)});
   }
   // Surface Privy's own sanitized reason instead of guessing "check App ID/Secret" for every 400 —
   // Privy's error body describes what's actually wrong with the request (e.g. a missing header,

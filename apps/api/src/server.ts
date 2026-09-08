@@ -22,6 +22,15 @@ import { runProviderTests } from "./providerHealth.js";
 import { asyncRoute, routeParam, normalizeEmail, validPublicAddress, hashToken, randomToken, safeUser, parseCookies, refreshCookieOptions, audit, ensureUserDefaults, canEnableAutoCopy, reasonText } from "./auth.js";
 import { USDC_SOL, manualTradeTrader, reconcileConfirmedManualSwap, recoverManualPrivyHash } from "./trading.js";
 
+async function acquireApiLease(key:string,ttlMs=180_000,waitMs=30_000){
+  const token=crypto.randomBytes(16).toString("hex"),deadline=Date.now()+Math.max(0,waitMs);
+  do{
+    const ok=await (redis as any).set(key,token,"PX",ttlMs,"NX");
+    if(ok==="OK")return async()=>{try{await (redis as any).eval('if redis.call("get",KEYS[1])==ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end',1,key,token)}catch{}};
+    if(Date.now()>=deadline)return null;await new Promise(r=>setTimeout(r,75));
+  }while(true);
+}
+
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
 
@@ -468,7 +477,14 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
     });
   }
 
+  const releaseManualLease=willTradeLive?await acquireApiLease(`live:user-entry:${req.user.sub}`,180_000,30_000):null;
+  if(willTradeLive&&!releaseManualLease)return res.status(409).json({error:"USER_LIVE_ENTRY_BUSY",message:"Another live entry for this account is still being finalized. No second transaction was constructed."});
   try{
+    if(willTradeLive){
+      const allocation=await db.tradingCashAllocation.findUnique({where:{userId_chain:{userId:req.user.sub,chain:"SOLANA"}}});
+      if(!allocation?.lastSyncedAt||Date.now()-allocation.lastSyncedAt.getTime()>120_000)return res.status(409).json({error:"TRADING_CASH_STALE",message:"Live trading is waiting for a fresh on-chain USDC balance sync."});
+      if(microsToUsd(allocation.availableUsdMicros)+1e-9<amountUsd)return res.status(409).json({error:"INSUFFICIENT_TRADING_CASH",message:"The requested amount is above the currently reconciled USDC trading balance."});
+    }
     const quote=await jupiter.quote({inputMint:USDC_SOL,outputMint:mint,amountRaw,slippageBps:300});
     const conn=new Connection(rpc,"confirmed");
     const supply=await conn.getTokenSupply(new PublicKey(mint),"confirmed");
@@ -520,7 +536,9 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
       if(!position){
         [,position]=await db.$transaction([
           db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
+          db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}}),
+          db.ledgerEntry.create({data:{userId:req.user.sub,type:"BUY_SPEND",amountUsdMicros:usdToMicros(-actualUsd),chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Manual live buy confirmed on-chain, tx ${hash}`}}),
+          db.tradingCashAllocation.update({where:{userId_chain:{userId:req.user.sub,chain:"SOLANA"}},data:{availableUsdMicros:{decrement:usdToMicros(actualUsd)},inTradesUsdMicros:{increment:usdToMicros(actualUsd)},lastSyncedAt:new Date(),source:"LIVE_EXECUTION_PENDING_RECONCILE"}})
         ]);
       }
       await db.liveExecutionAttempt.update({where:{id:attempt.id},data:{status:"CONFIRMED",txHash:hash}});
@@ -557,7 +575,9 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
     const actualEntry=actualUsd/actualTokens;
     const [,position]=await db.$transaction([
       db.order.update({where:{id:order.id},data:{status:"CONFIRMED",txHash:hash,actualInputRaw:fill.actualInputRaw,actualOutputRaw:fill.actualOutputRaw,confirmedAt:new Date()}}),
-      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}})
+      db.position.create({data:{userId:req.user.sub,sourceTraderId:trader.id,chain:"SOLANA",mode:"LIVE",mint,quoteMint:USDC_SOL,entryTxHash:hash,entryInputRaw:fill.actualInputRaw,entryTokenRaw:fill.actualOutputRaw,remainingTokenRaw:fill.actualOutputRaw,costUsdMicros:usdToMicros(actualUsd),avgEntryPriceUsdMicros:usdToMicros(actualEntry),currentPriceUsdMicros:usdToMicros(actualEntry),peakPriceUsdMicros:usdToMicros(actualEntry),takeProfitPct:200,status:"OPEN",lastMarkedAt:new Date()}}),
+      db.ledgerEntry.create({data:{userId:req.user.sub,type:"BUY_SPEND",amountUsdMicros:usdToMicros(-actualUsd),chain:"SOLANA",asset:"USDC",referenceType:"Order",referenceId:order.id,note:`Manual live buy confirmed on-chain, tx ${hash}`}}),
+      db.tradingCashAllocation.update({where:{userId_chain:{userId:req.user.sub,chain:"SOLANA"}},data:{availableUsdMicros:{decrement:usdToMicros(actualUsd)},inTradesUsdMicros:{increment:usdToMicros(actualUsd)},lastSyncedAt:new Date(),source:"LIVE_EXECUTION_PENDING_RECONCILE"}})
     ]);
     await db.liveExecutionAttempt.update({where:{idempotencyKey:attemptKey},data:{status:"CONFIRMED",txHash:hash}});
     order=await db.order.findUnique({where:{id:order.id}});
@@ -566,7 +586,7 @@ app.post("/v1/me/trade/manual", auth, tradeLimiter, asyncRoute(async (req:Authed
     res.status(201).json({ok:true,mode:"LIVE",order,position:{...position,...positionUsdFields(position)}});
   }catch(e:any){
     res.status(409).json({error:e?.code||"QUOTE_UNAVAILABLE",message:e?.message||"A genuine executable quote could not be verified, so MemeCloud did not fabricate a fill."});
-  }
+  }finally{if(releaseManualLease)await releaseManualLease()}
 }));
 app.get("/v1/me/trades", auth, asyncRoute(async (req:AuthedRequest,res) => {
   const orders=await db.order.findMany({

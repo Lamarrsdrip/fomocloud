@@ -80,6 +80,11 @@ foreach ($name in ($Retired + $LegacyAppServices)) {
   }
 }
 
+# Enforce the MongoDB sparse/unique indexes Prisma cannot declare for nullable fields. These are
+# execution/idempotency invariants, not optional maintenance.
+& $Node "--env-file=$EnvFile" (Join-Path $Root "packages\db\scripts\ensure-indexes.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Critical MongoDB index verification/creation failed" }
+
 # Remove old synthetic/candidate rows from PUBLIC presentation without deleting history.
 & $Node "--env-file=$EnvFile" (Join-Path $Root "packages\db\scripts\reconcile-wallet-first-public-activity.mjs") --apply
 if ($LASTEXITCODE -ne 0) { throw "Public WalletActivity reconciliation failed" }
@@ -110,8 +115,8 @@ foreach ($s in $Services) {
 
 # Start upstream data producers before consumers/execution, then expose the API.
 $StartOrder = @(
-  "memecloud-listener","memecloud-market-worker","memecloud-global-brain","memecloud-notification-worker",
-  "memecloud-executor","memecloud-exits","memecloud-balance-worker","memecloud-analytics-worker",
+  "memecloud-listener","memecloud-market-worker","memecloud-balance-worker","memecloud-global-brain","memecloud-notification-worker",
+  "memecloud-executor","memecloud-exits","memecloud-analytics-worker",
   "memecloud-social-worker","memecloud-api"
 )
 foreach ($name in $StartOrder) {

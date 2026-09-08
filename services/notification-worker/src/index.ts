@@ -12,11 +12,12 @@ let active=0, processed=0;
 async function targets(audience:string){
   const where:any={role:"USER",status:"ACTIVE"};
   if(audience==="AUTO_COPY") where.tradingSettings={is:{autoCopyEnabled:true}};
-  return db.user.findMany({
-    where,
-    select:{id:true,email:true,notificationPrefs:true},
-    take:100_000
-  });
+  const out:any[]=[];let cursor:string|undefined;
+  do{
+    const page=await db.user.findMany({where,select:{id:true,email:true,notificationPrefs:true},orderBy:{id:"asc"},take:1000,...(cursor?{cursor:{id:cursor},skip:1}:{})});
+    out.push(...page);if(page.length<1000)break;cursor=page[page.length-1]?.id;
+  }while(cursor);
+  return out;
 }
 
 const worker=new Worker("broadcasts",async job=>{
@@ -73,18 +74,23 @@ const userWorker=new Worker("user-notifications",async job=>{
   const {userId,type,title,body,data}=job.data;
   const pref=await db.notificationPreference.findUnique({where:{userId}});
   const deliveryKey=String(job.data.deliveryKey??job.id??`${userId}:${type}`);
-  let n;
-  try{n=await db.notification.create({data:{userId,deliveryKey,type,title,body,data:data as any}})}
-  catch(e:any){if(e.code==="P2002")return;throw e;}
-  if(resolvePushAllowed(type,pref)){
-    try{await sendPush(userId,{title,body,url:data?.url||"/app/",type,tag:deliveryKey,data});}catch(e){console.error("[notification-worker] push",e);}
+  let n:any;
+  try{n=await db.notification.create({data:{userId,deliveryKey,type,title,body,data:{...(data??{}),_delivery:{}} as any}})}
+  catch(e:any){if(e.code!=="P2002")throw e;n=await db.notification.findUnique({where:{deliveryKey}});if(!n)throw e;}
+  const delivery={...(((n.data as any)?._delivery)??{})};
+  const persist=async()=>{n=await db.notification.update({where:{id:n.id},data:{data:{...((n.data as any)??{}),...(data??{}),_delivery:delivery} as any}})};
+  if(resolvePushAllowed(type,pref) && delivery.push!=="SENT" && delivery.push!=="SKIPPED"){
+    const r=await sendPush(userId,{title,body,url:data?.url||"/app/",type,tag:deliveryKey,data});
+    if(r.sent>0){delivery.push="SENT";await persist()}
+    else if(r.failed>0){delivery.push="RETRY";await persist();throw Object.assign(new Error("PUSH_DELIVERY_FAILED"),{code:"PUSH_DELIVERY_FAILED"})}
+    else {delivery.push="SKIPPED";await persist()}
   }
-  if(emailWorthSending(type) && pref?.emailEnabled!==false){
+  if(emailWorthSending(type) && pref?.emailEnabled!==false && delivery.email!=="SENT" && delivery.email!=="SKIPPED"){
     const user=await db.user.findUnique({where:{id:userId},select:{email:true}});
     if(user?.email){
-      try{await sendEmail(user.email,title,`<p>${String(body).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\n","<br/>")}</p>`,userId)}
-      catch(e){console.error("[notification-worker] email",e);}
-    }
+      try{await sendEmail(user.email,title,`<p>${String(body).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\n","<br/>")}</p>`,userId);delivery.email="SENT";await persist()}
+      catch(e){delivery.email="RETRY";await persist();throw e}
+    }else{delivery.email="SKIPPED";await persist()}
   }
   return n.id;
 },{connection,concurrency:10});

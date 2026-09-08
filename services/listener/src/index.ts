@@ -80,8 +80,11 @@ async function replayMissedSignatures(traderId:string,address:string,pubkey:Publ
       return;
     }
     for(const sig of plan.signatures){
-      await handleSignature(traderId,address,sig.signature).catch(e=>{errors++;console.error("[listener] replay tx error",sig.signature,e)});
-      lastSeenSignature.set(address,sig.signature);
+      try{
+        const ok=await handleSignature(traderId,address,sig.signature);
+        if(ok!==false)lastSeenSignature.set(address,sig.signature);
+        else break;
+      }catch(e){errors++;console.error("[listener] replay tx error",sig.signature,e);break}
     }
     if(plan.signatures.length)replays+=plan.signatures.length;
   }catch(e){replayFailures++;console.error("[listener] replay failed",address,e)}
@@ -104,12 +107,10 @@ async function fetchParsedTransactionWithRetry(signature:string){
 async function handleSignature(traderId:string,wallet:string,signature:string){
   detected++;lastEventAt=Date.now();
   const existing=await db.sourceTransaction.findUnique({where:{chain_txHash_walletAddress:{chain:"SOLANA",txHash:signature,walletAddress:wallet}}});
-  if(existing){
-    await persistWalletActivity(traderId,wallet,signature,existing.rawJson as any);
-    return;
-  }
-  const tx=await fetchParsedTransactionWithRetry(signature);
-  if(!tx||tx.meta?.err){if(!tx)errors++;return;}
+  // SourceTransaction is durable ingestion evidence, not a terminal pipeline marker. If a crash
+  // happened after writing it but before Signal/BullMQ creation, resume the rest of the pipeline.
+  const tx:any=existing?.rawJson??await fetchParsedTransactionWithRetry(signature);
+  if(!tx||tx.meta?.err){if(!tx)errors++;return false;}
 
   recordDetectionLatency(tx.blockTime);
   await persistWalletActivity(traderId,wallet,signature,tx);
@@ -119,10 +120,12 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
   });
 
   const swap=classifySwap(tx,wallet);
-  if(!swap) return;
+  if(!swap) return true;
   decoded++;
   const tokenMint=swap.action==="BUY"?swap.outputMint:swap.inputMint;
   const idempotencyKey=crypto.createHash("sha256").update(["SOLANA",signature,wallet,tokenMint,swap.action].join(":")).digest("hex");
+  const priorSignal=await db.signal.findUnique({where:{idempotencyKey},select:{id:true,status:true}});
+  if(priorSignal&&(["COMPLETED","SKIPPED"] as string[]).includes(priorSignal.status))return true;
   // Wallet-first source of truth: persist flow only for wallets we explicitly monitor. This replaces
   // the old chain-wide all-logs firehose for normal production, while preserving the exact flow rows
   // Brain/market/scoring already consume.
@@ -147,12 +150,14 @@ async function handleSignature(traderId:string,wallet:string,signature:string){
     }
   });
   await queue.add("source-signal",{signalId:signal.id},{jobId:signal.id,attempts:5,backoff:{type:"exponential",delay:500},removeOnComplete:1000});
+  return true;
   // Wallet-first v1: the forward-observation and paper-trading queues existed only to build
   // promotion evidence for the retired candidate lifecycle. Their sole consumer (scoring-worker)
   // is retired, so enqueuing here would just accumulate Redis jobs and spend Jupiter quotes on
   // paper trades nothing reads. Admin curation replaces promotion evidence entirely.
 }
 
+let currentRpcUrl=new URL(rpc).toString();
 let currentRpcHost=new URL(rpc).host;
 // Tears down every subscription and opens a fresh Connection so a silently-dead websocket can't
 // keep masquerading as subscribed forever. Safe to call anytime: refreshWatchlist's normal 30s
@@ -165,6 +170,7 @@ async function hardReconnect(reason:string){
   const fresh=await getConfig<any>("marketData").catch(()=>null);
   const freshRpc=fresh?await pickHealthyRpc(solanaRpcCandidates(fresh),"[listener]").catch(()=>rpc):rpc;
   conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+  currentRpcUrl=new URL(freshRpc).toString();
   currentRpcHost=new URL(freshRpc).host;
   lastSlotAt=0;
 }
@@ -197,12 +203,14 @@ async function reconnectIfConfigChanged(){
   // self-heals: once a failed-over primary (e.g. Helius) recovers, the next check picks it again
   // automatically, same as reconnecting to a genuine Admin-edited RPC URL.
   const freshRpc=await pickHealthyRpc(solanaRpcCandidates(fresh),"[listener]");
+  const freshUrl=new URL(freshRpc).toString();
   const freshHost=new URL(freshRpc).host;
-  if(freshHost===currentRpcHost)return;
-  console.log("[listener] RPC changed (Admin edit or automatic failover)",currentRpcHost,"->",freshHost,"— reconnecting");
+  if(freshUrl===currentRpcUrl)return;
+  console.log("[listener] RPC changed (Admin edit, key/path rotation, or automatic failover)",currentRpcUrl,"->",freshUrl,"— reconnecting");
   for(const [,id] of subscriptions)await conn.removeOnLogsListener(id).catch(()=>{});
   subscriptions.clear();
   conn=new Connection(freshRpc,(process.env.SOLANA_COMMITMENT as any)||"confirmed");
+  currentRpcUrl=freshUrl;
   currentRpcHost=freshHost;
 }
 async function refreshWatchlist(){
@@ -223,16 +231,21 @@ async function refreshWatchlist(){
     try{
       const pubkey=new PublicKey(tw.address);
       const id=conn.onLogs(pubkey,async logs=>{
-        lastSeenSignature.set(tw.address,logs.signature);
-        try{await handleSignature(tw.traderId,tw.address,logs.signature);}
+        try{const ok=await handleSignature(tw.traderId,tw.address,logs.signature);if(ok!==false)lastSeenSignature.set(tw.address,logs.signature);}
         catch(e){errors++;console.error("[listener] tx error",logs.signature,e);}
       },"confirmed");
       subscriptions.set(tw.address,id);
       console.log("[listener] watching admin trader",tw.trader.handle,tw.address);
       if(lastSeenSignature.has(tw.address)) await replayMissedSignatures(tw.traderId,tw.address,pubkey);
       else {
-        const [newest]=await conn.getSignaturesForAddress(pubkey,{limit:1},"confirmed").catch(()=>[]);
-        if(newest)lastSeenSignature.set(tw.address,newest.signature);
+        const durable=await db.sourceTransaction.findFirst({where:{chain:"SOLANA",walletAddress:tw.address},orderBy:[{blockTime:"desc"},{createdAt:"desc"}],select:{txHash:true}}).catch(()=>null);
+        if(durable?.txHash){const repaired=await handleSignature(tw.traderId,tw.address,durable.txHash);if(repaired!==false){lastSeenSignature.set(tw.address,durable.txHash);await replayMissedSignatures(tw.traderId,tw.address,pubkey);}}
+        else {
+          // Truly new tracked wallet: baseline at the current tip; historical pre-tracking activity
+          // is not replayed as if MemeCloud had observed it live.
+          const [newest]=await conn.getSignaturesForAddress(pubkey,{limit:1},"confirmed").catch(()=>[]);
+          if(newest)lastSeenSignature.set(tw.address,newest.signature);
+        }
       }
     }catch(e){errors++;console.error("[listener] invalid admin wallet",tw.address,e);}
   }

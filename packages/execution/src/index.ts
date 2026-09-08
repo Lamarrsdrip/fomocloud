@@ -55,6 +55,12 @@ export class JupiterExecution {
     const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(3500) });
     if (!res.ok) throw Object.assign(new Error(`Quote failed ${res.status}`), { code: "QUOTE_FAILED" });
     const q: any = await res.json();
+    // Bind the provider response back to the exact intent that will later be signed. A compromised
+    // proxy/router response must never be able to silently change mints or input amount.
+    if(String(q?.inputMint)!==req.inputMint||String(q?.outputMint)!==req.outputMint||String(q?.inAmount)!==req.amountRaw)
+      throw Object.assign(new Error("Jupiter quote does not match requested swap intent"),{code:"QUOTE_INTENT_MISMATCH"});
+    if(!q?.outAmount||BigInt(String(q.outAmount))<=0n)
+      throw Object.assign(new Error("Jupiter returned an invalid output amount"),{code:"INVALID_QUOTE_RESPONSE"});
     return {
       inputMint: q.inputMint,
       outputMint: q.outputMint,
@@ -98,7 +104,12 @@ export class JupiterExecution {
     const connection = new Connection(rpcUrl, "confirmed");
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
-      const s = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+      const remaining=Math.max(1,timeoutMs-(Date.now()-started));
+      const rpcTimeout=Math.min(5000,remaining);
+      const s = await Promise.race([
+        connection.getSignatureStatus(signature, { searchTransactionHistory: true }),
+        new Promise<never>((_,reject)=>setTimeout(()=>reject(Object.assign(new Error("Solana confirmation RPC timed out"),{code:"CONFIRMATION_RPC_TIMEOUT"})),rpcTimeout))
+      ]);
       if (s.value?.err) throw Object.assign(new Error("Transaction failed on-chain"), { code: "TRANSACTION_FAILED", detail: s.value.err });
       if (s.value?.confirmationStatus === "confirmed" || s.value?.confirmationStatus === "finalized") return s.value;
       await new Promise(r => setTimeout(r, 700));

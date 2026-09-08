@@ -69,7 +69,7 @@ async function curatedTraderRows(userId?:string){
   });
   const ids=traders.map(t=>t.id), since90=new Date(Date.now()-90*DAY_MS),since24=new Date(Date.now()-DAY_MS);
   const [activity,follows]=await Promise.all([
-    ids.length?db.walletActivity.findMany({where:{chain:"SOLANA",traderId:{in:ids},action:{in:["BUY","SELL"]},public:true,swapVerified:true,observedAt:{gte:since90}},orderBy:{observedAt:"asc"},take:20_000}):[],
+    ids.length?db.walletActivity.findMany({where:{chain:"SOLANA",traderId:{in:ids},action:{in:["BUY","SELL"]},public:true,swapVerified:true,observedAt:{gte:since90}},orderBy:{observedAt:"asc"}}):[],
     userId&&ids.length?db.userFollow.findMany({where:{userId,traderId:{in:ids}}}):Promise.resolve([] as any[])
   ]);
   const byTrader=new Map<string,any[]>();for(const r of activity){const a=byTrader.get(r.traderId)||[];a.push(r);byTrader.set(r.traderId,a)}
@@ -124,12 +124,13 @@ async function enrichHistory(rows:any[]){
   }));
 }
 
-async function curatedHistoryRows(opts:{since:Date;traderId?:string;before?:Date;limit:number}){
+async function curatedHistoryRows(opts:{since:Date;traderId?:string;before?:Date;beforeId?:string;limit:number}){
   const wallets=await activeAdminWallets(opts.traderId); if(!wallets.length)return [];
   const pairs=wallets.map(w=>({traderId:w.traderId,walletAddress:w.address}));
+  const cursorClause=opts.before?(opts.beforeId?{OR:[{observedAt:{lt:opts.before}},{observedAt:opts.before,id:{lt:opts.beforeId}}]}:{observedAt:{lt:opts.before}}):{};
   const rows=await db.walletActivity.findMany({
-    where:{chain:"SOLANA",public:true,swapVerified:true,action:{in:["BUY","SELL"]},OR:pairs,observedAt:{gte:opts.since,...(opts.before?{lt:opts.before}:{})}},
-    orderBy:{observedAt:"desc"},take:Math.max(1,Math.min(HISTORY_MAX,opts.limit))
+    where:{chain:"SOLANA",public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:opts.since},AND:[{OR:pairs},cursorClause]},
+    orderBy:[{observedAt:"desc"},{id:"desc"}],take:Math.max(1,Math.min(HISTORY_MAX,opts.limit))
   });
   return enrichHistory(rows);
 }
@@ -158,15 +159,19 @@ export function tokenRoundTrips(rows:any[],holdings:Map<string,any>,tokenMap:Map
 async function currentHoldings(wallets:{address:string}[],boughtMints:Set<string>){
   const key=wallets.map(w=>w.address).sort().join(":");const cached=holdingsCache.get(key);if(cached&&Date.now()-cached.at<45_000)return cached.value;
   const marketCfg=await getConfig<any>("marketData");const rpc=await pickHealthyRpc(solanaRpcCandidates(marketCfg),"[curated-profile]");const conn=new Connection(rpc,"confirmed");
-  const byMint=new Map<string,{amount:number,decimals:number}>();let nativeSol=0;
+  const byMint=new Map<string,{amount:number,decimals:number}>();let nativeSol=0,partialHoldings=false;
   for(const wallet of wallets){
     const owner=new PublicKey(wallet.address);
-    const [sol,classic,t22]=await Promise.all([
+    const [solResult,classicResult,t22Result]=await Promise.allSettled([
       conn.getBalance(owner,"confirmed"),
-      conn.getParsedTokenAccountsByOwner(owner,{programId:TOKEN_PROGRAM},"confirmed").catch(()=>({value:[]} as any)),
-      conn.getParsedTokenAccountsByOwner(owner,{programId:TOKEN_2022_PROGRAM},"confirmed").catch(()=>({value:[]} as any))
+      conn.getParsedTokenAccountsByOwner(owner,{programId:TOKEN_PROGRAM},"confirmed"),
+      conn.getParsedTokenAccountsByOwner(owner,{programId:TOKEN_2022_PROGRAM},"confirmed")
     ]);
-    nativeSol+=sol/1e9;
+    if(solResult.status==="rejected")throw solResult.reason;
+    if(classicResult.status==="rejected"||t22Result.status==="rejected")partialHoldings=true;
+    const classic=classicResult.status==="fulfilled"?classicResult.value:{value:[]} as any;
+    const t22=t22Result.status==="fulfilled"?t22Result.value:{value:[]} as any;
+    nativeSol+=solResult.value/1e9;
     for(const a of [...classic.value,...t22.value]){
       const info=(a.account.data as any)?.parsed?.info, mint=String(info?.mint??""),ta=info?.tokenAmount;if(!mint||!ta)continue;
       const amount=Number(ta.uiAmountString??ta.uiAmount??0),decimals=Number(ta.decimals??0);if(!Number.isFinite(amount)||amount<=0)continue;
@@ -182,21 +187,22 @@ async function currentHoldings(wallets:{address:string}[],boughtMints:Set<string
   const tm=new Map(tokens.map(t=>[t.mint,t])),pm=new Map<string,number>(),sm=new Map<string,any>();for(const p of prices)if(!pm.has(p.mint))pm.set(p.mint,p.priceUsd);for(const s of snaps)if(!sm.has(s.mint))sm.set(s.mint,s);
   const holdings=selected.map(([mint,v])=>{const token=tm.get(mint)||null,snap=sm.get(mint),price=pm.get(mint)??snap?.priceUsd??null;return {mint,amount:v.amount,decimals:v.decimals,priceUsd:price,valueUsd:price!=null?v.amount*Number(price):null,marketCapUsd:snap?.marketCapUsd??token?.marketCapUsd??null,token};})
     .sort((a,b)=>(b.valueUsd??-1)-(a.valueUsd??-1));
-  const value={status:"LIVE",source:"SOLANA_RPC",nativeSol,holdings,estimatedHoldingsUsd:holdings.reduce((a,h)=>a+(h.valueUsd??0),0),refreshedAt:new Date().toISOString()};holdingsCache.set(key,{at:Date.now(),value});return value;
+  const value={status:partialHoldings?"PARTIAL":"LIVE",source:"SOLANA_RPC",nativeSol,holdings,estimatedHoldingsUsd:partialHoldings?null:holdings.reduce((a,h)=>a+(h.valueUsd??0),0),refreshedAt:new Date().toISOString(),...(partialHoldings?{error:"One Solana token-program query failed; holdings are partial and are not being presented as a complete zero/total."}:{})};holdingsCache.set(key,{at:Date.now(),value});return value;
 }
 
-async function traderProfile(traderId:string,userId:string,before?:Date,limit=100){
+async function traderProfile(traderId:string,userId:string,before?:Date,beforeId?:string,limit=100){
   const trader=await db.trader.findFirst({where:{id:traderId,kind:"PLATFORM",enabled:true,wallets:{some:adminWalletFields()}},include:{wallets:{where:adminWalletFields()},_count:{select:{follows:true,signals:true}}}});if(!trader)return null;
   const trackedSince=new Date(Math.min(...trader.wallets.map(w=>(w.verifiedAt??w.createdAt).getTime())));
   const totalTradeCount=await db.walletActivity.count({where:{chain:"SOLANA",traderId,public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:trackedSince}}});
-  const statsRows=await db.walletActivity.findMany({where:{chain:"SOLANA",traderId,public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:trackedSince}},orderBy:{observedAt:"asc"},take:PROFILE_STATS_MAX});
+  const statsRows=await db.walletActivity.findMany({where:{chain:"SOLANA",traderId,public:true,swapVerified:true,action:{in:["BUY","SELL"]},observedAt:{gte:trackedSince}},orderBy:[{observedAt:"desc"},{id:"desc"}],take:PROFILE_STATS_MAX});
+  statsRows.reverse();
   const boughtMints=boughtMintsFrom(statsRows);let holdings:any;try{holdings=await currentHoldings(trader.wallets,boughtMints)}catch(e:any){holdings={status:"UNAVAILABLE",source:"SOLANA_RPC",nativeSol:null,holdings:[],estimatedHoldingsUsd:null,refreshedAt:null,error:String(e?.message??e).slice(0,180)}}
   const tokenMints=[...new Set(statsRows.map(r=>r.mint))],tokens=tokenMints.length?await db.discoveryToken.findMany({where:{chain:"SOLANA",mint:{in:tokenMints}},select:{mint:true,symbol:true,name:true,marketCapUsd:true,metadata:true}}):[];const tokenMap=new Map(tokens.map(t=>[t.mint,t])),holdingMap=new Map<string,any>((holdings.holdings||[]).map((h:any)=>[h.mint,h] as [string,any]));
-  const page=await curatedHistoryRows({since:trackedSince,traderId,before,limit});const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId,traderId}}});
+  const page=await curatedHistoryRows({since:trackedSince,traderId,before,beforeId,limit});const follow=await db.userFollow.findUnique({where:{userId_traderId:{userId,traderId}}});
   const allPerf=performance(statsRows,trackedSince),d30=performance(statsRows,new Date(Date.now()-30*DAY_MS));
   return {trader:{id:trader.id,displayName:trader.displayName,handle:trader.handle,avatarUrl:trader.avatarUrl,category:trader.category,featured:trader.featured,recommended:trader.recommended,followers:trader._count.follows,signals:trader._count.signals,wallets:trader.wallets.map(w=>({id:w.id,address:w.address,chain:w.chain,trackedSince:w.verifiedAt??w.createdAt}))},trackedSince,follow,
     summary:{totalTrades:totalTradeCount,tradesLoadedForStats:statsRows.length,statsTruncated:totalTradeCount>PROFILE_STATS_MAX,tokensTraded:new Set(statsRows.map(r=>r.mint)).size,openHoldings:(holdings.holdings||[]).length,holdingsValueUsd:holdings.estimatedHoldingsUsd,realizedPnlUsd:allPerf.pnlUsd,returnPct:allPerf.returnPct,winRatePct:allPerf.closed?allPerf.wins/allPerf.closed*100:null,closedTrades:allPerf.closed,d30,day:profileTradeStats(statsRows,new Date(Date.now()-DAY_MS))},
-    holdings,tokenHistory:tokenRoundTrips(statsRows,holdingMap,tokenMap,holdings.status==="LIVE"),history:page,nextBefore:page.length>=limit?page[page.length-1]?.observedAt:null};
+    holdings,tokenHistory:tokenRoundTrips(statsRows,holdingMap,tokenMap,holdings.status==="LIVE"),history:page,nextBefore:page.length>=limit?page[page.length-1]?.observedAt:null,nextBeforeId:page.length>=limit?page[page.length-1]?.id:null};
 }
 
 function releaseId(){return process.env.MEMECLOUD_RELEASE_SHA||process.env.RELEASE_SHA||path.basename(process.cwd());}
@@ -211,11 +217,11 @@ curatedRoutes.get("/v1/curated/history",auth,asyncRoute(async(req:AuthedRequest,
 }));
 
 curatedRoutes.get("/v1/curated/traders/:id/profile",auth,asyncRoute(async(req:AuthedRequest,res)=>{
-  const beforeRaw=String(req.query.before??""),before=beforeRaw&&Number.isFinite(Date.parse(beforeRaw))?new Date(beforeRaw):undefined,limit=Math.max(20,Math.min(250,Number(req.query.limit??100)));const profile=await traderProfile(routeParam(req.params.id),req.user.sub,before,limit);if(!profile)return res.status(404).json({error:"CURATED_TRADER_NOT_FOUND"});
+  const beforeRaw=String(req.query.before??""),before=beforeRaw&&Number.isFinite(Date.parse(beforeRaw))?new Date(beforeRaw):undefined,beforeId=String(req.query.beforeId??"")||undefined,limit=Math.max(20,Math.min(250,Number(req.query.limit??100)));const profile=await traderProfile(routeParam(req.params.id),req.user.sub,before,beforeId,limit);if(!profile)return res.status(404).json({error:"CURATED_TRADER_NOT_FOUND"});
   res.setHeader("cache-control","no-store");res.json({...profile,release:releaseId(),sourcePolicy:"ADMIN_VERIFIED_WALLETS_ONLY"});
 }));
 
 curatedRoutes.get("/v1/curated/traders/:id/history",auth,asyncRoute(async(req:AuthedRequest,res)=>{
-  const traderId=routeParam(req.params.id),wallets=await activeAdminWallets(traderId);if(!wallets.length)return res.status(404).json({error:"CURATED_TRADER_NOT_FOUND"});const trackedSince=new Date(Math.min(...wallets.map(w=>(w.verifiedAt??w.createdAt).getTime()))),beforeRaw=String(req.query.before??""),before=beforeRaw&&Number.isFinite(Date.parse(beforeRaw))?new Date(beforeRaw):undefined,limit=Math.max(20,Math.min(250,Number(req.query.limit??100)));const events=await curatedHistoryRows({since:trackedSince,traderId,before,limit});
-  res.setHeader("cache-control","no-store");res.json({events,nextBefore:events.length>=limit?events[events.length-1]?.observedAt:null,trackedSince,release:releaseId()});
+  const traderId=routeParam(req.params.id),wallets=await activeAdminWallets(traderId);if(!wallets.length)return res.status(404).json({error:"CURATED_TRADER_NOT_FOUND"});const trackedSince=new Date(Math.min(...wallets.map(w=>(w.verifiedAt??w.createdAt).getTime()))),beforeRaw=String(req.query.before??""),before=beforeRaw&&Number.isFinite(Date.parse(beforeRaw))?new Date(beforeRaw):undefined,beforeId=String(req.query.beforeId??"")||undefined,limit=Math.max(20,Math.min(250,Number(req.query.limit??100)));const events=await curatedHistoryRows({since:trackedSince,traderId,before,beforeId,limit});
+  res.setHeader("cache-control","no-store");res.json({events,nextBefore:events.length>=limit?events[events.length-1]?.observedAt:null,nextBeforeId:events.length>=limit?events[events.length-1]?.id:null,trackedSince,release:releaseId()});
 }));
