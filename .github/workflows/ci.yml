@@ -13,27 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    services:
-      mongodb:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
     env:
       DATABASE_URL: mongodb://127.0.0.1:27017/memecloud_ci?replicaSet=rs0
       REDIS_URL: redis://127.0.0.1:6379
@@ -52,20 +31,59 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Initialize Mongo replica set
+      - name: Start MongoDB replica set
         run: |
-          docker exec $(docker ps -q --filter ancestor=mongo:7) \
-            mongosh --quiet --eval \
-            'try { rs.status() } catch (e) { rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]}) }'
+          docker run -d \
+            --name memecloud-mongo-ci \
+            -p 27017:27017 \
+            mongo:7 \
+            mongod --replSet rs0 --bind_ip_all
 
-          for i in {1..30}; do
-            if mongosh --quiet --host 127.0.0.1:27017 \
-              --eval 'db.hello().isWritablePrimary' | grep -q true; then
-              echo "Mongo replica set ready"
+          echo "Waiting for MongoDB..."
+          for i in {1..60}; do
+            if docker exec memecloud-mongo-ci mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' 2>/dev/null | grep -q 1; then
               break
             fi
             sleep 2
           done
+
+          docker exec memecloud-mongo-ci \
+            mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+
+          echo "Waiting for replica-set PRIMARY..."
+          for i in {1..60}; do
+            if docker exec memecloud-mongo-ci \
+              mongosh --quiet --eval 'db.hello().isWritablePrimary' \
+              2>/dev/null | grep -q true; then
+              echo "Mongo replica set is PRIMARY"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Mongo replica set failed to become PRIMARY"
+          docker logs memecloud-mongo-ci
+          exit 1
+
+      - name: Start Redis
+        run: |
+          docker run -d \
+            --name memecloud-redis-ci \
+            -p 6379:6379 \
+            redis:7
+
+          for i in {1..30}; do
+            if docker exec memecloud-redis-ci redis-cli ping | grep -q PONG; then
+              echo "Redis ready"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Redis failed to start"
+          docker logs memecloud-redis-ci
+          exit 1
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
